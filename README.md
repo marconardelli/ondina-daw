@@ -59,7 +59,7 @@ Every row is available both in the GUI and as MCP tools (full list in [`MCP_TOOL
 | Tracks and library | instrument, audio and aux bus tracks, 23 patches | `add_track` `apply_patch` `list_patches` |
 | Audio and MIDI recording | WASAPI inputs, MIDI ports, Musical Typing | `record` `set_record_arm` `connect_midi_input` `send_live_midi` |
 | Comping | cycle recording creates one take per pass; comp by segments | `list_takes` `comp_takes` |
-| Arrangement | drag/copy/resize/split/join/loop regions, fades, chord track (type chords or roman numerals in place, drag to move and resize), section markers | `move_region` `split_region` `copy_section` `set_chord_progression` `update_chord` |
+| Arrangement | drag/copy/resize/split/join/loop regions, fades, chord track (type chords or roman numerals in place, drag to move and resize), section markers, region rename and color | `move_region` `split_region` `copy_section` `set_chord_progression` `update_chord` |
 | Piano roll and step sequencer | note editing, box selection, copy / cut / paste and arrow-key moves, quantize / humanize / snap to key on the selection, velocity lane, controller lane (sustain, mod wheel, expression, volume, pan, pitch bend) | `add_notes` `quantize_notes` `replace_cc` `set_pattern_row` |
 | MIDI transform and routing | conditional transforms; split/layer of MIDI input | `transform_notes` `set_midi_routes` |
 | Session players | drums (13 styles), bass, chords, arpeggios, melodies | `generate_drums` `generate_bass` `generate_chords` … |
