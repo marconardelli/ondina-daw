@@ -594,6 +594,32 @@ fn marker_update_moves_renames_and_resizes_one_undo_step_each() {
     assert_eq!(s.project.markers[pos(&s)].length, Some(16.0));
 }
 
+#[test]
+fn add_chord_stores_roman_numerals_as_symbols_and_the_bassist_follows() {
+    use ondina_core::model::RegionContent;
+    let mut s = Session::new(false);
+    ok(&mut s, "set_key", json!({"key": "C major"}));
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();
+
+    let v = ok(&mut s, "add_chord", json!({"beat": 0, "length": 4, "symbol": "IV"}));
+    assert_eq!(v["symbol"], "F");
+    assert!(v["chord_id"].as_u64().is_some());
+    assert_eq!(s.project.chords[0].symbol, "F");
+
+    let rid = ok(&mut s, "generate_bass", json!({"track_id": t, "start": 0, "bars": 1, "style": "root", "seed": 1}))["region_id"].as_u64().unwrap();
+    let (_, region) = s.project.find_region(rid).unwrap();
+    let RegionContent::Midi(m) = &region.content else { panic!("bass region is not MIDI") };
+    assert!(!m.notes.is_empty());
+    assert!(m.notes.iter().all(|n| n.pitch % 12 == 5), "the bassist plays F, not the tonic");
+
+    let v = ok(&mut s, "add_chord", json!({"beat": 4, "length": 4, "symbol": " Am7 "}));
+    assert_eq!(v["symbol"], "Am7");
+
+    let e = call(&mut s, "add_chord", json!({"beat": 8, "length": 4, "symbol": "H9x"})).unwrap_err();
+    assert!(e.contains("cannot parse chord"), "{e}");
+    assert_eq!(s.project.chords.len(), 2);
+}
+
 fn midi_session() -> Session {
     let mut s = Session::new(false);
     let t = ok(&mut s, "add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();

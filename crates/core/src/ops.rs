@@ -355,6 +355,21 @@ pub fn parse_chord_or_roman(sym: &str, key: Key) -> Result<Chord, String> {
     err(format!("cannot parse chord '{sym}'"))
 }
 
+/// The symbol the chord track stores for `sym`: a chord symbol as typed (trimmed), or a roman numeral turned
+/// into the chord of that degree in `key`. Stored as a symbol, a chord keeps its sound when the key changes.
+pub fn resolve_chord_symbol(sym: &str, key: Key) -> Result<String, String> {
+    let s = sym.trim();
+    if Chord::parse(s).is_some() {
+        return Ok(s.to_string());
+    }
+    if let Some(r) = theory::roman_to_symbol(s, key) {
+        if Chord::parse(&r).is_some() {
+            return Ok(r);
+        }
+    }
+    err(format!("cannot parse chord '{s}'"))
+}
+
 fn put_generated_region(project: &mut Project, track_id: Id, start: f64, bars: u32, name: &str, notes: Vec<Note>) -> Result<Id, String> {
     let bpb = project.time_signature.beats_per_bar();
     let id = project.alloc_id();
@@ -1384,9 +1399,7 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             }
             let mut ids = vec![];
             for (i, s) in chords.iter().enumerate() {
-                let ch = parse_chord_or_roman(s, project.key)?;
-                let symbol = if Chord::parse(s).is_some() { s.clone() } else { theory::roman_to_symbol(s, project.key).unwrap_or(s.clone()) };
-                let _ = ch;
+                let symbol = resolve_chord_symbol(s, project.key)?;
                 let id = project.alloc_id();
                 project.chords.push(ChordEvent { id, beat: start + i as f64 * per, length: per, symbol });
                 ids.push(id);
@@ -1395,11 +1408,11 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             ok(json!({"chord_ids": ids, "chords": project.chords}))
         }
         AddChord { beat, length, symbol } => {
-            parse_chord_or_roman(symbol, project.key)?;
+            let symbol = resolve_chord_symbol(symbol, project.key)?;
             let id = project.alloc_id();
             project.chords.push(ChordEvent { id, beat: *beat, length: *length, symbol: symbol.clone() });
             project.chords.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
-            ok(json!({"chord_id": id}))
+            ok(json!({"chord_id": id, "symbol": symbol}))
         }
         RemoveChord { chord_id } => {
             project.chords.retain(|c| c.id != *chord_id);

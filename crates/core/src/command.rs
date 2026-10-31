@@ -258,7 +258,7 @@ pub enum Command {
     // ------------------------------------------------------------------ chord track
     /// Write a chord progression to the chord track. Accepts symbols ("Am7", "F", "G/B") or roman numerals in the project key ("I", "vi", "IV", "V7").
     SetChordProgression { start: f64, chords: Vec<String>, beats_per_chord: Option<f64>, replace: Option<bool> },
-    /// Add one chord to the chord track.
+    /// Add one chord to the chord track. symbol is a chord symbol ("Am7", "G/B") or a roman numeral in the project key ("IV", "vi"), stored as a chord symbol. Returns chord_id and the stored symbol.
     AddChord { beat: f64, length: f64, symbol: String },
     /// Remove a chord from the chord track.
     RemoveChord { chord_id: Id },
