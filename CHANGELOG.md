@@ -7,6 +7,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-31
+
+### Added
+
+- MCP: new `get_selection` tool. An external agent (Claude Desktop, Claude Code and other MCP clients) can now see
+  what you selected in the Ondina window: the track, the region, the selected notes, the playhead and the cycle
+  range. Ask it to "quantize the notes I selected" and it works on exactly those notes.
+
+### Changed
+
+- Piano roll: when you open a region the view jumps to its notes (to C4 if the region is empty). Double-click the
+  region in the arrange window to frame it again.
+- Piano roll: the mouse wheel scrolls pitch at the same speed up and down; Shift+wheel scrolls time.
+- Piano roll: Ctrl+wheel zooms time around the point under the pointer, and the new Ctrl+Shift+wheel zooms pitch
+  (key height) around the note under the pointer.
+- Piano roll: during playback the playhead follows the repeats of a looped region, and with Follow playhead on the
+  view follows it too.
+
 ## [0.4.1] - 2026-10-31
 
 ### Changed
@@ -149,7 +167,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/marconardelli/ondina-daw/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/marconardelli/ondina-daw/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/marconardelli/ondina-daw/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/marconardelli/ondina-daw/compare/v0.2.2...v0.3.0
