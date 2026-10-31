@@ -216,14 +216,14 @@ pub enum Command {
     RemoveNotes { region_id: Id, indices: Option<Vec<usize>>, pitch: Option<u8>, from_beat: Option<f64>, to_beat: Option<f64> },
     /// Transpose notes (all, or the given indices) by semitones.
     TransposeNotes { region_id: Id, semitones: i32, indices: Option<Vec<usize>> },
-    /// Quantize notes to a grid in beats (0.25 = 1/16). strength 0..1 (default 1), swing 0..1.
-    QuantizeNotes { region_id: Id, grid: f64, strength: Option<f64>, swing: Option<f64>, quantize_ends: Option<bool> },
-    /// Humanize: random timing deviation (beats, default 0.01) and velocity deviation (default 8).
-    HumanizeNotes { region_id: Id, timing: Option<f64>, velocity: Option<i32>, seed: Option<u64> },
+    /// Quantize notes (all, or the given indices) to a grid in beats (0.25 = 1/16). strength 0..1 (default 1), swing 0..1. Notes are re-sorted by time afterwards; with indices, the result's `indices` lists where those notes ended up. Indices past the last note are ignored.
+    QuantizeNotes { region_id: Id, grid: f64, strength: Option<f64>, swing: Option<f64>, quantize_ends: Option<bool>, indices: Option<Vec<usize>> },
+    /// Humanize notes (all, or the given indices): random timing deviation (beats, default 0.01) and velocity deviation (default 8). Notes are re-sorted by time afterwards; with indices, the result's `indices` lists where those notes ended up. Indices past the last note are ignored.
+    HumanizeNotes { region_id: Id, timing: Option<f64>, velocity: Option<i32>, seed: Option<u64>, indices: Option<Vec<usize>> },
     /// Set velocities: fixed value, or scale factor, for all or given notes.
     SetNoteVelocities { region_id: Id, velocity: Option<u8>, scale: Option<f32>, indices: Option<Vec<usize>> },
-    /// Move every note of a region to the nearest pitch in the project key.
-    SnapNotesToKey { region_id: Id },
+    /// Move notes of a region (all, or the given indices) to the nearest pitch in the project key. Indices past the last note are ignored.
+    SnapNotesToKey { region_id: Id, indices: Option<Vec<usize>> },
     /// Insert a voiced chord (symbol like "Cmaj7", "F#m", "G/B") into a MIDI region.
     InsertChord { region_id: Id, symbol: String, start: f64, length: f64, octave: Option<i32>, inversion: Option<u8>, velocity: Option<u8>, with_bass: Option<bool> },
     /// Add MIDI controller events (64 sustain, 1 mod wheel, 7 volume...) to a region.
