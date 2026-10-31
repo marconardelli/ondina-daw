@@ -7,6 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-31
+
+### Changed
+
+- Saving, bouncing and exporting from the assistant or an MCP client now writes only to local drives, with the
+  right extension for each file type (`.aurora`, `.wav`, `.mid`/`.midi`, `.musicxml`/`.xml`); a missing extension
+  is added for you. Network paths and other extensions are refused, and the assistant never overwrites a file that
+  is not an Aurora project. The app's own Save and Bounce dialogs can still use any folder, including a NAS.
+- Piano roll: the selected notes stay selected after Undo and Redo, MIDI Transform and edits made by the assistant
+  or an MCP client. Notes that no longer exist drop out of the selection.
+
 ## [0.2.1] - 2026-10-31
 
 ### Changed
@@ -91,7 +102,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/aurora-daw/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/marconardelli/aurora-daw/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/marconardelli/aurora-daw/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/marconardelli/aurora-daw/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/marconardelli/aurora-daw/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/marconardelli/aurora-daw/compare/v0.1.1...v0.1.2
