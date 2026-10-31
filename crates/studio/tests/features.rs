@@ -738,3 +738,58 @@ fn mcp_can_save_over_a_project_from_before_the_rename() {
     ok(&mut again, "open_project", json!({"path": copy.display().to_string()}));
     assert_eq!(again.project.tempo.initial_bpm(), 77.0);
 }
+
+#[test]
+fn removing_tracks_sends_and_plugins_cleans_references_in_one_undo_step() {
+    let mut s = Session::new(false);
+    let add = |s: &mut Session, kind: &str| ok(s, "add_track", json!({"kind": kind}))["track_id"].as_u64().unwrap();
+    let src = add(&mut s, "instrument");
+    let t2 = add(&mut s, "instrument");
+    let buses = [add(&mut s, "bus"), add(&mut s, "bus"), add(&mut s, "bus")];
+    for (i, bus) in buses.iter().enumerate() {
+        ok(&mut s, "add_send", json!({"track_id": src, "bus_id": bus}));
+        ok(&mut s, "set_automation", json!({"track_id": src, "target": format!("send:{i}"), "points": [{"beat": 0, "value": -(i as f32) - 1.0}]}));
+    }
+    let fx = ok(&mut s, "add_effect", json!({"track_id": src, "kind": "reverb"}))["plugin_id"].as_u64().unwrap();
+    for t in [src, t2] {
+        ok(&mut s, "set_automation", json!({"track_id": t, "target": format!("plugin:{fx}:mix"), "points": [{"beat": 0, "value": 0.5}]}));
+    }
+    ok(&mut s, "create_live_cell", json!({"track_id": t2, "scene": 0, "length": 4}));
+    ok(&mut s, "create_live_cell", json!({"track_id": src, "scene": 0, "length": 4}));
+    ok(&mut s, "set_midi_routes", json!({"routes": [{"name": "upper", "note_min": 60, "track_id": t2}, {"name": "lower", "note_max": 59, "track_id": src}]}));
+    let send_lanes = |s: &Session| -> Vec<(String, f32)> {
+        s.project.track(src).unwrap().automation.iter().filter(|l| l.target.starts_with("send:")).map(|l| (l.target.clone(), l.points[0].value)).collect()
+    };
+
+    let cases = [
+        ("remove_send", json!({"track_id": src, "send_index": 0}), json!({"ok": true, "removed_automation_lanes": 1})),
+        ("remove_plugin", json!({"plugin_id": fx}), json!({"ok": true, "removed_automation_lanes": 2})),
+        ("remove_track", json!({"track_id": buses[1]}), json!({"ok": true, "removed_automation_lanes": 1, "removed_live_cells": 0, "removed_midi_routes": 0})),
+        ("remove_track", json!({"track_id": t2}), json!({"ok": true, "removed_automation_lanes": 0, "removed_live_cells": 1, "removed_midi_routes": 1})),
+    ];
+    for (tool, args, expected) in cases {
+        let before = ok(&mut s, "get_project_json", json!({}));
+        assert_eq!(ok(&mut s, tool, args.clone()), expected, "{tool} {args}");
+        match (tool, args["track_id"].as_u64()) {
+            ("remove_send", _) => assert_eq!(send_lanes(&s), vec![("send:0".to_string(), -2.0), ("send:1".to_string(), -3.0)]),
+            ("remove_track", Some(id)) if id == buses[1] => {
+                assert_eq!(send_lanes(&s), vec![("send:0".to_string(), -1.0), ("send:1".to_string(), -3.0)]);
+                let sends: Vec<u64> = s.project.track(src).unwrap().channel.sends.iter().map(|x| x.bus_id).collect();
+                assert_eq!(sends, vec![buses[0], buses[2]]);
+            }
+            ("remove_track", Some(id)) if id == t2 => {
+                let live = ok(&mut s, "get_live_loops", json!({}));
+                let cells = live["cells"].as_array().unwrap();
+                assert_eq!(cells.len(), 1, "{live}");
+                assert!(cells.iter().all(|c| c["track_id"] != t2), "{live}");
+                let routes = ok(&mut s, "get_midi_routes", json!({}));
+                let routes = routes["routes"].as_array().unwrap();
+                assert_eq!(routes.len(), 1);
+                assert!(routes.iter().all(|r| r["track_id"] != t2));
+            }
+            _ => {}
+        }
+        ok(&mut s, "undo", json!({}));
+        assert_eq!(ok(&mut s, "get_project_json", json!({})), before, "one undo after {tool} {args}");
+    }
+}
