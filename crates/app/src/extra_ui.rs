@@ -667,6 +667,7 @@ impl AuroraApp {
         if movie_path.is_some() && movie_path != self.extra.video_seen {
             self.extra.show_video = true;
             self.extra.video_last = -1.0;
+            self.extra.video_tex = None;
         }
         self.extra.video_seen = movie_path;
         // ---- video
@@ -684,6 +685,8 @@ impl AuroraApp {
                         }
                         return;
                     };
+                    // a project made elsewhere may carry a URL or an option as movie path: no ffmpeg for it
+                    let refused = aurora_studio::session_ext::ffmpeg_input(&m.path).err();
                     ui.label(
                         RichText::new(format!(
                             "{}  ·  TC {}",
@@ -699,7 +702,8 @@ impl AuroraApp {
                     let t = (p.tempo.beat_to_sec(self.position()) - m.offset_sec)
                         .clamp(0.0, m.duration_sec.max(0.0));
                     let interval = if self.playing() { 0.25 } else { 0.04 };
-                    if self.extra.video_pending.is_none()
+                    if refused.is_none()
+                        && self.extra.video_pending.is_none()
                         && (t - self.extra.video_last).abs() > interval
                     {
                         self.extra.video_last = t;
@@ -722,7 +726,14 @@ impl AuroraApp {
                             self.extra.video_pending = None;
                         }
                     }
-                    if let Some(tex) = &self.extra.video_tex {
+                    if let Some(e) = &refused {
+                        ui.label(
+                            RichText::new(format!(
+                                "Movie path refused: {e}. Load the movie again from a local file."
+                            ))
+                            .color(theme::REC),
+                        );
+                    } else if let Some(tex) = &self.extra.video_tex {
                         let w = ui.available_width();
                         ui.image((tex.id(), vec2(w, w * 9.0 / 16.0)));
                     } else {
@@ -952,31 +963,7 @@ impl AuroraApp {
 
 /// Decode one movie frame at `t` seconds via ffmpeg into an egui image (320x180 RGB).
 fn grab_frame(path: &str, t: f64) -> Option<egui::ColorImage> {
-    let ff = aurora_studio::session_ext::ffmpeg_path()?;
     let (w, h) = (320usize, 180usize);
-    let out = std::process::Command::new(ff)
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-ss",
-            &format!("{t:.3}"),
-            "-i",
-            path,
-            "-frames:v",
-            "1",
-            "-vf",
-            &format!("scale={w}:{h}"),
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgb24",
-            "-",
-        ])
-        .output()
-        .ok()?;
-    if out.stdout.len() < w * h * 3 {
-        return None;
-    }
-    Some(egui::ColorImage::from_rgb([w, h], &out.stdout[..w * h * 3]))
+    let px = aurora_studio::session_ext::movie_frame_rgb(path, t, w, h).ok()?;
+    Some(egui::ColorImage::from_rgb([w, h], &px))
 }
