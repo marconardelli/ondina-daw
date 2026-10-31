@@ -93,6 +93,27 @@ R (registrazione), lo slider del volume e il meter.
 - Con tracce basse i pulsanti M, S e R stanno accanto al nome e il volume si regola dal mixer.
 - Zoom e altezza delle tracce non si salvano nel progetto e non entrano in Annulla.
 
+## Nome e colore delle regioni
+
+Una regione nuova, o una take registrata, nasce senza un colore proprio e segue quello della traccia;
+il nome di partenza viene dalla traccia o dal file importato.
+
+- Clic destro sulla regione, **Rename…**: sopra la regione compare un campo di testo con il nome
+  selezionato. Invio o un clic fuori confermano, Esc annulla. Un nome vuoto o uguale a prima non cambia
+  niente. Mentre scrivi, le scorciatoie da tastiera sono spente. Se la regione esce dalla vista (rotella,
+  zoom, playhead che scorre), il campo si chiude senza cambiare il nome.
+- Clic destro sulla regione, **Color**: dodici colori; il bordo bianco segna quello attuale. **Track
+  color** toglie il colore proprio della regione: torna al colore della traccia e lo segue anche se lo
+  cambi dopo. Una regione in mute resta grigia.
+- Inspector, sezione **Region**: il nome (si conferma uscendo dal campo o con Invio, Esc annulla), gli
+  stessi colori con **Track color** e il selettore **Custom** per un colore qualsiasi. La sezione resta
+  aperta quando rinomini la regione.
+- Ogni rinomina o cambio di colore si annulla con un solo Ctrl+Z; anche un trascinamento nel selettore
+  **Custom** è un passo solo.
+- Il doppio clic sulla regione apre l'editor, come prima.
+- L'assistente e i tool MCP usano `set_region_properties`: `color` vuoto o `"none"` toglie il colore
+  della regione, e `get_region` riporta `color` solo se la regione ne ha uno.
+
 ## Righello e ciclo
 
 Il righello in cima all'arrangiamento ha due parti: la striscia alta, più scura, è quella del ciclo;
