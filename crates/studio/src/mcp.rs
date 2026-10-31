@@ -101,7 +101,7 @@ fn handle_one(session: &SharedSession, msg: &Value) -> Option<Value> {
                         "title": title_case(&t.name),
                         "description": t.description,
                         "inputSchema": t.input_schema,
-                        "annotations": {"readOnlyHint": t.read_only, "destructiveHint": matches!(t.name.as_str(), "remove_track" | "delete_region" | "new_project" | "delete_section" | "remove_notes" | "replace_notes" | "open_project"), "idempotentHint": t.read_only, "openWorldHint": false}
+                        "annotations": {"readOnlyHint": t.read_only, "destructiveHint": matches!(t.name.as_str(), "remove_track" | "delete_region" | "new_project" | "delete_section" | "remove_notes" | "replace_notes" | "replace_cc" | "open_project"), "idempotentHint": t.read_only, "openWorldHint": false}
                     })
                 })
                 .collect();
