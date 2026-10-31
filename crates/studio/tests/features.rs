@@ -594,6 +594,73 @@ fn marker_update_moves_renames_and_resizes_one_undo_step_each() {
     assert_eq!(s.project.markers[pos(&s)].length, Some(16.0));
 }
 
+#[test]
+fn add_chord_stores_roman_numerals_as_symbols_and_the_bassist_follows() {
+    use ondina_core::model::RegionContent;
+    let mut s = Session::new(false);
+    ok(&mut s, "set_key", json!({"key": "C major"}));
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();
+
+    let v = ok(&mut s, "add_chord", json!({"beat": 0, "length": 4, "symbol": "IV"}));
+    assert_eq!(v["symbol"], "F");
+    assert!(v["chord_id"].as_u64().is_some());
+    assert_eq!(s.project.chords[0].symbol, "F");
+
+    let rid = ok(&mut s, "generate_bass", json!({"track_id": t, "start": 0, "bars": 1, "style": "root", "seed": 1}))["region_id"].as_u64().unwrap();
+    let (_, region) = s.project.find_region(rid).unwrap();
+    let RegionContent::Midi(m) = &region.content else { panic!("bass region is not MIDI") };
+    assert!(!m.notes.is_empty());
+    assert!(m.notes.iter().all(|n| n.pitch % 12 == 5), "the bassist plays F, not the tonic");
+
+    let v = ok(&mut s, "add_chord", json!({"beat": 4, "length": 4, "symbol": " Am7 "}));
+    assert_eq!(v["symbol"], "Am7");
+
+    let e = call(&mut s, "add_chord", json!({"beat": 8, "length": 4, "symbol": "H9x"})).unwrap_err();
+    assert!(e.contains("cannot parse chord"), "{e}");
+    assert_eq!(s.project.chords.len(), 2);
+}
+
+#[test]
+fn update_chord_edits_symbol_position_and_length_in_one_undo_step() {
+    let mut s = Session::new(false);
+    ok(&mut s, "set_key", json!({"key": "C major"}));
+    let id = ok(&mut s, "add_chord", json!({"beat": 0, "length": 4, "symbol": "C"}))["chord_id"].as_u64().unwrap();
+    ok(&mut s, "add_chord", json!({"beat": 8, "length": 4, "symbol": "G"}));
+    let pos = |s: &Session| s.project.chords.iter().position(|c| c.id == id).unwrap();
+    let g = |s: &Session| s.project.chords.iter().position(|c| c.symbol == "G").unwrap();
+
+    let v = ok(&mut s, "update_chord", json!({"chord_id": id, "symbol": "vi", "beat": 12, "length": 2}));
+    assert_eq!(v["symbol"], "Am");
+    assert_eq!(v["beat"], 12.0);
+    assert_eq!(v["length"], 2.0);
+    assert!(pos(&s) > g(&s), "the chord track stays sorted by beat");
+
+    ok(&mut s, "undo", json!({}));
+    let c = &s.project.chords[pos(&s)];
+    assert_eq!((c.symbol.as_str(), c.beat, c.length), ("C", 0.0, 4.0));
+    assert_eq!(pos(&s), 0);
+
+    ok(&mut s, "update_chord", json!({"chord_id": id, "beat": -2}));
+    assert_eq!(s.project.chords[pos(&s)].beat, 0.0);
+
+    let track = |s: &Session| s.project.chords.iter().map(|c| (c.symbol.clone(), c.beat, c.length)).collect::<Vec<_>>();
+    let before = track(&s);
+    let undo_before = s.can_undo().map(String::from);
+    for args in [
+        json!({"chord_id": id, "symbol": "H9x"}),
+        json!({"chord_id": id, "length": 0}),
+        json!({"chord_id": id, "length": -1}),
+        json!({"chord_id": 999999, "beat": 4}),
+    ] {
+        assert!(call(&mut s, "update_chord", args.clone()).is_err(), "{args} should fail");
+    }
+    assert_eq!(track(&s), before);
+    assert_eq!(s.can_undo().map(String::from), undo_before);
+
+    ok(&mut s, "update_chord", json!({"chord_id": id}));
+    assert_eq!(track(&s), before);
+}
+
 fn midi_session() -> Session {
     let mut s = Session::new(false);
     let t = ok(&mut s, "add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();

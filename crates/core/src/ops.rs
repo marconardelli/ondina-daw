@@ -299,7 +299,8 @@ fn parse_step_string(s: &str, steps: usize) -> Vec<u8> {
     v
 }
 
-/// Resolve chord symbols (or roman numerals) for generators. If `chords` is None, read the chord track.
+/// Resolve chords for generators: chord symbols or roman numerals, from `chords` or the chord track (when `chords`
+/// is None). Roman numerals on the chord track are read in the current project key.
 pub fn resolve_chords(project: &Project, start: f64, bars: u32, chords: &Option<Vec<String>>, beats_per_chord: Option<f64>) -> Result<Vec<TimedChord>, String> {
     let bpb = project.time_signature.beats_per_bar();
     let total = bars as f64 * bpb;
@@ -328,7 +329,7 @@ pub fn resolve_chords(project: &Project, start: f64, bars: u32, chords: &Option<
         .filter_map(|c| {
             let s = c.beat.max(start);
             let e = (c.beat + c.length).min(end);
-            Chord::parse(&c.symbol).map(|ch| TimedChord { start: s - start, length: e - s, chord: ch })
+            parse_chord_or_roman(&c.symbol, project.key).ok().map(|ch| TimedChord { start: s - start, length: e - s, chord: ch })
         })
         .collect();
     if out.is_empty() {
@@ -352,6 +353,21 @@ pub fn parse_chord_or_roman(sym: &str, key: Key) -> Result<Chord, String> {
         }
     }
     err(format!("cannot parse chord '{sym}'"))
+}
+
+/// The symbol the chord track stores for `sym`: a chord symbol as typed (trimmed), or a roman numeral turned
+/// into the chord of that degree in `key`. Stored as a symbol, a chord keeps its sound when the key changes.
+pub fn resolve_chord_symbol(sym: &str, key: Key) -> Result<String, String> {
+    let s = sym.trim();
+    if Chord::parse(s).is_some() {
+        return Ok(s.to_string());
+    }
+    if let Some(r) = theory::roman_to_symbol(s, key) {
+        if Chord::parse(&r).is_some() {
+            return Ok(r);
+        }
+    }
+    err(format!("cannot parse chord '{s}'"))
 }
 
 fn put_generated_region(project: &mut Project, track_id: Id, start: f64, bars: u32, name: &str, notes: Vec<Note>) -> Result<Id, String> {
@@ -1383,9 +1399,7 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             }
             let mut ids = vec![];
             for (i, s) in chords.iter().enumerate() {
-                let ch = parse_chord_or_roman(s, project.key)?;
-                let symbol = if Chord::parse(s).is_some() { s.clone() } else { theory::roman_to_symbol(s, project.key).unwrap_or(s.clone()) };
-                let _ = ch;
+                let symbol = resolve_chord_symbol(s, project.key)?;
                 let id = project.alloc_id();
                 project.chords.push(ChordEvent { id, beat: start + i as f64 * per, length: per, symbol });
                 ids.push(id);
@@ -1394,11 +1408,32 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             ok(json!({"chord_ids": ids, "chords": project.chords}))
         }
         AddChord { beat, length, symbol } => {
-            parse_chord_or_roman(symbol, project.key)?;
+            let symbol = resolve_chord_symbol(symbol, project.key)?;
             let id = project.alloc_id();
             project.chords.push(ChordEvent { id, beat: *beat, length: *length, symbol: symbol.clone() });
             project.chords.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
-            ok(json!({"chord_id": id}))
+            ok(json!({"chord_id": id, "symbol": symbol}))
+        }
+        UpdateChord { chord_id, symbol, beat, length } => {
+            let symbol = symbol.as_deref().map(|s| resolve_chord_symbol(s, project.key)).transpose()?;
+            if let Some(l) = length {
+                if !l.is_finite() || *l <= 0.0 {
+                    return err("length must be greater than 0");
+                }
+            }
+            let c = project.chords.iter_mut().find(|c| c.id == *chord_id).ok_or("chord not found")?;
+            if let Some(s) = symbol {
+                c.symbol = s;
+            }
+            if let Some(b) = beat {
+                c.beat = b.max(0.0);
+            }
+            if let Some(l) = length {
+                c.length = *l;
+            }
+            let out = json!({"chord_id": c.id, "beat": c.beat, "length": c.length, "symbol": c.symbol});
+            project.chords.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
+            ok(out)
         }
         RemoveChord { chord_id } => {
             project.chords.retain(|c| c.id != *chord_id);
@@ -1682,6 +1717,26 @@ mod tests {
             Ok(Outcome::NotHandled) => panic!("not handled"),
             Err(e) => panic!("{e}"),
         }
+    }
+
+    #[test]
+    fn resolve_chords_reads_roman_numerals_saved_on_the_chord_track() {
+        let mut p = Project::new("t");
+        // An older version stored roman numerals on the chord track as typed.
+        let mut c: ChordEvent = serde_json::from_value(json!({"id": 0, "beat": 0.0, "length": 4.0, "symbol": "vi"})).unwrap();
+        c.id = p.alloc_id();
+        p.chords.push(c);
+        let tc = resolve_chords(&p, 0.0, 1, &None, None).unwrap();
+        assert_eq!(tc.len(), 1);
+        assert_eq!(tc[0].chord.root, 9);
+        assert_eq!(tc[0].chord.intervals, vec![0, 3, 7]);
+
+        let mut bad: ChordEvent = serde_json::from_value(json!({"id": 0, "beat": 4.0, "length": 4.0, "symbol": "zz"})).unwrap();
+        bad.id = p.alloc_id();
+        p.chords.push(bad);
+        let tc = resolve_chords(&p, 0.0, 2, &None, None).unwrap();
+        assert_eq!(tc.len(), 1, "an unreadable symbol is skipped");
+        assert_eq!(tc[0].chord.root, 9);
     }
 
     #[test]

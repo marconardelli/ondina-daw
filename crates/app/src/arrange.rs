@@ -2,7 +2,8 @@
 
 use ondina_core::command::Command;
 use ondina_core::model::*;
-use ondina_core::ops::pattern_to_notes;
+use ondina_core::ops::{pattern_to_notes, resolve_chord_symbol};
+use ondina_core::theory::Key;
 use eframe::egui::{
     self, pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Rounding, Sense, Stroke,
 };
@@ -29,6 +30,23 @@ pub struct InPlaceRename {
     pub text: String,
     /// Give the text field focus and select its text on the next frame it is shown.
     pub focus: bool,
+}
+
+/// A chord being typed in the chord lane.
+pub struct ChordEdit {
+    pub target: ChordTarget,
+    pub text: String,
+    /// Give the text field focus and select its text on the next frame it is shown.
+    pub focus: bool,
+    /// The last Enter found no chord in the text: the field stays open with a red frame.
+    pub invalid: bool,
+}
+
+/// What a chord edit changes: a new chord over `beat..beat + length`, or an existing chord.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ChordTarget {
+    New { beat: f64, length: f64 },
+    Existing(Id),
 }
 
 impl OndinaApp {
@@ -372,7 +390,7 @@ impl OndinaApp {
         if let Some((mut ren, old, r)) = target {
             // computed first: the call below borrows ui mutably
             let edit_id = ui.id().with(("mrename", ren.id));
-            match rename_field(ui, edit_id, r, FontId::proportional(11.0), &mut ren) {
+            match rename_field(ui, edit_id, r, FontId::proportional(11.0), &mut ren.text, &mut ren.focus) {
                 RenameEdit::Editing => self.marker_rename = Some(ren),
                 RenameEdit::Commit => {
                     if let Some(name) = rename_commit(&old, &ren.text) {
@@ -401,9 +419,31 @@ impl OndinaApp {
             FontId::proportional(11.0),
             theme::TEXT_DIM,
         );
+        // Background first: chords registered after it sit on top and get clicks, drags and menus.
+        let cresp = ui.interact(clane, ui.id().with("clane"), Sense::click());
+        if cresp.double_clicked() {
+            if let Some(pp) = cresp.interact_pointer_pos() {
+                let pb = self.x_to_beat(pp.x, timeline_x);
+                if let Some((beat, length)) = new_chord_span(pb, self.snap, bpb, &p.chords) {
+                    self.chord_edit = Some(ChordEdit {
+                        target: ChordTarget::New { beat, length },
+                        text: String::new(),
+                        focus: true,
+                        invalid: false,
+                    });
+                }
+            }
+        }
+        let mut chord_edit_rect: Option<Rect> = None;
         for c in &p.chords {
-            let x = self.beat_to_x(c.beat, timeline_x);
-            let w = c.length as f32 * self.px_per_beat;
+            // a chord being dragged is drawn where it will land
+            let (beat, len, ghost) = match &self.drag {
+                Some(Drag::MoveChord { id, cur_beat, .. }) if *id == c.id => (*cur_beat, c.length, true),
+                Some(Drag::ResizeChord { id, cur_len, .. }) if *id == c.id => (c.beat, *cur_len, true),
+                _ => (c.beat, c.length, false),
+            };
+            let x = self.beat_to_x(beat, timeline_x);
+            let w = len as f32 * self.px_per_beat;
             if x + w < timeline_x || x > full.right() {
                 continue;
             }
@@ -412,21 +452,159 @@ impl OndinaApp {
                 vec2((w - 1.0 - (timeline_x - x).max(0.0)).max(1.0), LANE_H - 2.0),
             );
             painter.rect_filled(r, Rounding::same(2.0_f32), Color32::from_rgb(60, 70, 60));
-            painter.text(
-                pos2(r.left() + 4.0, r.center().y),
-                Align2::LEFT_CENTER,
-                &c.symbol,
-                FontId::proportional(11.0),
-                Color32::from_rgb(200, 230, 190),
-            );
-            let cid = c.id;
-            ui.interact(r, ui.id().with(("chord", c.id)), Sense::click())
-                .context_menu(|ui| {
-                    if ui.button("Remove chord").clicked() {
-                        self.cmd(Command::RemoveChord { chord_id: cid });
-                        ui.close_menu();
-                    }
+            if ghost {
+                painter.rect_stroke(r, Rounding::same(2.0_f32), Stroke::new(1.5_f32, theme::SELECT));
+            }
+            if self.chord_edit.as_ref().is_some_and(|e| e.target == ChordTarget::Existing(c.id)) {
+                chord_edit_rect = Some(r);
+            } else {
+                painter.text(
+                    pos2(r.left() + 4.0, r.center().y),
+                    Align2::LEFT_CENTER,
+                    &c.symbol,
+                    FontId::proportional(11.0),
+                    Color32::from_rgb(200, 230, 190),
+                );
+            }
+            if ghost {
+                // like markers: no interaction while it is being dragged
+                continue;
+            }
+            let resp = ui.interact(r, ui.id().with(("chord", c.id)), Sense::click_and_drag());
+            let er = Rect::from_min_max(pos2(r.right() - region_edge_width(r.width()), r.top()), r.max);
+            let edge = ui.interact(er, ui.id().with(("cedge", c.id)), Sense::drag());
+            if self.drag.is_none() && edge.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
+            // Decide from where the press began, as for markers.
+            let press_origin = ui.input(|i| i.pointer.press_origin());
+            let press_zone = press_origin.map_or(RegionZone::Body, |o| region_hit_zone(o.x, r.left(), r.right()));
+            let start_resize = edge.drag_started() || (resp.drag_started() && press_zone == RegionZone::Edge);
+            let start_move = resp.drag_started() && !start_resize;
+            if start_resize {
+                let next_start = p
+                    .chords
+                    .iter()
+                    .filter(|o| o.id != c.id && o.beat > c.beat + 1e-9)
+                    .map(|o| o.beat)
+                    .reduce(f64::min);
+                self.drag = Some(Drag::ResizeChord {
+                    id: c.id,
+                    start: c.beat,
+                    orig_len: c.length,
+                    cur_len: c.length,
+                    next_start,
                 });
+            } else if start_move {
+                if let Some(pp) = press_origin.or_else(|| resp.interact_pointer_pos()) {
+                    self.drag = Some(Drag::MoveChord {
+                        id: c.id,
+                        grab_beat: self.x_to_beat(pp.x, timeline_x),
+                        orig_beat: c.beat,
+                        cur_beat: c.beat,
+                    });
+                }
+            }
+            if resp.clicked() {
+                self.exec(Command::SetPlayhead {
+                    beat: Some(c.beat),
+                    bar: None,
+                });
+            }
+            // not when a drag started on this same frame
+            if resp.double_clicked() && !start_move && !start_resize {
+                self.chord_edit = Some(ChordEdit {
+                    target: ChordTarget::Existing(c.id),
+                    text: c.symbol.clone(),
+                    focus: true,
+                    invalid: false,
+                });
+                // open the field on this frame: chord_edit_rect was decided before the double-click
+                chord_edit_rect = Some(r);
+            }
+            let cid = c.id;
+            let symbol = &c.symbol;
+            resp.context_menu(|ui| {
+                if ui.button("Edit chord").clicked() {
+                    self.chord_edit = Some(ChordEdit {
+                        target: ChordTarget::Existing(cid),
+                        text: symbol.clone(),
+                        focus: true,
+                        invalid: false,
+                    });
+                    ui.close_menu();
+                }
+                if ui.button("Remove chord").clicked() {
+                    self.cmd(Command::RemoveChord { chord_id: cid });
+                    ui.close_menu();
+                }
+            });
+        }
+        // Chord field, registered last so it sits on top of the lane. A chord that scrolled out of view, was
+        // deleted or undone away drops the edit, and so does a new chord whose place is out of view.
+        let target = self.chord_edit.take().and_then(|edit| {
+            let (r, old) = match edit.target {
+                ChordTarget::Existing(id) => {
+                    let old = p.chords.iter().find(|c| c.id == id)?.symbol.clone();
+                    (chord_edit_rect?, Some(old))
+                }
+                ChordTarget::New { beat, length } => {
+                    let x = self.beat_to_x(beat, timeline_x);
+                    let w = length as f32 * self.px_per_beat;
+                    if x + w < timeline_x || x > full.right() {
+                        return None;
+                    }
+                    let r = Rect::from_min_size(
+                        pos2(x.max(timeline_x), clane.top() + 1.0),
+                        vec2((w - 1.0 - (timeline_x - x).max(0.0)).max(1.0), LANE_H - 2.0),
+                    );
+                    (r, None)
+                }
+            };
+            Some((edit, old, r))
+        });
+        if let Some((mut edit, old, r)) = target {
+            let edit_id = match edit.target {
+                ChordTarget::Existing(id) => ui.id().with(("cedit", id)),
+                ChordTarget::New { .. } => {
+                    // the outline shows how long the new chord will be
+                    painter.rect_stroke(r, Rounding::same(2.0_f32), Stroke::new(1.0_f32, theme::TEXT_DIM));
+                    ui.id().with(("cedit", "new"))
+                }
+            };
+            match rename_field(ui, edit_id, r, FontId::proportional(11.0), &mut edit.text, &mut edit.focus) {
+                RenameEdit::Editing => self.chord_edit = Some(edit),
+                RenameEdit::Commit => {
+                    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    match chord_commit(old.as_deref(), &edit.text, p.key) {
+                        Ok(None) => {}
+                        Ok(Some(symbol)) => match edit.target {
+                            ChordTarget::New { beat, length } => self.cmd(Command::AddChord { beat, length, symbol }),
+                            ChordTarget::Existing(id) => self.cmd(Command::UpdateChord {
+                                chord_id: id,
+                                symbol: Some(symbol),
+                                beat: None,
+                                length: None,
+                            }),
+                        },
+                        Err(e) => {
+                            self.status = format!("⚠ {e}");
+                            // Enter on a wrong symbol keeps the field open with the text selected, to retype it;
+                            // a click elsewhere drops it (the message stays in the status bar).
+                            if enter {
+                                edit.focus = true;
+                                edit.invalid = true;
+                                self.chord_edit = Some(edit);
+                            }
+                        }
+                    }
+                }
+                RenameEdit::Cancel => {}
+            }
+            if self.chord_edit.as_ref().is_some_and(|e| e.invalid) {
+                let fr = Rect::from_min_size(r.min, vec2(r.width().max(120.0), r.height()));
+                painter.rect_stroke(fr, Rounding::same(2.0_f32), Stroke::new(1.5_f32, theme::REC));
+            }
         }
 
         // ---------------- tracks
@@ -833,7 +1011,7 @@ impl OndinaApp {
         });
         if let Some((mut ren, old, r)) = target {
             let edit_id = ui.id().with(("trename", ren.id));
-            match rename_field(ui, edit_id, r, FontId::proportional(12.5), &mut ren) {
+            match rename_field(ui, edit_id, r, FontId::proportional(12.5), &mut ren.text, &mut ren.focus) {
                 RenameEdit::Editing => self.track_rename = Some(ren),
                 RenameEdit::Commit => {
                     if let Some(name) = rename_commit(&old, &ren.text) {
@@ -908,6 +1086,17 @@ impl OndinaApp {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                 if let Some(b) = pointer_beat {
                     *cur_len = resized_marker_length(*start, b, snap);
+                }
+            }
+            Some(Drag::MoveChord { grab_beat, orig_beat, cur_beat, .. }) => {
+                if let Some(b) = pointer_beat {
+                    *cur_beat = dragged_marker_beat(*orig_beat, *grab_beat, b, snap);
+                }
+            }
+            Some(Drag::ResizeChord { start, cur_len, next_start, .. }) => {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                if let Some(b) = pointer_beat {
+                    *cur_len = resized_chord_length(*start, b, snap, *next_start);
                 }
             }
             Some(Drag::MoveTrack { gap, .. }) => {
@@ -1009,6 +1198,26 @@ impl OndinaApp {
                         self.cmd(Command::UpdateMarker {
                             marker_id: id,
                             name: None,
+                            beat: None,
+                            length: Some(cur_len),
+                        });
+                    }
+                }
+                Some(Drag::MoveChord { id, orig_beat, cur_beat, .. }) => {
+                    if (cur_beat - orig_beat).abs() > 1e-9 {
+                        self.cmd(Command::UpdateChord {
+                            chord_id: id,
+                            symbol: None,
+                            beat: Some(cur_beat),
+                            length: None,
+                        });
+                    }
+                }
+                Some(Drag::ResizeChord { id, orig_len, cur_len, .. }) => {
+                    if (cur_len - orig_len).abs() > 1e-9 {
+                        self.cmd(Command::UpdateChord {
+                            chord_id: id,
+                            symbol: None,
                             beat: None,
                             length: Some(cur_len),
                         });
@@ -1357,7 +1566,7 @@ fn snap_to(b: f64, snap: f64) -> f64 {
     }
 }
 
-/// Where a dragged marker lands: it was grabbed at `grab_beat` and the pointer is now at `pointer_beat`.
+/// Where a dragged marker or chord lands: it was grabbed at `grab_beat` and the pointer is now at `pointer_beat`.
 fn dragged_marker_beat(orig_beat: f64, grab_beat: f64, pointer_beat: f64, snap: f64) -> f64 {
     snap_to(orig_beat + (pointer_beat - grab_beat), snap).max(0.0)
 }
@@ -1366,6 +1575,41 @@ fn dragged_marker_beat(orig_beat: f64, grab_beat: f64, pointer_beat: f64, snap: 
 /// The end snaps to the grid (not the length), so an off-grid section still ends on a grid line.
 fn resized_marker_length(start: f64, pointer_beat: f64, snap: f64) -> f64 {
     (snap_to(pointer_beat, snap) - start).max(MIN_MARKER_LEN)
+}
+
+/// Shortest chord the right edge can be dragged to, in beats.
+const MIN_CHORD_LEN: f64 = 0.25;
+
+/// Where a chord typed on the empty chord lane at `pointer_beat` goes: on the grid line at or before the pointer
+/// (`snap` beats, 0 = no grid), `bar` beats long, but never over the chords around it. None when there is no room.
+fn new_chord_span(pointer_beat: f64, snap: f64, bar: f64, chords: &[ChordEvent]) -> Option<(f64, f64)> {
+    let floor = if snap > 0.0 { (pointer_beat / snap).floor() * snap } else { pointer_beat };
+    let prev_end = chords.iter().filter(|c| c.beat <= pointer_beat).map(|c| c.beat + c.length).fold(0.0, f64::max);
+    let next = chords.iter().filter(|c| c.beat > pointer_beat).map(|c| c.beat).fold(f64::INFINITY, f64::min);
+    let beat = floor.max(prev_end).max(0.0);
+    let len = bar.min(next - beat);
+    (len > 1e-6).then_some((beat, len))
+}
+
+/// Length of a chord starting at `start` whose right edge is dragged to `pointer_beat`. The end snaps to the grid
+/// and stops at `next_start` (the next chord), so lengthening a chord never covers the one after it.
+fn resized_chord_length(start: f64, pointer_beat: f64, snap: f64, next_start: Option<f64>) -> f64 {
+    let mut end = snap_to(pointer_beat, snap);
+    if let Some(n) = next_start.filter(|n| *n > start) {
+        end = end.min(n);
+    }
+    (end - start).max(MIN_CHORD_LEN)
+}
+
+/// The symbol to send after typing `typed` in the chord field, where `old` is the chord's current symbol (None for
+/// a new chord). Ok(None): nothing to do (empty, or the same chord). Err: not a chord symbol or roman numeral.
+fn chord_commit(old: Option<&str>, typed: &str, key: Key) -> Result<Option<String>, String> {
+    let t = typed.trim();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    let sym = resolve_chord_symbol(t, key)?;
+    Ok((old != Some(sym.as_str())).then_some(sym))
 }
 
 /// Height of the band at the top and bottom of the track area where a dragged header scrolls the view.
@@ -1427,29 +1671,30 @@ fn rename_field(
     edit_id: egui::Id,
     r: Rect,
     font: FontId,
-    ren: &mut InPlaceRename,
+    text: &mut String,
+    focus: &mut bool,
 ) -> RenameEdit {
     let er = Rect::from_min_size(r.min, vec2(r.width().max(120.0), r.height()));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(er));
     let resp = child.add(
-        egui::TextEdit::singleline(&mut ren.text)
+        egui::TextEdit::singleline(text)
             .id(edit_id)
             .font(font)
             .margin(vec2(3.0, 1.0))
             .desired_width(er.width() - 6.0),
     );
-    if ren.focus {
+    if *focus {
         resp.request_focus();
         // select the whole name so typing replaces it
         if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), edit_id) {
-            let n = ren.text.chars().count();
+            let n = text.chars().count();
             st.cursor.set_char_range(Some(egui::text::CCursorRange::two(
                 egui::text::CCursor::new(0),
                 egui::text::CCursor::new(n),
             )));
             st.store(ui.ctx(), edit_id);
         }
-        ren.focus = false;
+        *focus = false;
     }
     if !resp.lost_focus() {
         return RenameEdit::Editing;
@@ -1489,12 +1734,15 @@ pub fn draw_meter(painter: &egui::Painter, r: Rect, m: [f32; 2]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        button_row_top, dragged_marker_beat, edge_scroll_speed, region_edge_width, region_hit_zone, rename_commit,
-        resized_marker_length, track_drop_index, track_move_target, RegionZone, HEADER_BUTTON_H, HEADER_FULL_H,
-        MIN_MARKER_LEN, REGION_EDGE_PX, TRACK_DRAG_SCROLL_PX_S,
+        button_row_top, chord_commit, dragged_marker_beat, edge_scroll_speed, new_chord_span, region_edge_width,
+        region_hit_zone, rename_commit, resized_chord_length, resized_marker_length, track_drop_index,
+        track_move_target, RegionZone, HEADER_BUTTON_H, HEADER_FULL_H, MIN_CHORD_LEN, MIN_MARKER_LEN, REGION_EDGE_PX,
+        TRACK_DRAG_SCROLL_PX_S,
     };
     use crate::arrange_view::{TRACK_H_MAX, TRACK_H_MIN};
     use ondina_core::command::Command;
+    use ondina_core::model::ChordEvent;
+    use ondina_core::theory::{Key, ScaleKind};
     use ondina_studio::{Session, Source};
     use serde_json::{json, Value};
 
@@ -1552,6 +1800,53 @@ mod tests {
         assert_eq!(resized_marker_length(16.0, 16.2, 1.0), MIN_MARKER_LEN);
         assert_eq!(resized_marker_length(16.0, 10.0, 1.0), MIN_MARKER_LEN);
         assert!((resized_marker_length(16.0, 19.3, 0.0) - 3.3).abs() < 1e-9);
+    }
+
+    fn chord(id: u64, beat: f64, length: f64) -> ChordEvent {
+        ChordEvent { id, beat, length, symbol: "C".into() }
+    }
+
+    fn close(a: Option<(f64, f64)>, b: (f64, f64)) -> bool {
+        a.is_some_and(|(x, y)| (x - b.0).abs() < 1e-9 && (y - b.1).abs() < 1e-9)
+    }
+
+    #[test]
+    fn new_chord_snaps_to_the_grid_and_stops_at_the_next_chord() {
+        assert_eq!(new_chord_span(5.7, 1.0, 4.0, &[]), Some((5.0, 4.0)));
+        assert!(close(new_chord_span(5.7, 0.0, 4.0, &[]), (5.7, 4.0)));
+        assert_eq!(new_chord_span(5.7, 4.0, 4.0, &[]), Some((4.0, 4.0)));
+        assert_eq!(new_chord_span(-0.5, 1.0, 4.0, &[]), Some((0.0, 4.0)));
+        // shortened so it ends where the next chord begins
+        assert_eq!(new_chord_span(6.2, 1.0, 4.0, &[chord(1, 8.0, 4.0)]), Some((6.0, 2.0)));
+        // starts where the chord before it ends, even off the grid
+        assert_eq!(new_chord_span(2.7, 1.0, 4.0, &[chord(1, 0.0, 2.5)]), Some((2.5, 4.0)));
+        // no room between overlapping chords
+        assert_eq!(new_chord_span(3.9, 1.0, 4.0, &[chord(1, 0.0, 6.0), chord(2, 4.0, 4.0)]), None);
+    }
+
+    #[test]
+    fn chord_resize_snaps_the_end_and_stops_at_the_next_chord() {
+        assert_eq!(resized_chord_length(0.0, 5.6, 1.0, None), 6.0);
+        assert_eq!(resized_chord_length(0.0, 5.6, 1.0, Some(4.0)), 4.0);
+        assert_eq!(resized_chord_length(1.5, 7.9, 4.0, None), 6.5);
+        assert_eq!(resized_chord_length(8.0, 8.1, 1.0, None), MIN_CHORD_LEN);
+        assert_eq!(resized_chord_length(8.0, 3.0, 1.0, None), MIN_CHORD_LEN);
+        assert!((resized_chord_length(0.0, 3.3, 0.0, None) - 3.3).abs() < 1e-9);
+        // a next chord before the start is not in the way
+        assert_eq!(resized_chord_length(8.0, 11.6, 1.0, Some(2.0)), 4.0);
+    }
+
+    #[test]
+    fn chord_commit_resolves_roman_numerals_and_rejects_unknown_symbols() {
+        let key = Key { root: 0, scale: ScaleKind::Major };
+        assert_eq!(chord_commit(None, "IV", key), Ok(Some("F".into())));
+        assert_eq!(chord_commit(None, " Am7 ", key), Ok(Some("Am7".into())));
+        assert_eq!(chord_commit(None, "   ", key), Ok(None));
+        assert_eq!(chord_commit(Some("G"), "V", key), Ok(None));
+        assert_eq!(chord_commit(Some("G"), "G", key), Ok(None));
+        assert_eq!(chord_commit(Some("G"), "G7", key), Ok(Some("G7".into())));
+        let e = chord_commit(None, "H9x", key).unwrap_err();
+        assert!(e.contains("cannot parse chord"), "{e}");
     }
 
     #[test]
@@ -1652,6 +1947,38 @@ mod tests {
         assert_eq!(track_names(&s), ["Bass"]);
         assert_eq!(rename_commit("Bass", " Bass "), None);
         assert_eq!(rename_commit("Bass", ""), None);
+    }
+
+    #[test]
+    fn chord_lane_edits_are_one_undo_step_each() {
+        let mut s = Session::new(false);
+        let (beat, length) = new_chord_span(5.7, 1.0, 4.0, &s.project.chords).unwrap();
+        let sym = chord_commit(None, "vi", s.project.key).unwrap().unwrap();
+        let id = run(&mut s, "add_chord", json!({"beat": beat, "length": length, "symbol": sym}))["chord_id"].as_u64().unwrap();
+        let state = |s: &Session| {
+            let c = &s.project.chords[0];
+            (c.symbol.clone(), c.beat, c.length)
+        };
+        assert_eq!(state(&s), ("Am".into(), 5.0, 4.0));
+
+        let b = dragged_marker_beat(5.0, 6.0, 9.4, 1.0);
+        assert_eq!(b, 8.0);
+        run(&mut s, "update_chord", json!({"chord_id": id, "beat": b}));
+        let l = resized_chord_length(8.0, 13.7, 1.0, None);
+        assert_eq!(l, 6.0);
+        run(&mut s, "update_chord", json!({"chord_id": id, "length": l}));
+        let sym = chord_commit(Some("Am"), "IV", s.project.key).unwrap().unwrap();
+        run(&mut s, "update_chord", json!({"chord_id": id, "symbol": sym}));
+        assert_eq!(state(&s), ("F".into(), 8.0, 6.0));
+
+        run(&mut s, "undo", json!({}));
+        assert_eq!(state(&s), ("Am".into(), 8.0, 6.0));
+        run(&mut s, "undo", json!({}));
+        assert_eq!(state(&s), ("Am".into(), 8.0, 4.0));
+        run(&mut s, "undo", json!({}));
+        assert_eq!(state(&s), ("Am".into(), 5.0, 4.0));
+        run(&mut s, "undo", json!({}));
+        assert!(s.project.chords.is_empty());
     }
 
     #[test]
