@@ -120,6 +120,9 @@ and rendered audio.
   deletes a single note; drag in the velocity lane to set velocities.
 - **Score**: switch the editor to 𝄞 Score to see the selected region as notation, export MusicXML, assign lyrics.
 - **Mixer and inspector**: volume, pan, sends, inserts, plug-in parameters and native VST3 windows.
+- **Unsaved changes**: when the project has unsaved changes (the • in the title bar), closing the window, New,
+  Open or a recent project first asks *Save*, *Don't Save* or *Cancel*. Esc cancels, Enter saves. A recording in
+  progress is stopped and kept before the question.
 
 ### Keyboard shortcuts
 

@@ -45,7 +45,21 @@ queste note" e lui agirà solo sulla selezione.
 - Dopo **Nuovo** (Ctrl+N) o **Apri** (Ctrl+O) la cronologia riparte da zero: Ctrl+Z non riporta
   indietro il progetto precedente.
 - Un progetto appena aperto non risulta modificato: Aurora non chiede di salvare finché non
-  cambi qualcosa.
+  cambi qualcosa (vedi *Modifiche non salvate*).
+
+## Modifiche non salvate
+
+Quando il progetto ha modifiche non salvate, nel titolo della finestra compare un pallino "•".
+Se in quel momento chiudi la finestra, crei un progetto nuovo (Ctrl+N), ne apri un altro (Ctrl+O)
+o scegli un file recente, Aurora ti chiede prima se vuoi salvare.
+
+- **Save** salva il progetto e poi continua. Se il progetto non è mai stato salvato, si apre la
+  finestra per scegliere il file; se la chiudi senza scegliere, non succede nulla.
+- **Don't Save** continua senza salvare: le modifiche si perdono.
+- **Cancel** (o Esc) chiude la domanda e lascia tutto com'era.
+
+Invio equivale a Save. Se stai registrando, la registrazione si ferma prima della domanda e la
+take resta nel progetto.
 
 ## Scorciatoie principali
 
