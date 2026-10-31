@@ -50,7 +50,7 @@ fn host_thread() -> &'static std::sync::Mutex<std::sync::mpsc::Sender<Job>> {
     TX.get_or_init(|| {
         let (tx, rx) = std::sync::mpsc::channel::<Job>();
         std::thread::Builder::new()
-            .name("aurora-vst3-host".into())
+            .name("ondina-vst3-host".into())
             .spawn(move || loop {
                 match rx.recv_timeout(std::time::Duration::from_millis(15)) {
                     Ok(job) => job(),

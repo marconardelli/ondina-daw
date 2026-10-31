@@ -9,24 +9,24 @@
 use std::io::{BufRead, Write};
 use std::sync::OnceLock;
 
-use aurora_core::command::{tool_specs, Command, ToolSpec};
-use aurora_core::ops;
-use aurora_core::plugins;
+use ondina_core::command::{tool_specs, Command, ToolSpec};
+use ondina_core::ops;
+use ondina_core::plugins;
 use serde_json::{json, Value};
 
 use crate::session::{SharedSession, Source};
 
 pub const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-pub const SERVER_NAME: &str = "aurora-daw";
+pub const SERVER_NAME: &str = "ondina-daw";
 
 pub fn tools() -> &'static [ToolSpec] {
     static T: OnceLock<Vec<ToolSpec>> = OnceLock::new();
     T.get_or_init(tool_specs)
 }
 
-pub const GUIDE: &str = r#"# Aurora DAW — guide for AI agents
+pub const GUIDE: &str = r#"# Ondina DAW — guide for AI agents
 
-Aurora is a digital audio workstation. Everything is controlled through tools that mirror the app's command API.
+Ondina is a digital audio workstation. Everything is controlled through tools that mirror the app's command API.
 
 ## Conventions
 - Time is in **beats** (quarter notes). Beat 0 = start of bar 1. In 4/4 a bar is 4 beats: bar N starts at beat (N-1)*4.
@@ -85,8 +85,8 @@ fn handle_one(session: &SharedSession, msg: &Value) -> Option<Value> {
                 json!({
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}, "resources": {"listChanged": false, "subscribe": false}, "prompts": {"listChanged": false}},
-                    "serverInfo": {"name": SERVER_NAME, "title": "Aurora DAW", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": "Aurora DAW: a full digital audio workstation. Call get_project first to learn track/region/plugin ids. Positions are in beats (quarter notes); track_id 0 is the master. Read resource aurora://guide for the full workflow."
+                    "serverInfo": {"name": SERVER_NAME, "title": "Ondina DAW", "version": env!("CARGO_PKG_VERSION")},
+                    "instructions": "Ondina DAW: a full digital audio workstation. Call get_project first to learn track/region/plugin ids. Positions are in beats (quarter notes); track_id 0 is the master. Read resource ondina://guide for the full workflow."
                 }),
             )
         }
@@ -128,22 +128,24 @@ fn handle_one(session: &SharedSession, msg: &Value) -> Option<Value> {
         "resources/list" => ok(
             &id,
             json!({"resources": [
-                {"uri": "aurora://guide", "name": "guide", "title": "Aurora agent guide", "mimeType": "text/markdown", "description": "Conventions and workflow for controlling Aurora"},
-                {"uri": "aurora://project", "name": "project", "title": "Project overview", "mimeType": "application/json", "description": "Compact overview of the current project"},
-                {"uri": "aurora://project/document", "name": "project-document", "title": "Project document", "mimeType": "application/json", "description": "The complete project document"},
-                {"uri": "aurora://plugins", "name": "plugins", "title": "Plug-in registry", "mimeType": "application/json", "description": "All instruments/effects with parameters"},
-                {"uri": "aurora://patches", "name": "patches", "title": "Library patches", "mimeType": "application/json", "description": "Track patches by category"}
+                {"uri": "ondina://guide", "name": "guide", "title": "Ondina agent guide", "mimeType": "text/markdown", "description": "Conventions and workflow for controlling Ondina"},
+                {"uri": "ondina://project", "name": "project", "title": "Project overview", "mimeType": "application/json", "description": "Compact overview of the current project"},
+                {"uri": "ondina://project/document", "name": "project-document", "title": "Project document", "mimeType": "application/json", "description": "The complete project document"},
+                {"uri": "ondina://plugins", "name": "plugins", "title": "Plug-in registry", "mimeType": "application/json", "description": "All instruments/effects with parameters"},
+                {"uri": "ondina://patches", "name": "patches", "title": "Library patches", "mimeType": "application/json", "description": "Track patches by category"}
             ]}),
         ),
         "resources/templates/list" => ok(&id, json!({"resourceTemplates": []})),
         "resources/read" => {
             let uri = params.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-            let (mime, text) = match uri {
-                "aurora://guide" => ("text/markdown", GUIDE.to_string()),
-                "aurora://project" => ("application/json", serde_json::to_string_pretty(&ops::project_summary(&session.lock().project)).unwrap()),
-                "aurora://project/document" => ("application/json", serde_json::to_string_pretty(&session.lock().project).unwrap()),
-                "aurora://plugins" => ("application/json", serde_json::to_string_pretty(plugins::registry()).unwrap()),
-                "aurora://patches" => ("application/json", serde_json::to_string_pretty(&plugins::PATCHES.iter().map(|p| json!({"name": p.name, "category": p.category})).collect::<Vec<_>>()).unwrap()),
+            // Clients written before the rename still ask for aurora:// URIs.
+            let uri = uri.replacen("aurora://", "ondina://", 1);
+            let (mime, text) = match uri.as_str() {
+                "ondina://guide" => ("text/markdown", GUIDE.to_string()),
+                "ondina://project" => ("application/json", serde_json::to_string_pretty(&ops::project_summary(&session.lock().project)).unwrap()),
+                "ondina://project/document" => ("application/json", serde_json::to_string_pretty(&session.lock().project).unwrap()),
+                "ondina://plugins" => ("application/json", serde_json::to_string_pretty(plugins::registry()).unwrap()),
+                "ondina://patches" => ("application/json", serde_json::to_string_pretty(&plugins::PATCHES.iter().map(|p| json!({"name": p.name, "category": p.category})).collect::<Vec<_>>()).unwrap()),
                 _ => return Some(error(&id, -32002, &format!("resource not found: {uri}"))),
             };
             ok(&id, json!({"contents": [{"uri": uri, "mimeType": mime, "text": text}]}))
@@ -166,7 +168,7 @@ fn handle_one(session: &SharedSession, msg: &Value) -> Option<Value> {
             let get = |k: &str, d: &str| a.get(k).and_then(|v| v.as_str()).unwrap_or(d).to_string();
             let text = match name {
                 "compose_song" => format!(
-                    "Compose a complete {} song in Aurora with a {} mood, about {} bars long. Choose a fitting tempo and key, write a chord progression on the chord track, add drums, bass, harmony and a lead using library patches, create arrangement markers (intro, verse, chorus, outro) with copy_section, set a balanced mix with a shared reverb bus, run analyze_mix and fix problems, then auto_master. Explain briefly what you built.",
+                    "Compose a complete {} song in Ondina with a {} mood, about {} bars long. Choose a fitting tempo and key, write a chord progression on the chord track, add drums, bass, harmony and a lead using library patches, create arrangement markers (intro, verse, chorus, outro) with copy_section, set a balanced mix with a shared reverb bus, run analyze_mix and fix problems, then auto_master. Explain briefly what you built.",
                     get("genre", "pop"), get("mood", "uplifting"), get("length_bars", "32")
                 ),
                 "mix_review" => "Run analyze_mix on the current project. Based on loudness, peaks, spectral balance, stereo correlation and per-track levels, apply concrete fixes (faders, pans, EQ, compression, sends). Re-run analyze_mix to verify and summarize the before/after numbers.".to_string(),
@@ -215,11 +217,11 @@ pub fn serve_stdio(session: SharedSession) {
     }
 }
 
-/// Forward stdio JSON-RPC to a running Aurora HTTP MCP endpoint.
+/// Forward stdio JSON-RPC to a running Ondina HTTP MCP endpoint.
 pub fn serve_bridge(url: &str) {
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
-    let token = std::env::var("AURORA_MCP_TOKEN").ok();
+    let token = ondina_core::env_var("MCP_TOKEN");
     let mut session_id: Option<String> = None;
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
@@ -250,7 +252,7 @@ pub fn serve_bridge(url: &str) {
             Err(e) => {
                 let id = serde_json::from_str::<Value>(&line).ok().and_then(|v| v.get("id").cloned());
                 if let Some(id) = id {
-                    let msg = format!("Aurora is not reachable at {url}: {e}. Start the Aurora app first.");
+                    let msg = format!("Ondina is not reachable at {url}: {e}. Start the Ondina app first.");
                     let _ = writeln!(stdout, "{}", error(&id, -32000, &msg));
                     let _ = stdout.flush();
                 }
@@ -293,7 +295,7 @@ fn origin_allowed(origin: &str, token_configured: bool) -> bool {
 
 /// Start the Streamable HTTP MCP endpoint on 127.0.0.1:`port` in background threads.
 pub fn serve_http(session: SharedSession, port: u16) -> Result<HttpServerHandle, String> {
-    let token = std::env::var("AURORA_MCP_TOKEN").ok().filter(|t| !t.is_empty());
+    let token = ondina_core::env_var("MCP_TOKEN").filter(|t| !t.is_empty());
     serve_http_with_token(session, port, token)
 }
 
@@ -305,7 +307,7 @@ fn serve_http_with_token(session: SharedSession, port: u16, token: Option<String
         let session = session.clone();
         let token = token.clone();
         std::thread::Builder::new()
-            .name("aurora-mcp-http".into())
+            .name("ondina-mcp-http".into())
             .spawn(move || {
                 for mut req in server.incoming_requests() {
                     let header = |name: &str| req.headers().iter().find(|h| h.field.as_str().as_str().eq_ignore_ascii_case(name)).map(|h| h.value.as_str().to_string());
@@ -313,7 +315,7 @@ fn serve_http_with_token(session: SharedSession, port: u16, token: Option<String
                     if let Some(o) = header("Origin") {
                         if !origin_allowed(&o, token.is_some()) {
                             let msg = if o.trim_end_matches('/') == "null" {
-                                "forbidden origin: Origin null is accepted only when AURORA_MCP_TOKEN is set"
+                                "forbidden origin: Origin null is accepted only when ONDINA_MCP_TOKEN is set"
                             } else {
                                 "forbidden origin"
                             };
@@ -348,7 +350,7 @@ fn serve_http_with_token(session: SharedSession, port: u16, token: Option<String
                                 Some(r) => {
                                     let mut response = tiny_http::Response::from_string(serde_json::to_string(&r).unwrap()).with_header(json_header);
                                     if is_init {
-                                        let sid = format!("aurora-{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+                                        let sid = format!("ondina-{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
                                         response = response.with_header(tiny_http::Header::from_bytes("Mcp-Session-Id", sid.as_bytes()).unwrap());
                                     }
                                     let _ = req.respond(response);
@@ -399,8 +401,10 @@ mod tests {
         assert_eq!(reg["result"]["isError"], false, "{reg}");
         let bad = post(json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "set_volume", "arguments": {"track_id": 9999, "db": 0}}}));
         assert_eq!(bad["result"]["isError"], true);
-        let res = post(json!({"jsonrpc": "2.0", "id": 6, "method": "resources/read", "params": {"uri": "aurora://project"}}));
+        let res = post(json!({"jsonrpc": "2.0", "id": 6, "method": "resources/read", "params": {"uri": "ondina://project"}}));
         assert!(res["result"]["contents"][0]["text"].as_str().unwrap().contains("Lush Pad"));
+        let old = post(json!({"jsonrpc": "2.0", "id": 7, "method": "resources/read", "params": {"uri": "aurora://project"}}));
+        assert!(old["result"]["contents"][0]["text"].as_str().unwrap().contains("Lush Pad"), "pre-rename URI still served: {old}");
         let r = ureq::post(&h.address).set("Content-Type", "application/json").send_string(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string()).unwrap();
         assert_eq!(r.status(), 202);
         assert_eq!(s.lock().project.tracks.len(), 1);
@@ -443,7 +447,7 @@ mod tests {
         let h = serve_http_with_token(s, 39173, None).unwrap();
         let (status, body) = post_with(&h.address, &[("Origin", "null")], &init_request());
         assert_eq!(status, 403);
-        assert!(body.contains("AURORA_MCP_TOKEN"), "{body}");
+        assert!(body.contains("ONDINA_MCP_TOKEN"), "{body}");
         let (status, body) = post_with(&h.address, &[], &init_request());
         assert_eq!(status, 200, "{body}");
         let v: Value = serde_json::from_str(&body).unwrap();

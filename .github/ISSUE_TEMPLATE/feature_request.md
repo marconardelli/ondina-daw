@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Suggest an idea or improvement for Aurora
+about: Suggest an idea or improvement for Ondina
 labels: enhancement
 ---
 
@@ -8,7 +8,7 @@ labels: enhancement
 What are you trying to do, and what gets in the way today?
 
 **Proposed solution**
-How could Aurora help? GUI, MCP tool, AI assistant, instrument/effect...
+How could Ondina help? GUI, MCP tool, AI assistant, instrument/effect...
 
 **Alternatives and references**
 How do other DAWs handle it? Any workaround you use now?

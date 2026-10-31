@@ -4,8 +4,8 @@
 
 use std::collections::HashSet;
 
-use aurora_core::command::{Command, NoteFilter};
-use aurora_core::model::{Id, Note, Project, RegionContent};
+use ondina_core::command::{Command, NoteFilter};
+use ondina_core::model::{Id, Note, Project, RegionContent};
 
 /// Starts and lengths closer than this (beats) are the same position.
 pub const SAME_TIME: f64 = 1e-6;
@@ -216,7 +216,7 @@ fn shift_pairs(old: &[Note], lost: &[usize], new: &[Note], free: &[Vec<usize>], 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aurora_studio::{Session, Source};
+    use ondina_studio::{Session, Source};
     use serde_json::{json, Value};
 
     fn n(pitch: u8, start: f64, length: f64) -> Note {

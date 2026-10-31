@@ -3,14 +3,14 @@
 
 use std::sync::mpsc::Receiver;
 
-use aurora_core::command::{Command, NoteFilter, NoteOps};
-use aurora_core::model::*;
+use ondina_core::command::{Command, NoteFilter, NoteOps};
+use ondina_core::model::*;
 use eframe::egui::{
     self, pos2, vec2, Align2, Color32, FontId, Rect, RichText, Rounding, Sense, Stroke,
 };
 use serde_json::Value;
 
-use crate::app::AuroraApp;
+use crate::app::OndinaApp;
 use crate::theme;
 
 #[derive(Default)]
@@ -61,7 +61,7 @@ const SHARP: [bool; 12] = [
 ];
 
 fn parse_name(n: &str) -> Option<u8> {
-    aurora_core::theory::parse_note(n)
+    ondina_core::theory::parse_note(n)
 }
 
 /// Diatonic step number (C4 = 28).
@@ -69,7 +69,7 @@ fn diatonic(p: u8) -> i32 {
     (p as i32 / 12) * 7 + LETTER[(p % 12) as usize]
 }
 
-impl AuroraApp {
+impl OndinaApp {
     // ============================================================== Live Loops
     pub fn live_ui(&mut self, ui: &mut egui::Ui) {
         let p = self.project();
@@ -463,7 +463,7 @@ impl AuroraApp {
             painter.circle_stroke(c, size / 4.0, Stroke::new(0.5_f32, theme::GRID));
             // speakers
             let lay_name = match p.surround { SurroundFormat::Surround71 => "7.1", SurroundFormat::Immersive714 => "7.1.4", _ => "5.1" };
-            for (name, az, el) in aurora_dsp::spatial::layout(lay_name) {
+            for (name, az, el) in ondina_dsp::spatial::layout(lay_name) {
                 if el < -900.0 {
                     continue;
                 }
@@ -686,7 +686,7 @@ impl AuroraApp {
                         return;
                     };
                     // a project made elsewhere may carry a URL or an option as movie path: no ffmpeg for it
-                    let refused = aurora_studio::session_ext::ffmpeg_input(&m.path).err();
+                    let refused = ondina_studio::session_ext::ffmpeg_input(&m.path).err();
                     ui.label(
                         RichText::new(format!(
                             "{}  ·  TC {}",
@@ -948,7 +948,7 @@ impl AuroraApp {
                 if let Some(tid) = self.view.project.region_track_id(region.id) {
                     self.cmd(Command::CompTakes {
                         track_id: tid,
-                        segments: vec![aurora_core::command::CompSegment {
+                        segments: vec![ondina_core::command::CompSegment {
                             region_id: region.id,
                             from_beat: cy.start.max(region.start),
                             to_beat: cy.end.min(region.end()),
@@ -964,6 +964,6 @@ impl AuroraApp {
 /// Decode one movie frame at `t` seconds via ffmpeg into an egui image (320x180 RGB).
 fn grab_frame(path: &str, t: f64) -> Option<egui::ColorImage> {
     let (w, h) = (320usize, 180usize);
-    let px = aurora_studio::session_ext::movie_frame_rgb(path, t, w, h).ok()?;
+    let px = ondina_studio::session_ext::movie_frame_rgb(path, t, w, h).ok()?;
     Some(egui::ColorImage::from_rgb([w, h], &px))
 }

@@ -1,13 +1,13 @@
 [package]
-name = "aurora-engine"
+name = "ondina-engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Aurora DAW audio engine: real-time playback, recording, offline bounce and analysis"
+description = "Ondina DAW audio engine: real-time playback, recording, offline bounce and analysis"
 
 [dependencies]
-aurora-core = { path = "../core" }
-aurora-dsp = { path = "../dsp" }
+ondina-core = { path = "../core" }
+ondina-dsp = { path = "../dsp" }
 cpal.workspace = true
 hound.workspace = true
 symphonia.workspace = true

@@ -537,7 +537,7 @@ pub fn musicxml(project: &Project, track_ids: Option<&[Id]>) -> Result<String, S
     let end = project.content_end().max(ts.beats_per_bar());
     let mut x = String::new();
     x += "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE score-partwise PUBLIC \"-//Recordare//DTD MusicXML 4.0 Partwise//EN\" \"http://www.musicxml.org/dtds/partwise.dtd\">\n<score-partwise version=\"4.0\">\n";
-    x += &format!("  <work><work-title>{}</work-title></work>\n  <identification><encoding><software>Aurora DAW</software></encoding></identification>\n  <part-list>\n", xml_escape(&project.name));
+    x += &format!("  <work><work-title>{}</work-title></work>\n  <identification><encoding><software>Ondina DAW</software></encoding></identification>\n  <part-list>\n", xml_escape(&project.name));
     for (i, t) in tracks.iter().enumerate() {
         x += &format!("    <score-part id=\"P{}\"><part-name>{}</part-name></score-part>\n", i + 1, xml_escape(&t.name));
     }

@@ -1,6 +1,6 @@
 //! Streaming loudness / spectrum analyzer (ITU-R BS.1770 style K-weighting with gating).
 
-use aurora_dsp::util::{gain_to_db, Biquad, BiquadKind};
+use ondina_dsp::util::{gain_to_db, Biquad, BiquadKind};
 use serde::{Deserialize, Serialize};
 
 pub struct Analyzer {

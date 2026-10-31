@@ -1,6 +1,6 @@
-# Guida all'uso di Aurora
+# Guida all'uso di Ondina
 
-Questa guida spiega come usare gli editor di Aurora con mouse, tastiera e menu.
+Questa guida spiega come usare gli editor di Ondina con mouse, tastiera e menu.
 
 ## Piano roll
 
@@ -69,7 +69,7 @@ locale o collegala a una lettera di unità.
 
 - **File > Bounce to WAV…** (Ctrl+B) scrive il mix in un file WAV: tutta la canzone, oppure solo
   l'intervallo del ciclo se il ciclo è attivo.
-- Dopo la fine, Aurora continua finché le code di riverbero e delay non si spengono (sotto circa
+- Dopo la fine, Ondina continua finché le code di riverbero e delay non si spengono (sotto circa
   −90 dBFS): almeno 2 secondi, al massimo 20. Così il finale suona come in riproduzione. Vale anche
   per Bounce in Place, Bounce Surround e Bounce Binaural.
 - Un suono che non si spegne mai, per esempio una nota tenuta oltre la fine o un plug-in che fa rumore,
@@ -79,14 +79,14 @@ locale o collegala a una lettera di unità.
 
 ## File scritti dall'assistente e dai tool MCP
 
-Quando l'assistente o un client MCP salva il progetto, fa un bounce o esporta un file, Aurora accetta
-solo un file su un disco locale con l'estensione del suo tipo: `.aurora` per il progetto, `.wav` per
+Quando l'assistente o un client MCP salva il progetto, fa un bounce o esporta un file, Ondina accetta
+solo un file su un disco locale con l'estensione del suo tipo: `.ondina` per il progetto (o il vecchio `.aurora`), `.wav` per
 i bounce e l'export ADM, `.mid` o `.midi` per il MIDI, `.musicxml` o `.xml` per la partitura. Se il
-percorso non ha estensione, Aurora la aggiunge.
+percorso non ha estensione, Ondina la aggiunge.
 
 - I percorsi di rete (`\\server\cartella`) e le altre estensioni vengono rifiutati con un messaggio, e
   non viene scritto nulla.
-- L'assistente non sovrascrive un file esistente che non sia un progetto Aurora.
+- L'assistente non sovrascrive un file esistente che non sia un progetto Ondina.
 - Dai menu e dalle finestre di salvataggio dell'app puoi continuare a scegliere qualsiasi cartella,
   anche su un NAS. Un progetto aperto da una cartella di rete si risalva con Ctrl+S, non dall'assistente.
 
@@ -95,14 +95,14 @@ percorso non ha estensione, Aurora la aggiunge.
 - Ctrl+Z annulla l'ultima modifica, Ctrl+Y la ripete.
 - Dopo **Nuovo** (Ctrl+N) o **Apri** (Ctrl+O) la cronologia riparte da zero: Ctrl+Z non riporta
   indietro il progetto precedente.
-- Un progetto appena aperto non risulta modificato: Aurora non chiede di salvare finché non
+- Un progetto appena aperto non risulta modificato: Ondina non chiede di salvare finché non
   cambi qualcosa (vedi *Modifiche non salvate*).
 
 ## Modifiche non salvate
 
 Quando il progetto ha modifiche non salvate, nel titolo della finestra compare un pallino "•".
 Se in quel momento chiudi la finestra, crei un progetto nuovo (Ctrl+N), ne apri un altro (Ctrl+O)
-o scegli un file recente, Aurora ti chiede prima se vuoi salvare.
+o scegli un file recente, Ondina ti chiede prima se vuoi salvare.
 
 - **Save** salva il progetto e poi continua. Se il progetto non è mai stato salvato, si apre la
   finestra per scegliere il file; se la chiudi senza scegliere, non succede nulla.

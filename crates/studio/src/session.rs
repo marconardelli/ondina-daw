@@ -7,18 +7,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use aurora_core::command::Command;
-use aurora_core::model::*;
-use aurora_core::ops::{self, Outcome};
-use aurora_core::{load_project_str, midi_io, save_project_string};
-use aurora_dsp::MidiKind;
-use aurora_engine::{load_audio_file, render_offline, write_wav, AudioPool, Engine, OfflineOptions};
-use aurora_engine::offline::{AUTO_TAIL_MAX_SEC, BOUNCE_TAIL_SEC};
+use ondina_core::command::Command;
+use ondina_core::model::*;
+use ondina_core::ops::{self, Outcome};
+use ondina_core::{load_project_str, midi_io, save_project_string};
+use ondina_dsp::MidiKind;
+use ondina_engine::{load_audio_file, render_offline, write_wav, AudioPool, Engine, OfflineOptions};
+use ondina_engine::offline::{AUTO_TAIL_MAX_SEC, BOUNCE_TAIL_SEC};
 use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::session_ext::{checked_output_path, is_aurora_project_file, MIDI_EXTENSIONS, PROJECT_EXTENSIONS, WAV_EXTENSIONS};
+use crate::session_ext::{checked_output_path, is_ondina_project_file, MIDI_EXTENSIONS, PROJECT_EXTENSIONS, WAV_EXTENSIONS};
 
 pub type SharedSession = Arc<Mutex<Session>>;
 
@@ -151,8 +151,8 @@ impl Session {
 
     /// Apply parameter changes made in native plug-in editor windows (one undo step per gesture batch).
     pub fn poll_editor_events(&mut self) -> usize {
-        let evs = aurora_dsp::vst3::take_editor_events();
-        let states = aurora_dsp::vst3::take_editor_states();
+        let evs = ondina_dsp::vst3::take_editor_events();
+        let states = ondina_dsp::vst3::take_editor_states();
         if evs.is_empty() && states.is_empty() {
             return 0;
         }
@@ -160,7 +160,7 @@ impl Session {
         let mut n = 0;
         for st in &states {
             if let Some(p) = self.project.find_plugin_mut(st.plugin_id) {
-                p.vst3_state = Some(aurora_core::model::base64_encode(&st.state));
+                p.vst3_state = Some(ondina_core::model::base64_encode(&st.state));
                 n += 1;
             }
         }
@@ -186,10 +186,10 @@ impl Session {
         self.poll_editor_events();
         // keep open native editors in sync with project-side parameter changes
         match &cmd {
-            Command::SetPluginParam { plugin_id, param, value } => aurora_dsp::vst3::editor_set_param(*plugin_id, param.clone(), *value),
+            Command::SetPluginParam { plugin_id, param, value } => ondina_dsp::vst3::editor_set_param(*plugin_id, param.clone(), *value),
             Command::SetPluginParams { plugin_id, params } => {
                 for (k, v) in params {
-                    aurora_dsp::vst3::editor_set_param(*plugin_id, k.clone(), *v);
+                    ondina_dsp::vst3::editor_set_param(*plugin_id, k.clone(), *v);
                 }
             }
             _ => {}
@@ -277,9 +277,9 @@ impl Session {
                     Some(p) => PathBuf::from(p),
                     None => self.path.clone().ok_or("project has never been saved: give a path")?,
                 };
-                let p = checked_output_path(source, &p.to_string_lossy(), PROJECT_EXTENSIONS, aurora_core::PROJECT_EXTENSION)?;
-                if matches!(source, Source::Mcp | Source::Ai) && p.exists() && (p.is_dir() || !is_aurora_project_file(&p)?) {
-                    return Err(format!("output path refused: {} already exists and is not an Aurora project: choose another name", p.display()));
+                let p = checked_output_path(source, &p.to_string_lossy(), PROJECT_EXTENSIONS, ondina_core::PROJECT_EXTENSION)?;
+                if matches!(source, Source::Mcp | Source::Ai) && p.exists() && (p.is_dir() || !is_ondina_project_file(&p)?) {
+                    return Err(format!("output path refused: {} already exists and is not an Ondina project: choose another name", p.display()));
                 }
                 self.save(&p)
             }
@@ -375,7 +375,7 @@ impl Session {
                 };
                 let mut res = render_offline(&self.project, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start, end, tail_sec: tail, auto_tail_max_sec: auto_max, solo: track_ids, analyze: true, keep_audio: true });
                 if normalize.unwrap_or(false) {
-                    aurora_engine::offline::normalize(&mut res.left, &mut res.right);
+                    ondina_engine::offline::normalize(&mut res.left, &mut res.right);
                 }
                 let bits = match bit_depth.unwrap_or(24) {
                     16 => 16,
@@ -443,7 +443,7 @@ impl Session {
                 Ok(serde_json::to_value(self.engine.list_devices()).unwrap())
             }
             ListMidiInputs {} => {
-                let mi = midir::MidiInput::new("aurora-list").map_err(|e| e.to_string())?;
+                let mi = midir::MidiInput::new("ondina-list").map_err(|e| e.to_string())?;
                 let names: Vec<String> = mi.ports().iter().filter_map(|p| mi.port_name(p).ok()).collect();
                 Ok(json!({"inputs": names, "connected": self.midi_input_name}))
             }
@@ -454,7 +454,7 @@ impl Session {
                 let d = duration.unwrap_or(0.5).clamp(0.01, 10.0);
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_secs_f32(d));
-                    let _ = tx.send(aurora_engine::EngineMsg::Live(track_id, MidiKind::NoteOff { pitch }));
+                    let _ = tx.send(ondina_engine::EngineMsg::Live(track_id, MidiKind::NoteOff { pitch }));
                 });
                 Ok(json!({"ok": true}))
             }
@@ -470,7 +470,7 @@ impl Session {
         }
     }
 
-    pub fn engine_sender(&self) -> crossbeam_channel::Sender<aurora_engine::EngineMsg> {
+    pub fn engine_sender(&self) -> crossbeam_channel::Sender<ondina_engine::EngineMsg> {
         self.engine.sender()
     }
 
@@ -494,7 +494,7 @@ impl Session {
     pub fn media_dir(&self) -> PathBuf {
         let base = match &self.path {
             Some(p) => p.parent().map(|d| d.to_path_buf()).unwrap_or_default().join(format!("{} Media", p.file_stem().and_then(|s| s.to_str()).unwrap_or("Project"))),
-            None => default_documents_dir().join("Aurora").join("Recordings"),
+            None => default_documents_dir().join("Ondina").join("Recordings"),
         };
         let _ = std::fs::create_dir_all(&base);
         base
@@ -503,7 +503,7 @@ impl Session {
     /// Decode an audio file into the pool and register it in the project.
     pub fn load_audio(&mut self, path: &Path) -> Result<Id, String> {
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let path_str = aurora_dsp::vst3::absolute(&canonical.display().to_string());
+        let path_str = ondina_dsp::vst3::absolute(&canonical.display().to_string());
         if let Some(f) = self.project.audio_files.iter().find(|f| f.path == path_str) {
             if self.pool.contains_key(&f.id) {
                 return Ok(f.id);
@@ -551,7 +551,7 @@ impl Session {
     fn save(&mut self, path: &Path) -> Result<Value, String> {
         let mut path = path.to_path_buf();
         if path.extension().is_none() {
-            path.set_extension(aurora_core::PROJECT_EXTENSION);
+            path.set_extension(ondina_core::PROJECT_EXTENSION);
         }
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -590,8 +590,8 @@ impl Session {
         let armed_inst: Vec<Id> = self.project.tracks.iter().filter(|t| t.record_armed && t.kind == TrackKind::Instrument).map(|t| t.id).collect();
         for tid in armed_inst {
           // split into takes where the cycle wrapped (beat jumps backwards)
-          let evs: Vec<&aurora_engine::RecordedEvent> = midi.iter().filter(|e| e.track_id == tid).collect();
-          let mut passes: Vec<Vec<&aurora_engine::RecordedEvent>> = vec![vec![]];
+          let evs: Vec<&ondina_engine::RecordedEvent> = midi.iter().filter(|e| e.track_id == tid).collect();
+          let mut passes: Vec<Vec<&ondina_engine::RecordedEvent>> = vec![vec![]];
           let mut prev = f64::MIN;
           for e in evs {
               if e.beat < prev - 0.5 {
@@ -752,7 +752,7 @@ impl Session {
             }
         }
         for t in &tracks {
-            let r: aurora_engine::AnalysisReport = serde_json::from_value(t["analysis"].clone()).unwrap_or_else(|_| unreachable_report());
+            let r: ondina_engine::AnalysisReport = serde_json::from_value(t["analysis"].clone()).unwrap_or_else(|_| unreachable_report());
             if r.peak_dbfs > -0.1 && !r.silent {
                 advice.push(format!("Track '{}' clips (peak {:.1} dBFS): lower its fader.", t["name"].as_str().unwrap_or(""), r.peak_dbfs));
             }
@@ -764,7 +764,7 @@ impl Session {
         // remove previous auto chain
         self.project.master.inserts.retain(|p| p.preset.as_deref().map(|s| !s.starts_with("Auto ")).unwrap_or(true));
         let first = self.analyze(None, None)?;
-        let m: aurora_engine::AnalysisReport = serde_json::from_value(first["master"].clone()).map_err(|_| "analysis failed")?;
+        let m: ondina_engine::AnalysisReport = serde_json::from_value(first["master"].clone()).map_err(|_| "analysis failed")?;
         if m.silent {
             return Err("the mix is silent".into());
         }
@@ -791,7 +791,7 @@ impl Session {
         let mut measured = 0.0;
         for _ in 0..3 {
             let a = self.analyze(None, None)?;
-            let r: aurora_engine::AnalysisReport = serde_json::from_value(a["master"].clone()).map_err(|_| "analysis failed")?;
+            let r: ondina_engine::AnalysisReport = serde_json::from_value(a["master"].clone()).map_err(|_| "analysis failed")?;
             measured = r.integrated_lufs;
             let delta = target - r.integrated_lufs;
             if delta.abs() < 0.5 {
@@ -807,7 +807,7 @@ impl Session {
 
     fn connect_midi(&mut self, name: Option<String>) -> Result<Value, String> {
         self.midi_conn = None;
-        let mi = midir::MidiInput::new("aurora").map_err(|e| e.to_string())?;
+        let mi = midir::MidiInput::new("ondina").map_err(|e| e.to_string())?;
         let ports = mi.ports();
         let port = match &name {
             Some(n) => ports.iter().find(|p| mi.port_name(p).map(|x| x.to_lowercase().contains(&n.to_lowercase())).unwrap_or(false)),
@@ -822,7 +822,7 @@ impl Session {
         let conn = mi
             .connect(
                 &port,
-                "aurora-in",
+                "ondina-in",
                 move |_t, msg, _| {
                     if msg.is_empty() {
                         return;
@@ -836,16 +836,16 @@ impl Session {
                             match (status, msg.get(1), msg.get(2)) {
                                 (0x90, Some(&p), Some(&v)) | (0x80, Some(&p), Some(&v)) => {
                                     let on = status == 0x90 && v > 0;
-                                    for (t, pp, vv) in aurora_core::ops2::route_note(&rs, channel, p, if on { v } else { 0 }) {
+                                    for (t, pp, vv) in ondina_core::ops2::route_note(&rs, channel, p, if on { v } else { 0 }) {
                                         let k = if on { MidiKind::NoteOn { pitch: pp, velocity: vv } } else { MidiKind::NoteOff { pitch: pp } };
-                                        let _ = tx.send(aurora_engine::EngineMsg::Live(t, k));
+                                        let _ = tx.send(ondina_engine::EngineMsg::Live(t, k));
                                     }
                                 }
                                 (0xB0, Some(&c), Some(&v)) => {
                                     let mut sent = std::collections::HashSet::new();
                                     for r in rs.iter().filter(|r| r.channel.map(|ch| ch == channel).unwrap_or(true)) {
                                         if sent.insert(r.track_id) {
-                                            let _ = tx.send(aurora_engine::EngineMsg::Live(r.track_id, MidiKind::Cc { controller: c, value: v }));
+                                            let _ = tx.send(ondina_engine::EngineMsg::Live(r.track_id, MidiKind::Cc { controller: c, value: v }));
                                         }
                                     }
                                 }
@@ -865,7 +865,7 @@ impl Session {
                         (0xB0, Some(&c), Some(&v)) => MidiKind::Cc { controller: c, value: v },
                         _ => return,
                     };
-                    let _ = tx.send(aurora_engine::EngineMsg::Live(track, kind));
+                    let _ = tx.send(ondina_engine::EngineMsg::Live(track, kind));
                 },
                 (),
             )
@@ -877,12 +877,12 @@ impl Session {
     }
 }
 
-fn unreachable_report() -> aurora_engine::AnalysisReport {
-    aurora_engine::Analyzer::new(44100.0).report()
+fn unreachable_report() -> ondina_engine::AnalysisReport {
+    ondina_engine::Analyzer::new(44100.0).report()
 }
 
 fn db(x: f32) -> f32 {
-    (aurora_dsp::util::gain_to_db(x) * 10.0).round() / 10.0
+    (ondina_dsp::util::gain_to_db(x) * 10.0).round() / 10.0
 }
 
 fn sanitize(s: &str) -> String {
@@ -905,7 +905,7 @@ pub fn default_documents_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aurora_core::generate::{BassStyle, DrumStyle};
+    use ondina_core::generate::{BassStyle, DrumStyle};
 
     #[test]
     fn session_workflow_with_undo_bounce_analyze_save() {
@@ -923,13 +923,13 @@ mod tests {
         assert_eq!(s.project.tracks[1].regions.len(), 1);
         let a = s.execute(Command::AnalyzeMix { start: None, end: None }, Source::Script).unwrap();
         assert!(a["master"]["integrated_lufs"].as_f64().unwrap() > -60.0, "{a}");
-        let dir = std::env::temp_dir().join("aurora_test");
+        let dir = std::env::temp_dir().join("ondina_test");
         let wav = dir.join("mix.wav");
         let r = s.execute(Command::Bounce { path: wav.display().to_string(), start: None, end: None, bit_depth: Some(16), normalize: Some(true), track_ids: None, tail_sec: None }, Source::Script).unwrap();
         assert!(r["duration_sec"].as_f64().unwrap() > 7.0);
         let m = s.execute(Command::AutoMaster { target_lufs: Some(-14.0), character: None }, Source::Script).unwrap();
         assert!((m["measured_lufs"].as_f64().unwrap() + 14.0).abs() < 2.5, "{m}");
-        let proj = dir.join("song.aurora");
+        let proj = dir.join("song.ondina");
         s.execute(Command::SaveProject { path: Some(proj.display().to_string()) }, Source::Script).unwrap();
         let mut s2 = Session::new(false);
         s2.execute(Command::OpenProject { path: proj.display().to_string() }, Source::Script).unwrap();

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use aurora_core::model::{Id, Project, MASTER_ID};
+use ondina_core::model::{Id, Project, MASTER_ID};
 
 use crate::analysis::{AnalysisReport, Analyzer};
 use crate::pool::AudioPool;
@@ -149,10 +149,10 @@ pub fn render_surround(project: &Project, pool: Arc<AudioPool>, sample_rate: u32
     let mut p = project.clone();
     p.cycle.enabled = false;
     p.metronome = false;
-    if p.surround == aurora_core::model::SurroundFormat::Stereo || p.surround == aurora_core::model::SurroundFormat::Binaural {
-        p.surround = aurora_core::model::SurroundFormat::Surround51;
+    if p.surround == ondina_core::model::SurroundFormat::Stereo || p.surround == ondina_core::model::SurroundFormat::Binaural {
+        p.surround = ondina_core::model::SurroundFormat::Surround51;
     }
-    let layout = aurora_dsp::spatial::layout(layout_name);
+    let layout = ondina_dsp::spatial::layout(layout_name);
     let names: Vec<&'static str> = layout.iter().map(|s| s.0).collect();
     let n = layout.len();
     let span = (p.tempo.beat_to_sec(end) - p.tempo.beat_to_sec(start)).max(0.0);
@@ -193,7 +193,7 @@ pub fn render_surround(project: &Project, pool: Arc<AudioPool>, sample_rate: u32
     }
     // LFE: low-passed sum of all main channels
     if let Some(lfe) = layout.iter().position(|s| s.2 < -900.0) {
-        let mut lp = aurora_dsp::util::Biquad::new(aurora_dsp::util::BiquadKind::LowPass, 120.0, 0.707, 0.0, sample_rate as f32);
+        let mut lp = ondina_dsp::util::Biquad::new(ondina_dsp::util::BiquadKind::LowPass, 120.0, 0.707, 0.0, sample_rate as f32);
         let len = chans[0].len();
         let sum: Vec<f32> = (0..len).map(|i| (0..n).filter(|c| *c != lfe).map(|c| chans[c][i]).sum::<f32>()).collect();
         chans[lfe] = sum.iter().map(|x| lp.process(*x) * 0.3).collect();
@@ -225,8 +225,8 @@ pub fn render_objects(project: &Project, pool: Arc<AudioPool>, sample_rate: u32,
     let mut p = project.clone();
     p.cycle.enabled = false;
     p.metronome = false;
-    p.surround = aurora_core::model::SurroundFormat::Immersive714;
-    let layout = aurora_dsp::spatial::layout("7.1.2");
+    p.surround = ondina_core::model::SurroundFormat::Immersive714;
+    let layout = ondina_dsp::spatial::layout("7.1.2");
     let n = layout.len();
     let secs = (p.tempo.beat_to_sec(end) - p.tempo.beat_to_sec(start)).max(0.0) + 1.0;
     let total = (secs * sample_rate as f64).ceil() as usize;
@@ -246,7 +246,7 @@ pub fn render_objects(project: &Project, pool: Arc<AudioPool>, sample_rate: u32,
     }
     let mut bed = r.surround_out.take().unwrap().channels;
     if let Some(lfe) = layout.iter().position(|s| s.2 < -900.0) {
-        let mut lp = aurora_dsp::util::Biquad::new(aurora_dsp::util::BiquadKind::LowPass, 120.0, 0.707, 0.0, sample_rate as f32);
+        let mut lp = ondina_dsp::util::Biquad::new(ondina_dsp::util::BiquadKind::LowPass, 120.0, 0.707, 0.0, sample_rate as f32);
         let len = bed[0].len();
         let sum: Vec<f32> = (0..len).map(|i| (0..n).filter(|c| *c != lfe).map(|c| bed[c][i]).sum::<f32>()).collect();
         bed[lfe] = sum.iter().map(|x| lp.process(*x) * 0.3).collect();
@@ -268,9 +268,9 @@ pub fn render_objects(project: &Project, pool: Arc<AudioPool>, sample_rate: u32,
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-    use aurora_core::command::Command;
-    use aurora_core::model::{Note, TrackKind};
-    use aurora_core::ops::{self, Outcome};
+    use ondina_core::command::Command;
+    use ondina_core::model::{Note, TrackKind};
+    use ondina_core::ops::{self, Outcome};
 
     fn run(p: &mut Project, c: Command) -> serde_json::Value {
         match ops::apply(p, &c).unwrap() {

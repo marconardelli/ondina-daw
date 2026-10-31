@@ -1,19 +1,19 @@
-# Contributing to Aurora
+# Contributing to Ondina
 
-Thanks for helping make Aurora better! This guide explains how to set up the project, how the code is organised,
+Thanks for helping make Ondina better! This guide explains how to set up the project, how the code is organised,
 and how to land a change. If anything here is unclear, open an issue — improving this document is a contribution
 too.
 
 ## Ways to contribute
 
 - **Report a bug** — use the *Bug report* issue template. Include steps to reproduce, what you expected, what
-  happened, your Windows version and audio device, and if possible a small `.aurora` project.
+  happened, your Windows version and audio device, and if possible a small `.ondina` project.
 - **Propose a feature** — use the *Feature request* template. Describe the musical problem first, then the idea.
 - **Pick an issue** — issues labelled `good first issue` are small and well scoped; `help wanted` ones are bigger.
   Comment on the issue before starting so work isn't duplicated.
 - **Improve docs and examples** — README, user guides in `docs/`, example projects, doc comments of commands (they
   become the MCP tool descriptions).
-- **Support development financially** — see [Support Aurora](README.md#support-aurora) in the README.
+- **Support development financially** — see [Support Ondina](README.md#support-ondina) in the README.
 
 ## Development setup
 
@@ -21,15 +21,15 @@ too.
    Studio Build Tools ("Desktop development with C++").
 2. Clone and build:
    ```powershell
-   git clone https://github.com/<you>/aurora-daw.git
-   cd aurora-daw
+   git clone https://github.com/<you>/ondina-daw.git
+   cd ondina-daw
    cargo build
    cargo test --workspace
    ```
 3. Optional tools (not in the repository) go in `tools\` at the repository root: ffmpeg, llama.cpp + a `.gguf`
    model, ONNX models, test VST3 plug-ins. See the README. Tests that need them skip themselves when they are absent.
 
-Run the app with `cargo run --release -p aurora-app --bin aurora` (add `-- --no-audio` on machines without an
+Run the app with `cargo run --release -p ondina-app --bin ondina` (add `-- --no-audio` on machines without an
 audio device).
 
 ## How the code is organised
@@ -40,7 +40,7 @@ audio device).
 | `crates/dsp` | instruments (`synth.rs`, `drums.rs`), effects (`effects.rs`, `midifx.rs`), audio operations, spatial audio, VST3 host |
 | `crates/engine` | real-time engine (`realtime.rs`), renderer, offline bounce/export, analysis, ADM |
 | `crates/studio` | `Session` (command execution, undo/redo), MCP server (`mcp.rs`), AI assistant (`ai.rs`, `local_ai.rs`) |
-| `crates/app` | egui GUI (`app.rs`, `arrange.rs`, `editors.rs`, `mixer.rs`, `inspector.rs`, `extra_ui.rs`) and `aurora-mcp` |
+| `crates/app` | egui GUI (`app.rs`, `arrange.rs`, `editors.rs`, `mixer.rs`, `inspector.rs`, `extra_ui.rs`) and `ondina-mcp` |
 
 The central idea: **GUI, MCP and AI all go through `Session::execute(Command)`**.
 
@@ -49,13 +49,13 @@ The central idea: **GUI, MCP and AI all go through `Session::execute(Command)`**
 ### Add a command (and therefore an MCP tool)
 
 1. Add a variant to `Command` in `crates/core/src/command.rs`. Its doc comment becomes the MCP tool description,
-   so write it for an agent that has never seen Aurora: what it does, units, defaults.
+   so write it for an agent that has never seen Ondina: what it does, units, defaults.
 2. Implement it in `crates/core/src/ops*.rs` (pure project edits) or `crates/studio/src/session*.rs` (when it needs
    the engine, files or the audio pool). Make it undoable.
 3. Add a test in `crates/studio/tests/features.rs` (or next to the code). The test that calls every MCP tool will
    also pick it up.
 4. Use it from the GUI with `self.cmd(Command::...)` (queued) or `self.exec(...)` (immediate, returns the result).
-5. Regenerate the reference: `cargo run -q -p aurora-app --bin aurora-mcp -- --list-tools > MCP_TOOLS.md`.
+5. Regenerate the reference: `cargo run -q -p ondina-app --bin ondina-mcp -- --list-tools > MCP_TOOLS.md`.
 
 ### Add an instrument or effect
 
@@ -82,7 +82,7 @@ The central idea: **GUI, MCP and AI all go through `Session::execute(Command)`**
 - No new clippy warnings in the files you touch (`cargo clippy --workspace --all-targets`).
 - Don't add `#[allow(...)]` or `#[ignore]` to make a problem go away, and don't delete or rename existing tests.
 - Comments explain *why*, not *what*. Code, comments and UI text are in English.
-- New model fields need `#[serde(default)]` so older `.aurora` files still open.
+- New model fields need `#[serde(default)]` so older `.ondina` files still open.
 - MCP tools are a public API: never remove or rename one; add optional parameters instead of changing existing ones.
 - Risky features should be switchable with a setting.
 

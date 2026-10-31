@@ -20,13 +20,13 @@ pub const MODEL_DIR_NAME: &str = "sherpa-onnx-spleeter-2stems-fp16";
 
 fn env() -> &'static ort::environment::Environment {
     static ENV: OnceLock<ort::environment::Environment> = OnceLock::new();
-    ENV.get_or_init(|| ort::init().with_name("aurora").build().expect("ONNX Runtime environment"))
+    ENV.get_or_init(|| ort::init().with_name("ondina").build().expect("ONNX Runtime environment"))
 }
 
-/// Locate the Spleeter model folder (next to the executable, in ./tools/models, or $AURORA_MODELS).
+/// Locate the Spleeter model folder (next to the executable, in ./tools/models, or $ONDINA_MODELS; $AURORA_MODELS still works).
 pub fn find_model_dir() -> Option<PathBuf> {
     let mut c: Vec<PathBuf> = vec![];
-    if let Ok(m) = std::env::var("AURORA_MODELS") {
+    if let Some(m) = ondina_core::env_var("MODELS") {
         c.push(PathBuf::from(m).join(MODEL_DIR_NAME));
     }
     if let Ok(exe) = std::env::current_exe() {

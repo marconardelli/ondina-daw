@@ -481,78 +481,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aurora-app"
-version = "0.2.2"
-dependencies = [
- "aurora-core",
- "aurora-dsp",
- "aurora-engine",
- "aurora-studio",
- "crossbeam-channel",
- "eframe",
- "parking_lot",
- "rfd",
- "serde_json",
-]
-
-[[package]]
-name = "aurora-core"
-version = "0.2.2"
-dependencies = [
- "anyhow",
- "midly",
- "rand 0.8.8",
- "schemars",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "aurora-dsp"
-version = "0.2.2"
-dependencies = [
- "aurora-core",
- "hound",
- "ort",
- "rand 0.8.8",
- "rustfft",
- "vst3-host",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "aurora-engine"
-version = "0.2.2"
-dependencies = [
- "aurora-core",
- "aurora-dsp",
- "cpal",
- "crossbeam-channel",
- "hound",
- "parking_lot",
- "serde",
- "serde_json",
- "symphonia",
-]
-
-[[package]]
-name = "aurora-studio"
-version = "0.2.2"
-dependencies = [
- "aurora-core",
- "aurora-dsp",
- "aurora-engine",
- "crossbeam-channel",
- "hound",
- "midir",
- "parking_lot",
- "serde",
- "serde_json",
- "tiny_http",
- "ureq 2.12.1",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2944,6 +2872,78 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "ondina-app"
+version = "0.2.2"
+dependencies = [
+ "crossbeam-channel",
+ "eframe",
+ "ondina-core",
+ "ondina-dsp",
+ "ondina-engine",
+ "ondina-studio",
+ "parking_lot",
+ "rfd",
+ "serde_json",
+]
+
+[[package]]
+name = "ondina-core"
+version = "0.2.2"
+dependencies = [
+ "anyhow",
+ "midly",
+ "rand 0.8.8",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "ondina-dsp"
+version = "0.2.2"
+dependencies = [
+ "hound",
+ "ondina-core",
+ "ort",
+ "rand 0.8.8",
+ "rustfft",
+ "vst3-host",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "ondina-engine"
+version = "0.2.2"
+dependencies = [
+ "cpal",
+ "crossbeam-channel",
+ "hound",
+ "ondina-core",
+ "ondina-dsp",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "symphonia",
+]
+
+[[package]]
+name = "ondina-studio"
+version = "0.2.2"
+dependencies = [
+ "crossbeam-channel",
+ "hound",
+ "midir",
+ "ondina-core",
+ "ondina-dsp",
+ "ondina-engine",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "tiny_http",
+ "ureq 2.12.1",
+]
 
 [[package]]
 name = "openssl"

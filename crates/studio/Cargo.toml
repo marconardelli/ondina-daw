@@ -1,14 +1,14 @@
 [package]
-name = "aurora-studio"
+name = "ondina-studio"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Aurora DAW session, MCP server and AI assistant"
+description = "Ondina DAW session, MCP server and AI assistant"
 
 [dependencies]
-aurora-core = { path = "../core" }
-aurora-dsp = { path = "../dsp" }
-aurora-engine = { path = "../engine" }
+ondina-core = { path = "../core" }
+ondina-dsp = { path = "../dsp" }
+ondina-engine = { path = "../engine" }
 serde.workspace = true
 serde_json.workspace = true
 parking_lot.workspace = true

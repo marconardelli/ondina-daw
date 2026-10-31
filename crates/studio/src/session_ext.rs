@@ -5,18 +5,18 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use aurora_core::command::Command;
-use aurora_core::model::*;
-use aurora_core::ops;
-use aurora_dsp::{audio_ops, AudioData, MidiKind};
-use aurora_engine::{load_audio_file, render_offline, render_surround, write_multichannel_wav, write_wav, OfflineOptions};
-use aurora_engine::offline::{AUTO_TAIL_MAX_SEC, BOUNCE_TAIL_SEC};
+use ondina_core::command::Command;
+use ondina_core::model::*;
+use ondina_core::ops;
+use ondina_dsp::{audio_ops, AudioData, MidiKind};
+use ondina_engine::{load_audio_file, render_offline, render_surround, write_multichannel_wav, write_wav, OfflineOptions};
+use ondina_engine::offline::{AUTO_TAIL_MAX_SEC, BOUNCE_TAIL_SEC};
 use serde_json::{json, Value};
 
 use crate::session::{Session, Source};
 
 fn ops2_musicxml(p: &Project, ids: Option<&[Id]>) -> Result<String, String> {
-    aurora_core::ops2::musicxml(p, ids)
+    ondina_core::ops2::musicxml(p, ids)
 }
 
 /// Locate ffmpeg: next to the executable, in ./tools/ffmpeg/bin, or on PATH.
@@ -51,7 +51,7 @@ pub const FRAME_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg"];
 /// Extensions ffmpeg may write when it exports the movie with the mix.
 pub const MOVIE_EXTENSIONS: &[&str] = &["mp4", "mov", "mkv", "m4v"];
 /// Extensions `save_project` may write when the command comes from MCP or the assistant.
-pub const PROJECT_EXTENSIONS: &[&str] = &["aurora"];
+pub const PROJECT_EXTENSIONS: &[&str] = &["ondina", "aurora"];
 /// Extensions `export_midi` may write.
 pub const MIDI_EXTENSIONS: &[&str] = &["mid", "midi"];
 /// Extensions the bounce tools and `export_adm` may write.
@@ -151,15 +151,16 @@ pub(crate) fn checked_output_path(source: Source, path: &str, allowed: &[&str], 
     }
 }
 
-/// Whether the file at `path` is an Aurora project, judged from its first 4 KiB: project files
-/// start with `{"format": "aurora-project", ...}` (see `aurora_core::save_project_string`).
-pub fn is_aurora_project_file(path: &Path) -> Result<bool, String> {
+/// Whether the file at `path` is an Ondina project, judged from its first 4 KiB: project files
+/// start with `{"format": "ondina-project", ...}` (see `ondina_core::save_project_string`), or with
+/// `"aurora-project"` when they were saved before the rename.
+pub fn is_ondina_project_file(path: &Path) -> Result<bool, String> {
     use std::io::Read;
     let f = std::fs::File::open(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let mut head = Vec::with_capacity(4096);
     f.take(4096).read_to_end(&mut head).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let compact: String = String::from_utf8_lossy(&head).chars().filter(|c| !c.is_whitespace()).collect();
-    Ok(compact.starts_with('{') && compact.contains("\"format\":\"aurora-project\""))
+    Ok(compact.starts_with('{') && (compact.contains("\"format\":\"ondina-project\"") || compact.contains("\"format\":\"aurora-project\"")))
 }
 
 /// The project's movie as an ffmpeg input, with an error that tells the user what to do.
@@ -313,7 +314,7 @@ impl Session {
                 if let Err(e) = write_multichannel_wav(&p, &chans, sr) {
                     return Some(Err(e));
                 }
-                let peaks: Vec<Value> = names.iter().zip(&chans).map(|(n, c)| json!({"channel": n, "peak_db": (aurora_dsp::util::gain_to_db(c.iter().fold(0.0f32, |a, b| a.max(b.abs()))) * 10.0).round() / 10.0})).collect();
+                let peaks: Vec<Value> = names.iter().zip(&chans).map(|(n, c)| json!({"channel": n, "peak_db": (ondina_dsp::util::gain_to_db(c.iter().fold(0.0f32, |a, b| a.max(b.abs()))) * 10.0).round() / 10.0})).collect();
                 Ok(json!({"path": p.display().to_string(), "format": name, "channels": names, "duration_sec": chans[0].len() as f64 / sr as f64, "channel_peaks": peaks}))
             }
             BounceBinaural { path } => {
@@ -368,7 +369,7 @@ impl Session {
                     Ok(o) => o,
                     Err(e) => return Some(Err(format!("output path refused: {e}"))),
                 };
-                let tmp = std::env::temp_dir().join(format!("aurora_mix_{}.wav", std::process::id()));
+                let tmp = std::env::temp_dir().join(format!("ondina_mix_{}.wav", std::process::id()));
                 let sr = self.engine.sample_rate();
                 let start = self.project.tempo.sec_to_beat(m.offset_sec);
                 let end = self.project.tempo.sec_to_beat(m.offset_sec + m.duration_sec.max(1.0));
@@ -388,7 +389,7 @@ impl Session {
                 let _ = std::fs::remove_file(&tmp);
                 r.map(|_| json!({"path": path}))
             }
-            ScanVst3 { extra_paths } => match aurora_dsp::vst3::scan(extra_paths.as_deref().unwrap_or(&[])) {
+            ScanVst3 { extra_paths } => match ondina_dsp::vst3::scan(extra_paths.as_deref().unwrap_or(&[])) {
                 Ok(list) => Ok(json!({"plugins": list.iter().map(|p| json!({"path": p.path, "name": p.name, "vendor": p.vendor, "version": p.version, "category": p.category, "instrument": p.is_instrument, "audio_inputs": p.audio_inputs, "audio_outputs": p.audio_outputs})).collect::<Vec<_>>()})),
                 Err(e) => Err(e),
             },
@@ -400,11 +401,11 @@ impl Session {
                 }
                 let path = p.vst3_path.clone().unwrap_or_default();
                 let params: Vec<(String, f32)> = p.params.iter().map(|(k, v)| (k.clone(), *v)).collect();
-                let state = p.vst3_state.as_deref().and_then(aurora_core::model::base64_decode);
-                aurora_dsp::vst3::open_editor(*plugin_id, &path, params, state).map(|_| json!({"open": true, "plugin_id": plugin_id}))
+                let state = p.vst3_state.as_deref().and_then(ondina_core::model::base64_decode);
+                ondina_dsp::vst3::open_editor(*plugin_id, &path, params, state).map(|_| json!({"open": true, "plugin_id": plugin_id}))
             }
             ClosePluginEditor { plugin_id } => {
-                aurora_dsp::vst3::close_editor(*plugin_id);
+                ondina_dsp::vst3::close_editor(*plugin_id);
                 Ok(json!({"open": false}))
             }
             GetSettings {} => Ok(json!({
@@ -428,7 +429,7 @@ impl Session {
         })
     }
 
-    fn send_live_midi(&mut self, track_id: Id, events: &[aurora_core::command::LiveMidiEvent]) -> Result<Value, String> {
+    fn send_live_midi(&mut self, track_id: Id, events: &[ondina_core::command::LiveMidiEvent]) -> Result<Value, String> {
         let t = self.project.track(track_id).ok_or("track not found")?;
         if t.kind != TrackKind::Instrument {
             return Err("live MIDI needs an instrument track".into());
@@ -457,7 +458,7 @@ impl Session {
                 if d > 0 {
                     std::thread::sleep(std::time::Duration::from_millis(d));
                 }
-                let _ = tx.send(aurora_engine::EngineMsg::Live(track_id, k));
+                let _ = tx.send(ondina_engine::EngineMsg::Live(track_id, k));
             }
         });
         Ok(json!({"scheduled_events": n, "duration_ms": total}))
@@ -551,7 +552,7 @@ impl Session {
         if peak < 1e-6 {
             return Err("region is silent".into());
         }
-        let gain = target_db - aurora_dsp::util::gain_to_db(peak);
+        let gain = target_db - ondina_dsp::util::gain_to_db(peak);
         if let Some(r) = self.project.find_region_mut(region_id) {
             if let RegionContent::Audio(a) = &mut r.content {
                 a.gain_db = gain.clamp(-60.0, 24.0);
@@ -565,7 +566,7 @@ impl Session {
         if data.duration_sec() < 0.5 {
             return Err("region too short".into());
         }
-        let model = aurora_dsp::ml_stems::find_model_dir();
+        let model = ondina_dsp::ml_stems::find_model_dir();
         let use_ml = match engine {
             Some("spectral") => false,
             Some("ml") => {
@@ -577,7 +578,7 @@ impl Session {
             Some(other) => return Err(format!("unknown engine '{other}' (use ml or spectral)")),
             None => model.is_some(),
         };
-        let stems = if use_ml { aurora_dsp::ml_stems::ml_four_stems(&data, model.as_ref().unwrap())? } else { audio_ops::split_stems(&data) };
+        let stems = if use_ml { ondina_dsp::ml_stems::ml_four_stems(&data, model.as_ref().unwrap())? } else { audio_ops::split_stems(&data) };
         let names = ["Vocals", "Drums", "Bass", "Other"];
         let mut out = vec![];
         let mut insert_at = self.project.track_index(src_track).map(|i| i + 1);
@@ -588,7 +589,7 @@ impl Session {
             let rid = self.project.alloc_id();
             self.project.track_mut(tid).unwrap().regions.push(Region { take: None, id: rid, name: names[k].into(), start: r.start, length: r.length, loop_count: 1, muted: false, color: None, content: RegionContent::Audio(AudioContent { file_id, offset_sec: 0.0, gain_db: 0.0, fade_in: 0.0, fade_out: 0.0, reverse: false }) });
             let e = stem.channels[0].iter().map(|v| v * v).sum::<f32>() / stem.frames().max(1) as f32;
-            out.push(json!({"stem": names[k], "track_id": tid, "region_id": rid, "rms_db": (aurora_dsp::util::gain_to_db(e.sqrt()) * 10.0).round() / 10.0}));
+            out.push(json!({"stem": names[k], "track_id": tid, "region_id": rid, "rms_db": (ondina_dsp::util::gain_to_db(e.sqrt()) * 10.0).round() / 10.0}));
         }
         if let Some(reg) = self.project.find_region_mut(region_id) {
             reg.muted = true;
@@ -601,7 +602,7 @@ impl Session {
         let now = self.engine.position();
         let playing = self.engine.shared.live_state.lock().playing.clone();
         for (t, c, s) in playing {
-            log.push(aurora_engine::LiveLogEntry { track_id: t, cell_id: c, start: s, end: now.max(s) });
+            log.push(ondina_engine::LiveLogEntry { track_id: t, cell_id: c, start: s, end: now.max(s) });
         }
         if log.is_empty() {
             return Err("nothing has been played in Live Loops yet".into());
@@ -640,9 +641,9 @@ impl Session {
             return Err("project is empty".into());
         }
         let sr = 48000; // ADM/Atmos masters are 48 kHz
-        let (bed_audio, objs) = aurora_engine::render_objects(&self.project, Arc::new(self.pool.clone()), sr, start, end);
-        let defs = aurora_engine::adm::bed_712();
-        let bed: Vec<aurora_engine::adm::BedChannel> = defs.iter().zip(bed_audio).map(|((label, spk, az, el), audio)| aurora_engine::adm::BedChannel { label, speaker: spk, azimuth: *az, elevation: *el, audio }).collect();
+        let (bed_audio, objs) = ondina_engine::render_objects(&self.project, Arc::new(self.pool.clone()), sr, start, end);
+        let defs = ondina_engine::adm::bed_712();
+        let bed: Vec<ondina_engine::adm::BedChannel> = defs.iter().zip(bed_audio).map(|((label, spk, az, el), audio)| ondina_engine::adm::BedChannel { label, speaker: spk, azimuth: *az, elevation: *el, audio }).collect();
         let duration = bed[0].audio.len() as f64 / sr as f64;
         let t0 = self.project.tempo.beat_to_sec(start);
         let mut objects = vec![];
@@ -658,7 +659,7 @@ impl Session {
             while ts < duration - 1e-9 {
                 let d = step.min(duration - ts);
                 let beat = self.project.tempo.sec_to_beat(t0 + ts);
-                blocks.push(aurora_engine::adm::ObjectBlock {
+                blocks.push(ondina_engine::adm::ObjectBlock {
                     start_sec: ts,
                     duration_sec: d,
                     azimuth: la.as_ref().and_then(|l| l.value_at(beat)).unwrap_or(sp.azimuth),
@@ -667,9 +668,9 @@ impl Session {
                 });
                 ts += d;
             }
-            objects.push(aurora_engine::adm::AdmObject { name: t.name.clone(), audio, blocks });
+            objects.push(ondina_engine::adm::AdmObject { name: t.name.clone(), audio, blocks });
         }
-        aurora_engine::adm::write_adm_bwf(path, &self.project.name, sr, &bed, &objects)?;
+        ondina_engine::adm::write_adm_bwf(path, &self.project.name, sr, &bed, &objects)?;
         Ok(json!({"path": path.display().to_string(), "sample_rate": sr, "bit_depth": 24, "bed": "7.1.2", "bed_channels": bed.len(), "objects": objects.iter().map(|o| json!({"name": o.name, "position_blocks": o.blocks.len()})).collect::<Vec<_>>(), "duration_sec": duration, "standard": "ITU-R BS.2076 (ADM) + BS.2088 chna in RIFF/WAVE"}))
     }
 
@@ -687,7 +688,7 @@ impl Session {
             if ffmpeg_path().is_none() {
                 return Err(e);
             }
-            let tmp = std::env::temp_dir().join(format!("aurora_movie_{}.wav", std::process::id()));
+            let tmp = std::env::temp_dir().join(format!("ondina_movie_{}.wav", std::process::id()));
             run_ffmpeg(&["-protocol_whitelist", "file", "-i", &input, "-vn", "-acodec", "pcm_f32le", &format!("file:{}", tmp.display())])?;
             let d = load_audio_file(&tmp);
             let _ = std::fs::remove_file(&tmp);
@@ -716,9 +717,9 @@ impl Session {
     }
 
     fn add_vst3(&mut self, track_id: Id, path: &str, as_instrument: Option<bool>, index: Option<usize>) -> Result<Value, String> {
-        let abs = aurora_dsp::vst3::absolute(path);
+        let abs = ondina_dsp::vst3::absolute(path);
         let path = abs.as_str();
-        let (name, is_inst, params) = aurora_dsp::vst3::probe(path)?;
+        let (name, is_inst, params) = ondina_dsp::vst3::probe(path)?;
         let as_inst = as_instrument.unwrap_or(is_inst);
         let inst = PluginInstance {
             id: self.project.alloc_id(),
@@ -794,14 +795,14 @@ mod tests {
         }
         let e = output_path("C:\\out\\a.bat", WAV_EXTENSIONS, "wav").unwrap_err();
         assert!(e.contains(".wav"), "the message must name the expected extension: {e}");
-        assert!(output_path("C:\\out\\song.wav", PROJECT_EXTENSIONS, "aurora").is_err());
+        assert!(output_path("C:\\out\\song.wav", PROJECT_EXTENSIONS, "ondina").is_err());
         assert!(output_path("C:\\out\\s.txt", MUSICXML_EXTENSIONS, "musicxml").is_err());
     }
 
     #[test]
     fn output_path_adds_the_default_extension() {
         assert_eq!(output_path("C:\\out\\mix", WAV_EXTENSIONS, "wav").unwrap(), PathBuf::from("C:\\out\\mix.wav"));
-        assert_eq!(output_path("C:\\out\\song", PROJECT_EXTENSIONS, "aurora").unwrap(), PathBuf::from("C:\\out\\song.aurora"));
+        assert_eq!(output_path("C:\\out\\song", PROJECT_EXTENSIONS, "ondina").unwrap(), PathBuf::from("C:\\out\\song.ondina"));
         assert_eq!(output_path("C:/out/take.mid", MIDI_EXTENSIONS, "mid").unwrap(), PathBuf::from("C:\\out\\take.mid"));
         assert_eq!(output_path("C:\\out\\take.MIDI", MIDI_EXTENSIONS, "mid").unwrap(), PathBuf::from("C:\\out\\take.MIDI"));
         assert_eq!(output_path("C:\\out\\A.WAV", WAV_EXTENSIONS, "wav").unwrap(), PathBuf::from("C:\\out\\A.WAV"));
@@ -826,22 +827,25 @@ mod tests {
     }
 
     #[test]
-    fn aurora_project_file_is_recognised_from_its_header() {
-        let dir = std::env::temp_dir().join("aurora_unit_output");
+    fn ondina_project_file_is_recognised_from_its_header() {
+        let dir = std::env::temp_dir().join("ondina_unit_output");
         std::fs::create_dir_all(&dir).unwrap();
-        let real = dir.join("real.aurora");
-        std::fs::write(&real, aurora_core::save_project_string(&Project::default()).unwrap()).unwrap();
-        assert!(is_aurora_project_file(&real).unwrap());
-        let text = dir.join("text.aurora");
+        let real = dir.join("real.ondina");
+        std::fs::write(&real, ondina_core::save_project_string(&Project::default()).unwrap()).unwrap();
+        assert!(is_ondina_project_file(&real).unwrap());
+        let text = dir.join("text.ondina");
         std::fs::write(&text, "my notes, not a project").unwrap();
-        assert!(!is_aurora_project_file(&text).unwrap());
-        let empty = dir.join("empty.aurora");
+        assert!(!is_ondina_project_file(&text).unwrap());
+        let empty = dir.join("empty.ondina");
         std::fs::write(&empty, "").unwrap();
-        assert!(!is_aurora_project_file(&empty).unwrap());
+        assert!(!is_ondina_project_file(&empty).unwrap());
         let other = dir.join("other.json");
         std::fs::write(&other, "{\"format\": \"something-else\"}").unwrap();
-        assert!(!is_aurora_project_file(&other).unwrap());
-        assert!(is_aurora_project_file(&dir.join("missing.aurora")).is_err());
+        assert!(!is_ondina_project_file(&other).unwrap());
+        assert!(is_ondina_project_file(&dir.join("missing.ondina")).is_err());
+        let legacy = dir.join("legacy.aurora");
+        std::fs::write(&legacy, "{\"format\": \"aurora-project\", \"version\": 1, \"project\": {}}").unwrap();
+        assert!(is_ondina_project_file(&legacy).unwrap(), "projects saved before the rename count as projects");
     }
 
     #[test]

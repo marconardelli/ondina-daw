@@ -1,4 +1,4 @@
-//! Aurora DAW core: project model, the command API, music theory and generators.
+//! Ondina DAW core: project model, the command API, music theory and generators.
 
 pub mod command;
 pub mod generate;
@@ -13,12 +13,25 @@ pub mod theory;
 pub use command::{tool_specs, Command, ToolSpec};
 pub use model::*;
 
-pub const APP_NAME: &str = "Aurora DAW";
-pub const PROJECT_EXTENSION: &str = "aurora";
+pub const APP_NAME: &str = "Ondina DAW";
+pub const PROJECT_EXTENSION: &str = "ondina";
+/// Extension of projects saved before the rename to Ondina; they still open.
+pub const LEGACY_PROJECT_EXTENSION: &str = "aurora";
+
+/// True for a project file name (`.ondina`, or the older `.aurora`).
+pub fn is_project_file(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(&format!(".{PROJECT_EXTENSION}")) || lower.ends_with(&format!(".{LEGACY_PROJECT_EXTENSION}"))
+}
+
+/// Read `ONDINA_<suffix>`, falling back to the pre-rename `AURORA_<suffix>`.
+pub fn env_var(suffix: &str) -> Option<String> {
+    std::env::var(format!("ONDINA_{suffix}")).or_else(|_| std::env::var(format!("AURORA_{suffix}"))).ok()
+}
 
 /// Serialize a project to the JSON project file format.
 pub fn save_project_string(p: &Project) -> Result<String, String> {
-    let doc = serde_json::json!({ "format": "aurora-project", "version": 1, "project": p });
+    let doc = serde_json::json!({ "format": "ondina-project", "version": 1, "project": p });
     serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())
 }
 

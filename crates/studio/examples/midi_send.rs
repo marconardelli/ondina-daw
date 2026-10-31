@@ -1,7 +1,7 @@
 //! Send a short note sequence to a MIDI output port (used to test MIDI input through loopMIDI).
 fn main() {
     let name = std::env::args().nth(1).unwrap_or_else(|| "loopMIDI".into());
-    let out = midir::MidiOutput::new("aurora-test-sender").unwrap();
+    let out = midir::MidiOutput::new("ondina-test-sender").unwrap();
     let port = out.ports().into_iter().find(|p| out.port_name(p).map(|n| n.contains(&name)).unwrap_or(false)).expect("port not found");
     println!("sending to {}", out.port_name(&port).unwrap());
     let mut conn = out.connect(&port, "send").unwrap();

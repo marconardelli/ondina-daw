@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use aurora_core::Id;
-use aurora_dsp::AudioData;
+use ondina_core::Id;
+use ondina_dsp::AudioData;
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::errors::Error as SymError;

@@ -3,8 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
-use aurora_core::command::{tool_specs, Command};
-use aurora_studio::{Session, Source};
+use ondina_core::command::{tool_specs, Command};
+use ondina_studio::{Session, Source};
 use serde_json::{json, Value};
 
 fn call(s: &mut Session, name: &str, args: Value) -> Result<Value, String> {
@@ -17,7 +17,7 @@ fn ok(s: &mut Session, name: &str, args: Value) -> Value {
 }
 
 fn tmp(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join("aurora_features");
+    let d = std::env::temp_dir().join("ondina_features");
     std::fs::create_dir_all(&d).unwrap();
     d.join(name)
 }
@@ -99,7 +99,7 @@ fn every_tool_is_implemented() {
 fn open_project_starts_a_fresh_history() {
     let mut s = Session::new(false);
     ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}));
-    let path = tmp("fresh_history_open.aurora");
+    let path = tmp("fresh_history_open.ondina");
     ok(&mut s, "save_project", json!({"path": path.display().to_string()}));
     ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}));
     assert_eq!(s.project.tracks.len(), 2);
@@ -150,7 +150,7 @@ fn failed_new_project_keeps_the_current_project() {
     write_wav(&wav, &[vec![0.1f32; 4410]], 44100);
     let mut s = Session::new(false);
     ok(&mut s, "import_audio", json!({"path": wav.display().to_string(), "start": 0}));
-    let path = tmp("fresh_history_keep.aurora");
+    let path = tmp("fresh_history_keep.ondina");
     ok(&mut s, "save_project", json!({"path": path.display().to_string()}));
     assert_eq!(s.pool.len(), 1);
 
@@ -282,7 +282,7 @@ fn surround_binaural_score_routes() {
 
 #[test]
 fn movie_scoring_with_ffmpeg() {
-    let Some(ff) = aurora_studio::session_ext::ffmpeg_path() else {
+    let Some(ff) = ondina_studio::session_ext::ffmpeg_path() else {
         eprintln!("ffmpeg not available: skipping");
         return;
     };
@@ -334,7 +334,7 @@ fn third_party_vst3_instrument_and_effect() {
     let peak = a["master"]["peak_dbfs"].as_f64().unwrap();
     assert!(peak > -60.0, "VST3 chain rendered silence: {a}");
     // save/reload keeps the plug-ins
-    let p = tmp("vst.aurora");
+    let p = tmp("vst.ondina");
     ok(&mut s, "save_project", json!({"path": p.display().to_string()}));
     let mut s2 = Session::new(false);
     ok(&mut s2, "open_project", json!({"path": p.display().to_string()}));
@@ -365,17 +365,17 @@ fn object_based_adm_export() {
     assert_eq!((spec.channels, spec.sample_rate, spec.bits_per_sample), (11, 48000, 24));
     let xml = String::from_utf8_lossy(&bytes);
     assert!(xml.contains("typeDefinition=\"Objects\"") && xml.contains("typeDefinition=\"DirectSpeakers\"") && xml.contains("<speakerLabel>U+090</speakerLabel>"));
-    // ADM azimuth is positive to the left: the first block (Aurora -90 = left) must be +90
+    // ADM azimuth is positive to the left: the first block (Ondina -90 = left) must be +90
     assert!(xml.contains("<position coordinate=\"azimuth\">90.00</position>"));
 }
 
 #[test]
 fn ml_stem_splitter() {
-    if aurora_dsp::ml_stems::find_model_dir().is_none() && !Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/models").exists() {
+    if ondina_dsp::ml_stems::find_model_dir().is_none() && !Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/models").exists() {
         eprintln!("ML model not installed: skipping");
         return;
     }
-    std::env::set_var("AURORA_MODELS", Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/models"));
+    std::env::set_var("ONDINA_MODELS", Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/models"));
     let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/models/audio_example.wav");
     if !example.exists() {
         return;
@@ -520,9 +520,9 @@ fn load_movie_refuses_options_and_urls() {
 #[test]
 fn opened_project_with_url_movie_cannot_reach_ffmpeg() {
     let mut s = Session::new(false);
-    s.project.movie = Some(aurora_core::model::MovieRef { path: "http://x/m.mp4".into(), offset_sec: 0.0, duration_sec: 4.0, audio_file_id: None });
-    let file = tmp("url_movie.aurora");
-    std::fs::write(&file, aurora_core::save_project_string(&s.project).unwrap()).unwrap();
+    s.project.movie = Some(ondina_core::model::MovieRef { path: "http://x/m.mp4".into(), offset_sec: 0.0, duration_sec: 4.0, audio_file_id: None });
+    let file = tmp("url_movie.ondina");
+    std::fs::write(&file, ondina_core::save_project_string(&s.project).unwrap()).unwrap();
     let mut s2 = Session::new(false);
     ok(&mut s2, "open_project", json!({"path": file.display().to_string()}));
     let png = tmp("url_movie_frame.png");
@@ -540,7 +540,7 @@ fn opened_project_with_url_movie_cannot_reach_ffmpeg() {
 fn movie_output_paths_are_checked() {
     let mut s = Session::new(false);
     // a syntactically valid local movie: the output check comes before ffmpeg is looked for
-    s.project.movie = Some(aurora_core::model::MovieRef { path: tmp("local_movie.mp4").display().to_string(), offset_sec: 0.0, duration_sec: 4.0, audio_file_id: None });
+    s.project.movie = Some(ondina_core::model::MovieRef { path: tmp("local_movie.mp4").display().to_string(), offset_sec: 0.0, duration_sec: 4.0, audio_file_id: None });
     for (tool, path) in [("extract_movie_frame", "-y.png".to_string()), ("extract_movie_frame", tmp("frame.bmp").display().to_string()), ("export_movie", tmp("scored.avi").display().to_string())] {
         let e = call(&mut s, tool, json!({"path": path})).unwrap_err();
         assert!(e.contains("output path refused"), "{tool} {path}: {e}");
@@ -549,8 +549,8 @@ fn movie_output_paths_are_checked() {
 
 #[test]
 fn movie_frame_preview_uses_local_files_only() {
-    assert!(aurora_studio::session_ext::movie_frame_rgb("http://127.0.0.1:9/m.mp4", 0.0, 320, 180).is_err());
-    let Some(ff) = aurora_studio::session_ext::ffmpeg_path() else {
+    assert!(ondina_studio::session_ext::movie_frame_rgb("http://127.0.0.1:9/m.mp4", 0.0, 320, 180).is_err());
+    let Some(ff) = ondina_studio::session_ext::ffmpeg_path() else {
         eprintln!("ffmpeg not available: skipping");
         return;
     };
@@ -561,7 +561,7 @@ fn movie_frame_preview_uses_local_files_only() {
         .status()
         .unwrap();
     assert!(st.success());
-    let px = aurora_studio::session_ext::movie_frame_rgb(&mp4.display().to_string(), 1.0, 320, 180).unwrap();
+    let px = ondina_studio::session_ext::movie_frame_rgb(&mp4.display().to_string(), 1.0, 320, 180).unwrap();
     assert_eq!(px.len(), 320 * 180 * 3);
 }
 
@@ -651,7 +651,7 @@ fn mcp_writes_to_local_files_still_work() {
     let _ = std::fs::remove_file(&score);
     ok(&mut s, "export_music_xml", json!({"path": tmp("mcp_noext_score").display().to_string()}));
     assert!(score.exists());
-    let proj = tmp("mcp_local.aurora");
+    let proj = tmp("mcp_local.ondina");
     let _ = std::fs::remove_file(&proj);
     ok(&mut s, "save_project", json!({"path": proj.display().to_string()}));
     let mut s2 = Session::new(false);
@@ -662,17 +662,17 @@ fn mcp_writes_to_local_files_still_work() {
 #[test]
 fn mcp_save_project_does_not_overwrite_other_files() {
     let mut s = midi_session();
-    let fake = tmp("not_a_project.aurora");
+    let fake = tmp("not_a_project.ondina");
     std::fs::write(&fake, "my notes, not a project").unwrap();
     let e = call(&mut s, "save_project", json!({"path": fake.display().to_string()})).unwrap_err();
-    assert!(e.contains("not an Aurora project"), "{e}");
+    assert!(e.contains("not an Ondina project"), "{e}");
     assert_eq!(std::fs::read_to_string(&fake).unwrap(), "my notes, not a project");
     let notes = tmp("notes.txt");
     std::fs::write(&notes, "keep me").unwrap();
     let e = call(&mut s, "save_project", json!({"path": notes.display().to_string()})).unwrap_err();
     assert!(e.contains("output path refused"), "{e}");
     assert_eq!(std::fs::read_to_string(&notes).unwrap(), "keep me");
-    let real = tmp("overwrite_real.aurora");
+    let real = tmp("overwrite_real.ondina");
     let _ = std::fs::remove_file(&real);
     ok(&mut s, "save_project", json!({"path": real.display().to_string()}));
     ok(&mut s, "add_track", json!({"kind": "instrument"}));
@@ -690,12 +690,51 @@ fn gui_and_script_writes_are_not_restricted() {
     let _ = std::fs::remove_file(&txt);
     s.execute(Command::SaveProject { path: Some(txt.display().to_string()) }, Source::Gui).unwrap();
     assert!(txt.exists());
-    let over = tmp("gui_overwrite.aurora");
+    let over = tmp("gui_overwrite.ondina");
     std::fs::write(&over, "plain text").unwrap();
     s.execute(Command::SaveProject { path: Some(over.display().to_string()) }, Source::Gui).unwrap();
-    assert!(aurora_studio::session_ext::is_aurora_project_file(&over).unwrap());
+    assert!(ondina_studio::session_ext::is_ondina_project_file(&over).unwrap());
     let bin = tmp("script_any.bin");
     let _ = std::fs::remove_file(&bin);
     s.execute(Command::ExportMidi { path: bin.display().to_string(), track_ids: None }, Source::Script).unwrap();
     assert!(bin.exists());
+}
+#[test]
+fn projects_saved_before_the_rename_still_open() {
+    assert!(ondina_core::is_project_file("C:/songs/Old Song.AURORA"));
+    assert!(ondina_core::is_project_file("new.ondina"));
+    assert!(!ondina_core::is_project_file("take.wav"));
+
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/lofi-beat.aurora");
+    let mut s = Session::new(false);
+    ok(&mut s, "open_project", json!({"path": example.display().to_string()}));
+    assert!(!s.project.tracks.is_empty());
+
+    let saved = tmp("renamed.ondina");
+    ok(&mut s, "save_project", json!({"path": saved.display().to_string()}));
+    let mut again = Session::new(false);
+    ok(&mut again, "open_project", json!({"path": saved.display().to_string()}));
+    assert_eq!(again.project.tracks.len(), s.project.tracks.len());
+}
+
+#[test]
+fn environment_variables_from_before_the_rename_still_work() {
+    std::env::set_var("AURORA_RENAME_PROBE", "old");
+    assert_eq!(ondina_core::env_var("RENAME_PROBE").as_deref(), Some("old"));
+    std::env::set_var("ONDINA_RENAME_PROBE", "new");
+    assert_eq!(ondina_core::env_var("RENAME_PROBE").as_deref(), Some("new"));
+}
+
+#[test]
+fn mcp_can_save_over_a_project_from_before_the_rename() {
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/lofi-beat.aurora");
+    let copy = tmp("resave_old.aurora");
+    std::fs::copy(&example, &copy).unwrap();
+    let mut s = Session::new(false);
+    ok(&mut s, "open_project", json!({"path": copy.display().to_string()}));
+    ok(&mut s, "set_tempo", json!({"bpm": 77}));
+    ok(&mut s, "save_project", json!({"path": copy.display().to_string()}));
+    let mut again = Session::new(false);
+    ok(&mut again, "open_project", json!({"path": copy.display().to_string()}));
+    assert_eq!(again.project.tempo.initial_bpm(), 77.0);
 }

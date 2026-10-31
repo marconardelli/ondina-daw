@@ -1,6 +1,6 @@
-//! Aurora DSP: real-time instruments, audio effects and MIDI effects.
+//! Ondina DSP: real-time instruments, audio effects and MIDI effects.
 //!
-//! Every processor is created by `kind` (see `aurora_core::plugins::REGISTRY`) and
+//! Every processor is created by `kind` (see `ondina_core::plugins::REGISTRY`) and
 //! configured through string parameter ids, so the engine can stay generic.
 
 use std::sync::Arc;
@@ -106,7 +106,7 @@ pub struct MidiEvent {
 pub trait MidiEffect: Send {
     fn set_param(&mut self, id: &str, value: f32);
     /// Transform the block's events (sorted by offset). `frames` = block length.
-    fn process(&mut self, events: &mut Vec<MidiEvent>, frames: usize, ctx: &ProcessContext, key: aurora_core::theory::Key);
+    fn process(&mut self, events: &mut Vec<MidiEvent>, frames: usize, ctx: &ProcessContext, key: ondina_core::theory::Key);
     fn reset(&mut self) {}
 }
 
@@ -158,7 +158,7 @@ pub fn create_midi_effect(kind: &str) -> Option<Box<dyn MidiEffect>> {
 
 /// Apply registry defaults then the given parameter map.
 pub fn configure<F: FnMut(&str, f32)>(kind: &str, params: &std::collections::BTreeMap<String, f32>, mut set: F) {
-    if let Some(info) = aurora_core::plugins::find(kind) {
+    if let Some(info) = ondina_core::plugins::find(kind) {
         for p in info.params {
             set(p.id, params.get(p.id).copied().unwrap_or(p.default));
         }
@@ -168,7 +168,7 @@ pub fn configure<F: FnMut(&str, f32)>(kind: &str, params: &std::collections::BTr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aurora_core::plugins::{PluginCategory, REGISTRY};
+    use ondina_core::plugins::{PluginCategory, REGISTRY};
 
     #[test]
     fn every_registered_plugin_has_a_processor_and_renders_finite_audio() {
@@ -210,7 +210,7 @@ mod tests {
                     let mut m = create_midi_effect(info.kind).unwrap_or_else(|| panic!("no midi fx {}", info.kind));
                     configure(info.kind, &Default::default(), |k, v| m.set_param(k, v));
                     let mut ev = vec![MidiEvent { offset: 0, kind: MidiKind::NoteOn { pitch: 60, velocity: 100 } }];
-                    m.process(&mut ev, 512, &ctx, aurora_core::theory::Key { root: 0, scale: aurora_core::theory::ScaleKind::Major });
+                    m.process(&mut ev, 512, &ctx, ondina_core::theory::Key { root: 0, scale: ondina_core::theory::ScaleKind::Major });
                 }
             }
         }

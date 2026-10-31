@@ -1,4 +1,4 @@
-//! Aurora studio layer: session/command execution, MCP server and the AI assistant.
+//! Ondina studio layer: session/command execution, MCP server and the AI assistant.
 
 pub mod ai;
 pub mod local_ai;

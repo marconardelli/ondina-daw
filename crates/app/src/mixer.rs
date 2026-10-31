@@ -1,17 +1,17 @@
 //! Mixer: one channel strip per track plus the master.
 
-use aurora_core::command::Command;
-use aurora_core::model::*;
-use aurora_core::plugins::{self, PluginCategory};
+use ondina_core::command::Command;
+use ondina_core::model::*;
+use ondina_core::plugins::{self, PluginCategory};
 use eframe::egui::{self, vec2, Color32, RichText, Rounding, Sense};
 
-use crate::app::{AuroraApp, LeftTab};
+use crate::app::{OndinaApp, LeftTab};
 use crate::arrange::draw_meter;
 use crate::theme;
 
 const STRIP_W: f32 = 108.0;
 
-impl AuroraApp {
+impl OndinaApp {
     pub fn mixer_ui(&mut self, ui: &mut egui::Ui) {
         let p = self.project();
         egui::ScrollArea::horizontal().show(ui, |ui| {
@@ -327,7 +327,7 @@ impl AuroraApp {
                                     .monospace(),
                             );
                             let m = self.meters.get(&id).copied().unwrap_or([0.0; 2]);
-                            let pk = aurora_dsp::util::gain_to_db(m[0].max(m[1]));
+                            let pk = ondina_dsp::util::gain_to_db(m[0].max(m[1]));
                             ui.label(
                                 RichText::new(if pk < -59.0 {
                                     "-∞".into()

@@ -1,4 +1,4 @@
-# Aurora DAW
+# Ondina DAW
 
 **A native digital audio workstation for Windows, written in Rust — with a real-time audio engine, a built-in AI
 assistant and a complete MCP API, so that every single operation is available to humans and AI agents alike.**
@@ -10,34 +10,34 @@ assistant and a complete MCP API, so that every single operation is available to
 [![Sponsor](https://img.shields.io/badge/sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/marconardelli)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-support-ff5e5b?logo=kofi&logoColor=white)](https://ko-fi.com/marconardelli)
 
-Aurora covers the full workflow of a modern DAW — compose, record, arrange, mix, master and export.
+Ondina covers the full workflow of a modern DAW — compose, record, arrange, mix, master and export.
 
-> **Status: early (0.x).** Aurora is usable and broad, but young. Expect rough edges, especially in the editors.
+> **Status: early (0.x).** Ondina is usable and broad, but young. Expect rough edges, especially in the editors.
 > Bug reports and contributions are very welcome — see [Contributing](#contributing).
 
 ---
 
 ## Table of contents
 
-- [Why Aurora](#why-aurora)
+- [Why Ondina](#why-ondina)
 - [Features](#features)
 - [Quick start](#quick-start)
-- [Using Aurora](#using-aurora)
+- [Using Ondina](#using-ondina)
 - [AI: three ways in](#ai-three-ways-in)
-- [Controlling Aurora over MCP](#controlling-aurora-over-mcp)
+- [Controlling Ondina over MCP](#controlling-ondina-over-mcp)
 - [Architecture](#architecture)
 - [Project layout](#project-layout)
 - [Building, testing and quality gates](#building-testing-and-quality-gates)
 - [Versioning and releases](#versioning-and-releases)
 - [Roadmap and known limitations](#roadmap-and-known-limitations)
 - [Contributing](#contributing)
-- [Support Aurora](#support-aurora)
+- [Support Ondina](#support-ondina)
 - [Security](#security)
 - [License](#license)
 
 ---
 
-## Why Aurora
+## Why Ondina
 
 - **One API for everything.** Every action — a click in the GUI, undo/redo, an MCP call, the AI assistant — is a
   serializable `Command` executed by the same `Session`. Add a command once and it is instantly available to the
@@ -45,16 +45,16 @@ Aurora covers the full workflow of a modern DAW — compose, record, arrange, mi
 - **Real-time audio in Rust.** The audio thread must deliver a buffer every 1–10 ms without ever stalling. Rust
   gives C/C++ performance with no garbage collector (no unpredictable pauses) and compiler-checked memory and
   thread safety — essential when GUI, audio engine, MCP server and AI agent all work on the same project at once.
-- **AI-native, not AI-dependent.** Aurora works fully offline. The AI assistant can run on a local model, Claude is
+- **AI-native, not AI-dependent.** Ondina works fully offline. The AI assistant can run on a local model, Claude is
   optional, and any external agent can drive the whole DAW through MCP without an API key.
 
 ## Features
 
 Every row is available both in the GUI and as MCP tools (full list in [`MCP_TOOLS.md`](MCP_TOOLS.md)).
 
-| Area | What Aurora does | Main MCP tools |
+| Area | What Ondina does | Main MCP tools |
 |---|---|---|
-| Projects, tempo, meter, key | `.aurora` files, tempo changes, count-in, notes and lyrics | `new_project` `save_project` `set_tempo` `add_tempo_change` `set_key` |
+| Projects, tempo, meter, key | `.ondina` files, tempo changes, count-in, notes and lyrics | `new_project` `save_project` `set_tempo` `add_tempo_change` `set_key` |
 | Transport, cycle, metronome | sample-accurate transport, cycle, click, count-in | `play` `stop` `set_cycle` `set_metronome` `set_count_in` |
 | Tracks and library | instrument, audio and aux bus tracks, 23 patches | `add_track` `apply_patch` `list_patches` |
 | Audio and MIDI recording | WASAPI inputs, MIDI ports, Musical Typing | `record` `set_record_arm` `connect_midi_input` `send_live_midi` |
@@ -92,25 +92,26 @@ Every row is available both in the GUI and as MCP tools (full list in [`MCP_TOOL
 
 ### Download a release
 
-Prebuilt Windows binaries (`aurora.exe` and `aurora-mcp.exe`) are attached to each
-[GitHub release](https://github.com/marconardelli/aurora-daw/releases).
+Prebuilt Windows binaries (`ondina.exe` and `ondina-mcp.exe`) are attached to each
+[GitHub release](https://github.com/marconardelli/ondina-daw/releases).
 
 ### Build from source
 
 ```powershell
-git clone https://github.com/marconardelli/aurora-daw.git
-cd aurora-daw
+git clone https://github.com/marconardelli/ondina-daw.git
+cd ondina-daw
 cargo build --release
-.\target\release\aurora.exe                                # GUI + MCP server on http://127.0.0.1:3917/mcp
-.\target\release\aurora.exe examples\demo-song.aurora      # open an example project
+.\target\release\ondina.exe                                # GUI + MCP server on http://127.0.0.1:3917/mcp
+.\target\release\ondina.exe examples\demo-song.aurora      # open an example project
 ```
 
 Command-line options: `--no-audio` (null audio device), `--mcp-port N`, `--no-mcp`.
 
 The `examples\` folder contains ready-made projects (`demo-song.aurora`, `feature-demo.aurora`, `lofi-beat.aurora`)
-and rendered audio.
+and rendered audio. They were saved before the project was renamed, so they still use the old `.aurora`
+extension: Ondina opens both.
 
-## Using Aurora
+## Using Ondina
 
 - **Arrange window**: double-click an instrument lane to create a MIDI region; drag to move, Alt+drag to copy, drag
   the edge to resize; Shift+drag on the ruler to set the cycle. In the marker lane click a section to jump to it,
@@ -143,10 +144,10 @@ Musical Typing: `A W S E D F T G Y H U J K` play notes, `Z` / `X` change octave.
 
 All three use the same command API, and every AI edit is undoable.
 
-1. **MCP (no key needed)** — any MCP-capable agent (Claude Code, Claude Desktop, other clients) drives Aurora with
+1. **MCP (no key needed)** — any MCP-capable agent (Claude Code, Claude Desktop, other clients) drives Ondina with
    all 156 tools. See below.
 2. **Offline assistant** — the ✨ AI Assistant panel uses a **local language model** through an OpenAI-compatible
-   server (llama.cpp, Ollama, LM Studio…). Aurora starts the bundled llama.cpp server automatically when it finds a
+   server (llama.cpp, Ollama, LM Studio…). Ondina starts the bundled llama.cpp server automatically when it finds a
    `.gguf` model in `tools\llm`. No account, nothing leaves your machine; small models get a curated subset of 31
    tools.
 3. **Claude (optional)** — with an Anthropic API key (Settings ⚙ or `ANTHROPIC_API_KEY`) the panel uses Claude with
@@ -157,27 +158,27 @@ otherwise). The assistant receives the current selection (track, region, notes, 
 actions, and can "listen" to the mix through `analyze_mix`. Contextual AI buttons live in the piano roll, step
 sequencer, plug-in editors and region menus.
 
-## Controlling Aurora over MCP
+## Controlling Ondina over MCP
 
 | Mode | How |
 |---|---|
 | Running app (Streamable HTTP) | `http://127.0.0.1:3917/mcp` |
-| Claude Code | `claude mcp add --transport http aurora http://127.0.0.1:3917/mcp` |
-| stdio clients (Claude Desktop…) → running app | `aurora-mcp.exe` |
-| Headless session, no GUI | `aurora-mcp.exe --headless [--audio] [--project file.aurora]` |
-| List all tools as Markdown | `aurora-mcp.exe --list-tools` |
+| Claude Code | `claude mcp add --transport http ondina http://127.0.0.1:3917/mcp` |
+| stdio clients (Claude Desktop…) → running app | `ondina-mcp.exe` |
+| Headless session, no GUI | `ondina-mcp.exe --headless [--audio] [--project file.ondina]` |
+| List all tools as Markdown | `ondina-mcp.exe --list-tools` |
 
 Example `claude_desktop_config.json`:
 
 ```json
-{ "mcpServers": { "aurora": { "command": "C:\\path\\to\\aurora-mcp.exe" } } }
+{ "mcpServers": { "ondina": { "command": "C:\\path\\to\\ondina-mcp.exe" } } }
 ```
 
-The server exposes **tools** (156, annotated read-only/destructive), **resources** (`aurora://guide`,
-`aurora://project`, `aurora://project/document`, `aurora://plugins`, `aurora://patches`) and **prompts**
+The server exposes **tools** (156, annotated read-only/destructive), **resources** (`ondina://guide`,
+`ondina://project`, `ondina://project/document`, `ondina://plugins`, `ondina://patches`) and **prompts**
 (`compose_song`, `mix_review`, `arrange_sections`). It listens on `127.0.0.1` only, rejects non-local `Origin`
 headers (DNS-rebinding protection), including `Origin: null` unless a token is set, and requires a bearer token when
-`AURORA_MCP_TOKEN` is set.
+`ONDINA_MCP_TOKEN` is set.
 
 API conventions: positions are in **beats** (quarter notes, beat 0 = bar 1), note positions are relative to the
 region start, MIDI pitch 60 = C4, `track_id` 0 = master.
@@ -192,13 +193,13 @@ region start, MIDI pitch 60 = C4, `track_id` 0 = master.
 
 | Crate | Responsibility |
 |---|---|
-| `aurora-core` | project model, the `Command` enum (= the API), music theory, generators, MIDI I/O |
-| `aurora-dsp` | instruments (6), effects (16), MIDI effects (4), flex/stem/tempo audio operations, spatial audio, VST3 host |
-| `aurora-engine` | renderer, real-time `cpal`/WASAPI engine, live loops, recording, stereo/surround bounce, LUFS analysis, ADM |
-| `aurora-studio` | `Session` (executes commands, undo/redo), MCP server (HTTP + stdio + bridge), AI assistant (Claude and local) |
-| `aurora-app` | egui GUI: `aurora.exe` (desktop) and `aurora-mcp.exe` (console, for stdio MCP clients) |
+| `ondina-core` | project model, the `Command` enum (= the API), music theory, generators, MIDI I/O |
+| `ondina-dsp` | instruments (6), effects (16), MIDI effects (4), flex/stem/tempo audio operations, spatial audio, VST3 host |
+| `ondina-engine` | renderer, real-time `cpal`/WASAPI engine, live loops, recording, stereo/surround bounce, LUFS analysis, ADM |
+| `ondina-studio` | `Session` (executes commands, undo/redo), MCP server (HTTP + stdio + bridge), AI assistant (Claude and local) |
+| `ondina-app` | egui GUI: `ondina.exe` (desktop) and `ondina-mcp.exe` (console, for stdio MCP clients) |
 
-Design rules that keep Aurora healthy (please respect them in contributions):
+Design rules that keep Ondina healthy (please respect them in contributions):
 
 - **Every project change goes through a `Command`**, so it is undoable and reachable from GUI, MCP and AI. The GUI
   never mutates the `Project` directly.
@@ -216,7 +217,7 @@ crates/
   dsp/       src/synth.rs, drums.rs, effects.rs, midifx.rs, audio_ops.rs, ml_stems.rs, spatial.rs, vst3.rs
   engine/    src/realtime.rs, renderer.rs, offline.rs, analysis.rs, adm.rs, pool.rs
   studio/    src/session.rs, session_ext.rs, mcp.rs, ai.rs, local_ai.rs, settings.rs; tests/features.rs
-  app/       src/app.rs, arrange.rs, editors.rs, mixer.rs, inspector.rs, extra_ui.rs, assistant.rs; src/bin/aurora-mcp.rs
+  app/       src/app.rs, arrange.rs, editors.rs, mixer.rs, inspector.rs, extra_ui.rs, assistant.rs; src/bin/ondina-mcp.rs
 examples/    example projects and rendered audio
 MCP_TOOLS.md generated reference of every MCP tool
 CHANGELOG.md release notes
@@ -228,7 +229,7 @@ CHANGELOG.md release notes
 cargo build --release                 # optimized build (thin LTO)
 cargo test --workspace                # unit + end-to-end tests
 cargo clippy --workspace --all-targets
-.\target\release\aurora-mcp.exe --list-tools > MCP_TOOLS.md   # regenerate the tool reference
+.\target\release\ondina-mcp.exe --list-tools > MCP_TOOLS.md   # regenerate the tool reference
 ```
 
 The test suite covers DSP, the engine, the session, MCP over HTTP, the AI agent against a mock server and
@@ -243,14 +244,14 @@ A change is ready to merge when:
 - no MCP tool disappears, and `MCP_TOOLS.md` is regenerated if tools changed;
 - no test is removed, renamed or disabled, and no `#[allow(...)]` / `#[ignore]` is added to silence a problem.
 
-Aurora has also been verified by hand on real hardware: third-party VST3 plug-ins (Dexed, Airwindows Consolidated)
+Ondina has also been verified by hand on real hardware: third-party VST3 plug-ins (Dexed, Airwindows Consolidated)
 loaded, played and reopened; MIDI input through a virtual loopMIDI port; recording from a real microphone; ADM files
 rendered with the EBU reference renderer (`ear`, ITU-R BS.2127); the neural stem splitter on a real song; native
 plug-in windows driven over MCP; video linking and export.
 
 ## Versioning and releases
 
-Aurora follows [Semantic Versioning](https://semver.org/). The version lives in `[workspace.package]` in
+Ondina follows [Semantic Versioning](https://semver.org/). The version lives in `[workspace.package]` in
 `Cargo.toml`, every release is tagged `vX.Y.Z`, described in [`CHANGELOG.md`](CHANGELOG.md) (Keep a Changelog
 format) and published as a GitHub release with Windows binaries. While the version is `0.x`, minor versions add
 features and may still change behaviour; patch versions fix and improve.
@@ -268,7 +269,7 @@ features and may still change behaviour; patch versions fix and improve.
   local model on CPU the first answer can take minutes.
 - The score view is display-only for now: edit notes in the piano roll.
 
-Ideas and larger plans are tracked as [GitHub issues](https://github.com/marconardelli/aurora-daw/issues) — look for
+Ideas and larger plans are tracked as [GitHub issues](https://github.com/marconardelli/ondina-daw/issues) — look for
 the `good first issue` and `help wanted` labels.
 
 ## Contributing
@@ -283,20 +284,20 @@ documentation, tests, performance work.
 
 By contributing you agree that your contributions are licensed under the MIT License.
 
-## Support Aurora
+## Support Ondina
 
-Aurora is free and open source, developed in spare time. If it is useful to you and you want to help it grow, you can
+Ondina is free and open source, developed in spare time. If it is useful to you and you want to help it grow, you can
 support its development:
 
 - [**GitHub Sponsors**](https://github.com/sponsors/marconardelli) — one-time or monthly sponsorship.
 - [**Ko-fi**](https://ko-fi.com/marconardelli) — buy me a coffee, no account needed.
 
 Every contribution goes into development time, test hardware and plug-ins. Starring the repository, reporting bugs and
-telling other musicians about Aurora help just as much.
+telling other musicians about Ondina help just as much.
 
 ## Security
 
-Aurora runs a local MCP server and can load native plug-ins, so please read [`SECURITY.md`](SECURITY.md) and report
+Ondina runs a local MCP server and can load native plug-ins, so please read [`SECURITY.md`](SECURITY.md) and report
 vulnerabilities privately as described there, not in public issues.
 
 ## License

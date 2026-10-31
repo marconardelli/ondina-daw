@@ -1,4 +1,4 @@
-//! The complete Aurora API.
+//! The complete Ondina API.
 //!
 //! Every user-facing operation is a [`Command`]. The GUI, undo/redo, the MCP server and the
 //! built-in AI assistant all go through this single enum, so anything the app can do can be
@@ -34,9 +34,9 @@ pub enum Command {
         /// Key like "C major", "A minor", "F# dorian".
         key: Option<String>,
     },
-    /// Open a project file (.aurora JSON).
+    /// Open a project file (.ondina JSON).
     OpenProject { path: String },
-    /// Save the project. Without a path saves to the current file (or fails if never saved). The path must be a .aurora file on a local drive (no network shares); .aurora is added when the path has no extension. An existing file is overwritten only if it is an Aurora project.
+    /// Save the project. Without a path saves to the current file (or fails if never saved). The path must be a .ondina file (or an older .aurora one) on a local drive (no network shares); .ondina is added when the path has no extension. An existing file is overwritten only if it is an Ondina project.
     SaveProject { path: Option<String> },
     /// Rename the project.
     SetProjectName { name: String },

@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use aurora_core::command::Command;
-use aurora_core::ops;
+use ondina_core::command::Command;
+use ondina_core::ops;
 use crossbeam_channel::Sender;
 use serde_json::{json, Value};
 
@@ -30,7 +30,7 @@ pub enum AiEvent {
     Done,
 }
 
-const SYSTEM_PROMPT: &str = r#"You are the music production assistant built into Aurora DAW, a digital audio workstation for Windows. You operate the DAW directly through tools; every tool is an undoable command identical to what the user can do in the GUI.
+const SYSTEM_PROMPT: &str = r#"You are the music production assistant built into Ondina DAW, a digital audio workstation for Windows. You operate the DAW directly through tools; every tool is an undoable command identical to what the user can do in the GUI.
 
 How to work:
 - Start a task by calling get_project unless the context already gives you the ids you need. Never guess ids.
@@ -78,7 +78,7 @@ impl Assistant {
             v["transport"] = s.transport_json();
             v
         };
-        let text = format!("{user_text}\n\n<aurora_context>\n{gui_context}\nProject state: {}\n</aurora_context>", serde_json::to_string(&summary).unwrap_or_default());
+        let text = format!("{user_text}\n\n<ondina_context>\n{gui_context}\nProject state: {}\n</ondina_context>", serde_json::to_string(&summary).unwrap_or_default());
         self.messages.push(json!({"role": "user", "content": [{"type": "text", "text": text}]}));
 
         for _step in 0..MAX_STEPS {

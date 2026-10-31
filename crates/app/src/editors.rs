@@ -1,14 +1,14 @@
 //! Bottom editors: Piano Roll, Step Sequencer and audio region editor.
 
-use aurora_core::command::Command;
-use aurora_core::model::*;
-use aurora_core::theory::note_name;
-use aurora_dsp::MidiKind;
+use ondina_core::command::Command;
+use ondina_core::model::*;
+use ondina_core::theory::note_name;
+use ondina_dsp::MidiKind;
 use eframe::egui::{
     self, pos2, vec2, Align2, Color32, FontId, Rect, RichText, Rounding, Sense, Stroke,
 };
 
-use crate::app::{AuroraApp, Drag};
+use crate::app::{OndinaApp, Drag};
 use crate::theme;
 
 const KEYS_W: f32 = 54.0;
@@ -18,7 +18,7 @@ fn is_black(p: i32) -> bool {
     matches!(p.rem_euclid(12), 1 | 3 | 6 | 8 | 10)
 }
 
-impl AuroraApp {
+impl OndinaApp {
     pub fn editor_ui(&mut self, ui: &mut egui::Ui) {
         let p = self.project();
         let Some((track, region)) = self
@@ -397,7 +397,7 @@ impl AuroraApp {
                 let (tid, pitch) = (track.id, n.pitch);
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_millis(250));
-                    let _ = tx.send(aurora_engine::EngineMsg::Live(
+                    let _ = tx.send(ondina_engine::EngineMsg::Live(
                         tid,
                         MidiKind::NoteOff { pitch },
                     ));
@@ -499,7 +499,7 @@ impl AuroraApp {
                         let tid = track.id;
                         std::thread::spawn(move || {
                             std::thread::sleep(std::time::Duration::from_millis(200));
-                            let _ = tx.send(aurora_engine::EngineMsg::Live(
+                            let _ = tx.send(ondina_engine::EngineMsg::Live(
                                 tid,
                                 MidiKind::NoteOff { pitch },
                             ));

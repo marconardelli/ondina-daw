@@ -1,15 +1,15 @@
 //! Left panel: Inspector (track, instrument, plug-in parameters) and Library (patches).
 
-use aurora_core::command::Command;
-use aurora_core::model::*;
-use aurora_core::plugins::{self, PluginCategory};
+use ondina_core::command::Command;
+use ondina_core::model::*;
+use ondina_core::plugins::{self, PluginCategory};
 use eframe::egui::{self, Color32, RichText};
 
-use crate::app::{AuroraApp, LeftTab};
+use crate::app::{OndinaApp, LeftTab};
 use crate::mixer::effect_menu;
 use crate::theme;
 
-impl AuroraApp {
+impl OndinaApp {
     pub fn left_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.left, LeftTab::Inspector, "ℹ Inspector");
@@ -602,7 +602,7 @@ impl AuroraApp {
                         .small()
                         .color(theme::TEXT_DIM),
                 );
-                let open = aurora_dsp::vst3::open_editors().contains(&pid);
+                let open = ondina_dsp::vst3::open_editors().contains(&pid);
                 if ui
                     .button(if open {
                         "Close plug-in window"

@@ -4,12 +4,12 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use aurora_core::model::*;
-use aurora_core::ops::pattern_to_notes;
-use aurora_dsp::util::{db_to_gain, pan_gains};
-use aurora_dsp::spatial::{self, Binaural};
-use aurora_dsp::vst3::{Vst3Effect, Vst3Processor};
-use aurora_dsp::{configure, create_effect, create_instrument, create_midi_effect, Effect, Instrument, MidiEffect, MidiEvent, MidiKind, ProcessContext};
+use ondina_core::model::*;
+use ondina_core::ops::pattern_to_notes;
+use ondina_dsp::util::{db_to_gain, pan_gains};
+use ondina_dsp::spatial::{self, Binaural};
+use ondina_dsp::vst3::{Vst3Effect, Vst3Processor};
+use ondina_dsp::{configure, create_effect, create_instrument, create_midi_effect, Effect, Instrument, MidiEffect, MidiEvent, MidiKind, ProcessContext};
 
 /// Configure a processor: registry defaults + params, or raw params for VST3.
 fn configure_any<F: FnMut(&str, f32)>(kind: &str, params: &std::collections::BTreeMap<String, f32>, mut set: F) {
@@ -28,7 +28,7 @@ fn make_effect(p: &PluginInstance, sr: f32) -> Option<Box<dyn Effect>> {
         match Vst3Processor::load(path, sr, false) {
             Ok(v) => Some(Box::new(Vst3Effect(v))),
             Err(e) => {
-                eprintln!("[aurora] {e}");
+                eprintln!("[ondina] {e}");
                 None
             }
         }
@@ -43,7 +43,7 @@ fn make_instrument(p: &PluginInstance, sr: f32) -> Option<Box<dyn Instrument>> {
         match Vst3Processor::load(path, sr, true) {
             Ok(v) => Some(Box::new(v)),
             Err(e) => {
-                eprintln!("[aurora] {e}");
+                eprintln!("[ondina] {e}");
                 None
             }
         }
@@ -913,9 +913,9 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aurora_core::command::Command;
-    use aurora_core::generate::DrumStyle;
-    use aurora_core::ops::{self, Outcome};
+    use ondina_core::command::Command;
+    use ondina_core::generate::DrumStyle;
+    use ondina_core::ops::{self, Outcome};
 
     fn run(p: &mut Project, c: Command) -> serde_json::Value {
         match ops::apply(p, &c).unwrap() {

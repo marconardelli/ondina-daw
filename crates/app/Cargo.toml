@@ -1,23 +1,23 @@
 [package]
-name = "aurora-app"
+name = "ondina-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Aurora DAW desktop application"
+description = "Ondina DAW desktop application"
 
 [[bin]]
-name = "aurora"
+name = "ondina"
 path = "src/main.rs"
 
 [[bin]]
-name = "aurora-mcp"
-path = "src/bin/aurora-mcp.rs"
+name = "ondina-mcp"
+path = "src/bin/ondina-mcp.rs"
 
 [dependencies]
-aurora-core = { path = "../core" }
-aurora-dsp = { path = "../dsp" }
-aurora-engine = { path = "../engine" }
-aurora-studio = { path = "../studio" }
+ondina-core = { path = "../core" }
+ondina-dsp = { path = "../dsp" }
+ondina-engine = { path = "../engine" }
+ondina-studio = { path = "../studio" }
 eframe.workspace = true
 rfd.workspace = true
 serde_json.workspace = true

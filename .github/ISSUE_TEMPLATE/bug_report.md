@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Something in Aurora doesn't work as expected
+about: Something in Ondina doesn't work as expected
 labels: bug
 ---
 
@@ -14,12 +14,12 @@ A clear description of the problem.
 **What you expected**
 
 **Environment**
-- Aurora version (Help/About or release tag):
+- Ondina version (Help/About or release tag):
 - Windows version:
 - Audio device / driver:
 - MIDI device (if relevant):
 
 **Project / files**
-If possible, attach a small `.aurora` project that shows the problem.
+If possible, attach a small `.ondina` project that shows the problem.
 
 **Logs or screenshots**

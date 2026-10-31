@@ -4,7 +4,7 @@
 /// An action that throws away the current document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DocAction {
-    /// Close the main window (quit Aurora).
+    /// Close the main window (quit Ondina).
     Close,
     /// File > New Project.
     New,
@@ -89,7 +89,7 @@ mod tests {
             DocAction::Close,
             DocAction::New,
             DocAction::Open(None),
-            DocAction::Open(Some("C:/songs/old.aurora".into())),
+            DocAction::Open(Some("C:/songs/old.ondina".into())),
         ]
     }
 
@@ -150,7 +150,7 @@ mod tests {
             "Save changes to 'Lofi Beat' before creating a new project?"
         );
         assert_eq!(
-            prompt_question("Lofi Beat", &DocAction::Open(Some("x.aurora".into()))),
+            prompt_question("Lofi Beat", &DocAction::Open(Some("x.ondina".into()))),
             "Save changes to 'Lofi Beat' before opening another project?"
         );
         assert_eq!(prompt_question("  ", &DocAction::Open(None)), "Save changes to 'Untitled' before opening another project?");

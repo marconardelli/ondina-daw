@@ -1,4 +1,4 @@
-//! Persistent user settings (%APPDATA%\AuroraDAW\settings.json).
+//! Persistent user settings (%APPDATA%\OndinaDAW\settings.json).
 
 use std::path::PathBuf;
 
@@ -32,11 +32,14 @@ impl Default for Settings {
 impl Settings {
     pub fn path() -> PathBuf {
         let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-        base.join("AuroraDAW").join("settings.json")
+        base.join("OndinaDAW").join("settings.json")
     }
 
     pub fn load() -> Settings {
-        std::fs::read_to_string(Self::path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        // Before the rename the settings lived in %APPDATA%\AuroraDAW: they are read from there until the first save writes the new file.
+        let legacy = Self::path().parent().and_then(|d| d.parent()).map(|b| b.join("AuroraDAW").join("settings.json"));
+        let path = Some(Self::path()).filter(|p| p.exists()).or(legacy).unwrap_or_else(Self::path);
+        std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
 
     pub fn save(&self) {

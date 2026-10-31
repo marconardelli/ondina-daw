@@ -1,12 +1,12 @@
 [package]
-name = "aurora-dsp"
+name = "ondina-dsp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Aurora DAW instruments and effects"
+description = "Ondina DAW instruments and effects"
 
 [dependencies]
-aurora-core = { path = "../core" }
+ondina-core = { path = "../core" }
 rand.workspace = true
 rustfft = "6"
 vst3-host = { version = "0.10", default-features = false }

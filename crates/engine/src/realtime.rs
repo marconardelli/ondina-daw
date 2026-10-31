@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use aurora_core::model::{Id, Project, MASTER_ID};
-use aurora_dsp::MidiKind;
+use ondina_core::model::{Id, Project, MASTER_ID};
+use ondina_dsp::MidiKind;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SizedSample};
 use crossbeam_channel::{unbounded, Receiver, Sender};
@@ -127,7 +127,7 @@ impl Engine {
         let use_audio = self.audio_enabled;
         let beat = shared.beat();
         let handle = std::thread::Builder::new()
-            .name("aurora-audio".into())
+            .name("ondina-audio".into())
             .spawn(move || {
                 if use_audio {
                     match open_output(name, &rx, &shared, &project, &pool, beat) {
@@ -137,7 +137,7 @@ impl Engine {
                             return;
                         }
                         Err(e) => {
-                            eprintln!("[aurora] audio device unavailable ({e}); using null device");
+                            eprintln!("[ondina] audio device unavailable ({e}); using null device");
                         }
                     }
                 }
@@ -266,7 +266,7 @@ impl Engine {
         let shared = self.shared.clone();
         let name = self.input_name.clone();
         let handle = std::thread::Builder::new()
-            .name("aurora-input".into())
+            .name("ondina-input".into())
             .spawn(move || match open_input(name, &shared) {
                 Ok(stream) => {
                     let _ = ready_tx.send(Ok(()));
@@ -449,7 +449,7 @@ where
                 let load = t0.elapsed().as_secs_f32() / budget.max(1e-6);
                 shared.load_bits.store(load.to_bits(), Ordering::Relaxed);
             },
-            |e| eprintln!("[aurora] stream error: {e}"),
+            |e| eprintln!("[ondina] stream error: {e}"),
             None,
         )
         .map_err(|e| e.to_string())
@@ -496,7 +496,7 @@ fn open_input(name: Option<String>, shared: &Arc<Shared>) -> Result<cpal::Stream
     *shared.input_device_name.lock() = device.name().unwrap_or_default();
     let sc: cpal::StreamConfig = config.clone().into();
     let sh = shared.clone();
-    let err = |e| eprintln!("[aurora] input error: {e}");
+    let err = |e| eprintln!("[ondina] input error: {e}");
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => device.build_input_stream(&sc, move |d: &[f32], _: &_| sh.input_buffer.lock().extend_from_slice(d), err, None),
         cpal::SampleFormat::I16 => device.build_input_stream(&sc, move |d: &[i16], _: &_| sh.input_buffer.lock().extend(d.iter().map(|x| *x as f32 / 32768.0)), err, None),

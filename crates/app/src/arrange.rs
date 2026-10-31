@@ -1,13 +1,13 @@
 //! Tracks area: headers, ruler, marker & chord lanes, regions, playhead.
 
-use aurora_core::command::Command;
-use aurora_core::model::*;
-use aurora_core::ops::pattern_to_notes;
+use ondina_core::command::Command;
+use ondina_core::model::*;
+use ondina_core::ops::pattern_to_notes;
 use eframe::egui::{
     self, pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Rounding, Sense, Stroke,
 };
 
-use crate::app::{AuroraApp, BottomTab, Drag};
+use crate::app::{OndinaApp, BottomTab, Drag};
 use crate::theme;
 
 const HEADER_W: f32 = 210.0;
@@ -25,7 +25,7 @@ pub struct MarkerRename {
     pub focus: bool,
 }
 
-impl AuroraApp {
+impl OndinaApp {
     pub fn beat_to_x(&self, beat: f64, origin: f32) -> f32 {
         origin + ((beat - self.scroll_beat) as f32) * self.px_per_beat
     }
@@ -523,7 +523,7 @@ impl AuroraApp {
                         }
                     });
                     if ui.button("Arpeggio (4 bars)").clicked() {
-                        self.cmd(Command::GenerateArpeggio { track_id: tid, start: b, bars: 4, mode: aurora_core::generate::ArpMode::UpDown, rate: Some(0.25), octaves: Some(2), chords: None, beats_per_chord: None, center_pitch: None, seed: None });
+                        self.cmd(Command::GenerateArpeggio { track_id: tid, start: b, bars: 4, mode: ondina_core::generate::ArpMode::UpDown, rate: Some(0.25), octaves: Some(2), chords: None, beats_per_chord: None, center_pitch: None, seed: None });
                         ui.close_menu();
                     }
                     if ui.button("Melody (4 bars)").clicked() {
@@ -980,7 +980,7 @@ impl AuroraApp {
                     ui.close_menu();
                 }
                 ui.separator();
-                for patch in aurora_core::plugins::PATCHES.iter() {
+                for patch in ondina_core::plugins::PATCHES.iter() {
                     let kind = if patch.instrument.is_some() {
                         TrackKind::Instrument
                     } else {
@@ -1242,7 +1242,7 @@ pub fn draw_meter(painter: &egui::Painter, r: Rect, m: [f32; 2]) {
     painter.rect_filled(r, Rounding::same(2.0_f32), Color32::from_rgb(20, 22, 26));
     let w = (r.width() - 1.0) / 2.0;
     for c in 0..2 {
-        let db = aurora_dsp::util::gain_to_db(m[c]).max(-60.0);
+        let db = ondina_dsp::util::gain_to_db(m[c]).max(-60.0);
         let frac = ((db + 60.0) / 66.0).clamp(0.0, 1.0);
         let col = if db > -0.5 {
             theme::REC

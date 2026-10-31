@@ -1,14 +1,14 @@
 //! Local, offline AI assistant: any OpenAI-compatible chat endpoint with tool calling
 //! (llama.cpp `llama-server --jinja`, Ollama, LM Studio...). No API key, no account, data stays
-//! on the machine. Aurora can start a bundled llama.cpp server automatically.
+//! on the machine. Ondina can start a bundled llama.cpp server automatically.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use aurora_core::command::Command;
-use aurora_core::ops;
+use ondina_core::command::Command;
+use ondina_core::ops;
 use crossbeam_channel::Sender;
 use serde_json::{json, Value};
 
@@ -25,7 +25,7 @@ pub const LOCAL_TOOLS: &[&str] = &[
     "add_marker", "copy_section", "play", "stop", "set_playhead", "analyze_mix", "auto_master", "undo", "bounce",
 ];
 
-const SYSTEM: &str = "You are the assistant inside Aurora DAW. You control the DAW only by calling the provided tools. Positions are in beats (quarter notes); bar N starts at beat (N-1)*4 in 4/4. MIDI pitch 60 = C4. Call get_project to learn track ids before editing existing tracks; add_track returns the new track_id. Prefer library patches (e.g. \"Pop Drum Kit\", \"Deep Sub Bass\", \"Lush Pad\", \"Stage Electric Piano\") and the generate_* tools. After finishing, answer briefly in the user's language.";
+const SYSTEM: &str = "You are the assistant inside Ondina DAW. You control the DAW only by calling the provided tools. Positions are in beats (quarter notes); bar N starts at beat (N-1)*4 in 4/4. MIDI pitch 60 = C4. Call get_project to learn track ids before editing existing tracks; add_track returns the new track_id. Prefer library patches (e.g. \"Pop Drum Kit\", \"Deep Sub Bass\", \"Lush Pad\", \"Stage Electric Piano\") and the generate_* tools. After finishing, answer briefly in the user's language.";
 
 fn local_tools() -> Value {
     Value::Array(
@@ -124,7 +124,7 @@ impl LocalAssistant {
             // compact context for small models
             json!({"tempo": p["tempo_bpm"], "key": p["key"], "tracks": p["tracks"].as_array().map(|ts| ts.iter().map(|t| json!({"id": t["id"], "name": t["name"], "regions": t["regions"].as_array().map(|r| r.len()).unwrap_or(0)})).collect::<Vec<_>>())})
         };
-        self.messages.push(json!({"role": "user", "content": format!("{user_text}\n\n[Aurora context] {gui_context} Project: {summary}")}));
+        self.messages.push(json!({"role": "user", "content": format!("{user_text}\n\n[Ondina context] {gui_context} Project: {summary}")}));
         let tools = local_tools();
         let url = format!("{}/chat/completions", base_url(settings));
         for _ in 0..20 {

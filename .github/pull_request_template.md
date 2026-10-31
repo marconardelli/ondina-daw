@@ -12,7 +12,7 @@
 
 - [ ] Project changes go through a `Command` (undoable, available over MCP)
 - [ ] No MCP tool removed or renamed; `MCP_TOOLS.md` regenerated if tools changed
-- [ ] Older `.aurora` projects still open (`#[serde(default)]` on new fields)
+- [ ] Older `.ondina` projects still open (`#[serde(default)]` on new fields)
 - [ ] Nothing allocates, locks or does I/O on the audio thread
 - [ ] No unrelated reformatting
 

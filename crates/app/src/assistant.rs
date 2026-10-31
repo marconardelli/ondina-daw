@@ -2,10 +2,10 @@
 
 use std::sync::atomic::Ordering;
 
-use aurora_studio::Source;
+use ondina_studio::Source;
 use eframe::egui::{self, Color32, RichText};
 
-use crate::app::{AuroraApp, ChatItem};
+use crate::app::{OndinaApp, ChatItem};
 use crate::theme;
 
 const QUICK: &[(&str, &str)] = &[
@@ -17,7 +17,7 @@ const QUICK: &[(&str, &str)] = &[
     ("💡 Suggest", "Look at the project and suggest three concrete creative next steps (don't change anything yet)."),
 ];
 
-impl AuroraApp {
+impl OndinaApp {
     pub fn assistant_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(
@@ -39,11 +39,11 @@ impl AuroraApp {
         });
         let has_key = self.settings.api_key().is_some()
             || !self.api_key_buf.trim().is_empty()
-            || aurora_studio::local_ai::bundled_llm().is_some()
+            || ondina_studio::local_ai::bundled_llm().is_some()
             || self.settings.provider == "local";
         if !has_key {
             egui::Frame::none().fill(Color32::from_rgb(60, 45, 30)).rounding(4.0).inner_margin(6.0).show(ui, |ui| {
-                ui.label(RichText::new("Add an Anthropic API key (Settings ⚙ or ANTHROPIC_API_KEY) to use the built-in assistant. External agents can always drive Aurora through MCP.").small());
+                ui.label(RichText::new("Add an Anthropic API key (Settings ⚙ or ANTHROPIC_API_KEY) to use the built-in assistant. External agents can always drive Ondina through MCP.").small());
             });
         }
         let engine = if self.settings.use_local() {
@@ -55,7 +55,7 @@ impl AuroraApp {
             RichText::new(format!(
                 "{} · {} tools · same API as MCP",
                 engine,
-                aurora_studio::mcp::tools().len()
+                ondina_studio::mcp::tools().len()
             ))
             .small()
             .color(theme::TEXT_DIM),
@@ -152,7 +152,7 @@ impl AuroraApp {
                 .on_hover_text("Undo the last edit")
                 .clicked()
             {
-                self.cmd(aurora_core::Command::Undo {});
+                self.cmd(ondina_core::Command::Undo {});
             }
         });
     }

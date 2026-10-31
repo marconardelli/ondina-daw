@@ -1,11 +1,21 @@
 # Changelog
 
-All notable changes to Aurora are documented in this file.
+All notable changes to Ondina (formerly Aurora) are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Changed
+
+- The project is now called **Ondina** (the name Aurora was already taken). The executables are `ondina.exe` and
+  `ondina-mcp.exe`, the crates are `ondina-*`, new projects are saved as `.ondina` and the MCP resources use
+  `ondina://`. MCP tool names do not change.
+- Compatibility with the old name: `.aurora` projects still open (and appear in the Open dialog), the
+  `AURORA_MCP_TOKEN` and `AURORA_MODELS` variables still work when the `ONDINA_*` ones are not set, settings are read
+  from `%APPDATA%\AuroraDAW` until the first save writes `%APPDATA%\OndinaDAW`, and `aurora://` resource URIs are
+  still served. MCP clients and the assistant can save over `.aurora` projects as well as `.ondina` ones.
 
 ## [0.2.2] - 2026-10-31
 
@@ -102,10 +112,10 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/aurora-daw/compare/v0.2.2...HEAD
-[0.2.2]: https://github.com/marconardelli/aurora-daw/compare/v0.2.1...v0.2.2
-[0.2.1]: https://github.com/marconardelli/aurora-daw/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/marconardelli/aurora-daw/compare/v0.1.2...v0.2.0
-[0.1.2]: https://github.com/marconardelli/aurora-daw/compare/v0.1.1...v0.1.2
-[0.1.1]: https://github.com/marconardelli/aurora-daw/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/marconardelli/aurora-daw/releases/tag/v0.1.0
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/marconardelli/ondina-daw/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/marconardelli/ondina-daw/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/marconardelli/ondina-daw/compare/v0.1.2...v0.2.0
+[0.1.2]: https://github.com/marconardelli/ondina-daw/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/marconardelli/ondina-daw/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/marconardelli/ondina-daw/releases/tag/v0.1.0

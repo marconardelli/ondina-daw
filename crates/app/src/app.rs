@@ -6,15 +6,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use aurora_core::command::Command;
-use aurora_core::model::*;
-use aurora_core::theory::ScaleKind;
-use aurora_dsp::MidiKind;
-use aurora_engine::{EngineMsg, Shared};
-use aurora_studio::ai::{AiEvent, Assistant};
-use aurora_studio::mcp::HttpServerHandle;
-use aurora_studio::session::LogEntry;
-use aurora_studio::{Settings, SharedSession, Source};
+use ondina_core::command::Command;
+use ondina_core::model::*;
+use ondina_core::theory::ScaleKind;
+use ondina_dsp::MidiKind;
+use ondina_engine::{EngineMsg, Shared};
+use ondina_studio::ai::{AiEvent, Assistant};
+use ondina_studio::mcp::HttpServerHandle;
+use ondina_studio::session::LogEntry;
+use ondina_studio::{Settings, SharedSession, Source};
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::{self, Color32, Key, RichText};
 use parking_lot::Mutex;
@@ -52,7 +52,7 @@ pub enum ChatItem {
 
 pub struct AiState {
     pub assistant: Arc<Mutex<Assistant>>,
-    pub local: Arc<Mutex<aurora_studio::local_ai::LocalAssistant>>,
+    pub local: Arc<Mutex<ondina_studio::local_ai::LocalAssistant>>,
     pub tx: Sender<AiEvent>,
     pub rx: Receiver<AiEvent>,
     pub busy: bool,
@@ -139,7 +139,7 @@ pub enum Drag {
     },
 }
 
-pub struct AuroraApp {
+pub struct OndinaApp {
     pub session: SharedSession,
     pub shared: Arc<Shared>,
     pub engine_tx: Sender<EngineMsg>,
@@ -200,7 +200,7 @@ pub struct AuroraApp {
     allow_close: bool,
 }
 
-impl AuroraApp {
+impl OndinaApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         session: SharedSession,
@@ -221,7 +221,7 @@ impl AuroraApp {
             )
         };
         let (tx, rx) = crossbeam_channel::unbounded();
-        AuroraApp {
+        OndinaApp {
             session,
             shared,
             engine_tx,
@@ -286,7 +286,7 @@ impl AuroraApp {
         }
     }
 
-    fn make_view(s: &aurora_studio::Session) -> View {
+    fn make_view(s: &ondina_studio::Session) -> View {
         View {
             project: Arc::new(s.project.clone()),
             revision: s.revision,
@@ -380,7 +380,7 @@ impl AuroraApp {
             .map(|f| f.id)
             .filter(|id| !self.waveforms.contains_key(id))
             .collect();
-        let datas: Vec<(Id, Arc<aurora_dsp::AudioData>)> = missing
+        let datas: Vec<(Id, Arc<ondina_dsp::AudioData>)> = missing
             .iter()
             .filter_map(|id| s.pool.get(id).map(|d| (*id, d.clone())))
             .collect();
@@ -481,7 +481,7 @@ impl AuroraApp {
             if let RegionContent::Midi(m) = &r.content {
                 let v: Vec<usize> = self.selected_notes.iter().copied().collect();
                 // 32 notes keep the context to a few hundred characters; the count says how many more there are.
-                ctx += &aurora_core::ops::selected_notes_context(&m.notes, &v, 32);
+                ctx += &ondina_core::ops::selected_notes_context(&m.notes, &v, 32);
             }
         }
         let session = self.session.clone();
@@ -620,7 +620,7 @@ impl AuroraApp {
 
     fn open_dialog_now(&mut self) {
         if let Some(p) = rfd::FileDialog::new()
-            .add_filter("Aurora Project", &["aurora"])
+            .add_filter("Ondina Project", &["ondina", "aurora"])
             .pick_file()
         {
             self.open_path_now(p.display().to_string());
@@ -641,9 +641,9 @@ impl AuroraApp {
 
     pub fn save(&mut self, save_as: bool) -> bool {
         let path = if save_as || self.view.path.is_none() {
-            let name = format!("{}.aurora", self.view.project.name);
+            let name = format!("{}.ondina", self.view.project.name);
             match rfd::FileDialog::new()
-                .add_filter("Aurora Project", &["aurora"])
+                .add_filter("Ondina Project", &["ondina", "aurora"])
                 .set_file_name(&name)
                 .save_file()
             {
@@ -1475,7 +1475,7 @@ impl AuroraApp {
                                         ScaleKind::Dorian,
                                         ScaleKind::Mixolydian,
                                     ] {
-                                        let k = aurora_core::theory::Key { root, scale };
+                                        let k = ondina_core::theory::Key { root, scale };
                                         if ui.selectable_label(p.key == k, k.name()).clicked() {
                                             self.cmd(Command::SetKey { key: k.name() });
                                         }
@@ -1649,7 +1649,7 @@ impl AuroraApp {
                 ui.label("Local endpoint");
                 ui.text_edit_singleline(&mut self.settings.local_url);
             });
-            ui.label(RichText::new(match aurora_studio::local_ai::bundled_llm() { Some((_, m)) => format!("Bundled local model: {}", m.file_name().and_then(|f| f.to_str()).unwrap_or("")), None => "No bundled local model (tools/llm); any OpenAI-compatible server works.".into() }).small().color(theme::TEXT_DIM));
+            ui.label(RichText::new(match ondina_studio::local_ai::bundled_llm() { Some((_, m)) => format!("Bundled local model: {}", m.file_name().and_then(|f| f.to_str()).unwrap_or("")), None => "No bundled local model (tools/llm); any OpenAI-compatible server works.".into() }).small().color(theme::TEXT_DIM));
             ui.horizontal(|ui| {
                 ui.label("Claude model");
                 ui.text_edit_singleline(&mut self.settings.model);
@@ -1718,18 +1718,18 @@ impl AuroraApp {
         let mut open = self.show_mcp_info;
         egui::Window::new("MCP server").open(&mut open).default_width(560.0).show(ctx, |ui| {
             let addr = self.mcp.as_ref().map(|h| h.address.clone()).unwrap_or_else(|| format!("http://127.0.0.1:{}/mcp", self.settings.mcp_port));
-            ui.label(format!("Aurora exposes its complete API ({} tools) over the Model Context Protocol.", aurora_studio::mcp::tools().len()));
+            ui.label(format!("Ondina exposes its complete API ({} tools) over the Model Context Protocol.", ondina_studio::mcp::tools().len()));
             ui.add_space(4.0);
             ui.label(RichText::new("Streamable HTTP endpoint (controls this running app):").strong());
             ui.code(&addr);
             ui.add_space(4.0);
             ui.label(RichText::new("Claude Code:").strong());
-            ui.code(format!("claude mcp add --transport http aurora {addr}"));
+            ui.code(format!("claude mcp add --transport http ondina {addr}"));
             ui.add_space(4.0);
             ui.label(RichText::new("Stdio clients (e.g. Claude Desktop) — bridge to this app:").strong());
-            let exe = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("aurora-mcp.exe").display().to_string())).unwrap_or("aurora-mcp.exe".into());
-            ui.code(format!("{{\n  \"mcpServers\": {{\n    \"aurora\": {{ \"command\": \"{}\" }}\n  }}\n}}", exe.replace('\\', "\\\\")));
-            ui.label(RichText::new("Add --headless to run a private session without the GUI. Set AURORA_MCP_TOKEN to require a bearer token.").small().color(theme::TEXT_DIM));
+            let exe = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("ondina-mcp.exe").display().to_string())).unwrap_or("ondina-mcp.exe".into());
+            ui.code(format!("{{\n  \"mcpServers\": {{\n    \"ondina\": {{ \"command\": \"{}\" }}\n  }}\n}}", exe.replace('\\', "\\\\")));
+            ui.label(RichText::new("Add --headless to run a private session without the GUI. Set ONDINA_MCP_TOKEN to require a bearer token.").small().color(theme::TEXT_DIM));
             ui.separator();
             ui.label(RichText::new("Recent external activity").strong());
             egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
@@ -1742,8 +1742,8 @@ impl AuroraApp {
         self.show_mcp_info = open;
 
         let mut open = self.show_about;
-        egui::Window::new("Aurora DAW").open(&mut open).show(ctx, |ui| {
-            ui.heading("Aurora DAW");
+        egui::Window::new("Ondina DAW").open(&mut open).show(ctx, |ui| {
+            ui.heading("Ondina DAW");
             ui.label("A native Windows digital audio workstation written in Rust, with an AI assistant and a full MCP API.");
             ui.separator();
             egui::Grid::new("keys").striped(true).show(ui, |ui| {
@@ -1914,7 +1914,7 @@ fn typing_offset(k: Key) -> Option<i32> {
     })
 }
 
-impl eframe::App for AuroraApp {
+impl eframe::App for OndinaApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.sync();
         self.poll_ai();
@@ -1925,7 +1925,7 @@ impl eframe::App for AuroraApp {
         }
 
         let title = format!(
-            "Aurora DAW — {}{}",
+            "Ondina DAW — {}{}",
             self.view.project.name,
             if self.view.dirty { " •" } else { "" }
         );

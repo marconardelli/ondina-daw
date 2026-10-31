@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use aurora_core::theory::Key;
+use ondina_core::theory::Key;
 
 use crate::{MidiEffect, MidiEvent, MidiKind, ProcessContext};
 

@@ -18,7 +18,7 @@ pub struct BedChannel {
 pub struct ObjectBlock {
     pub start_sec: f64,
     pub duration_sec: f64,
-    /// Aurora convention (positive = right); converted to ADM on write.
+    /// Ondina convention (positive = right); converted to ADM on write.
     pub azimuth: f32,
     pub elevation: f32,
     pub width: f32,

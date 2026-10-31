@@ -1,4 +1,4 @@
-//! Aurora audio engine.
+//! Ondina audio engine.
 
 pub mod adm;
 pub mod analysis;
