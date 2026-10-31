@@ -7,6 +7,7 @@ use eframe::egui::{self, Color32, RichText};
 
 use crate::app::{OndinaApp, LeftTab};
 use crate::mixer::effect_menu;
+use crate::region_edit::{self, ColorChoice};
 use crate::theme;
 
 impl OndinaApp {
@@ -336,17 +337,54 @@ impl OndinaApp {
             }
         }
 
-        if let Some((_, r)) = self.selected_region.and_then(|id| p.find_region(id)) {
+        if let Some((rt, r)) = self.selected_region.and_then(|id| p.find_region(id)) {
+            // a fixed id: renaming the region must not close the section
             egui::CollapsingHeader::new(format!("Region: {}", r.name))
+                .id_salt("region-inspector")
                 .default_open(false)
                 .show(ui, |ui| {
+                    let rid = r.id;
+                    let fid = ui.id().with("region-rename");
+                    // reload the text unless the user is typing; the id keeps a commit on the region it was typed for
+                    if !ui.memory(|m| m.has_focus(fid)) || self.region_name_edit.is_none() {
+                        self.region_name_edit = Some((rid, r.name.clone()));
+                    }
+                    let mut commit = None;
+                    if let Some((eid, buf)) = self.region_name_edit.as_mut() {
+                        let resp = ui.add(egui::TextEdit::singleline(buf).id(fid).hint_text("Region name"));
+                        // Esc takes the focus away too: it cancels, the text is reloaded on the next frame
+                        if resp.lost_focus() && !ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            commit = Some((*eid, buf.clone()));
+                        }
+                    }
+                    if let Some((eid, typed)) = commit {
+                        let old = p.find_region(eid).map(|(_, r)| r.name.clone());
+                        if let Some(c) = old.and_then(|o| region_edit::name_command(eid, &o, &typed)) {
+                            self.cmd(c);
+                        }
+                    }
+                    ui.label("Color");
+                    if let Some(choice) = region_edit::color_swatches(ui, r.color) {
+                        if let Some(c) = region_edit::color_command(rid, r.color, choice) {
+                            self.cmd(c);
+                        }
+                    }
+                    ui.horizontal(|ui| {
+                        let mut c = r.color.unwrap_or(rt.color);
+                        if ui.color_edit_button_srgb(&mut c).on_hover_text("Any color").changed() {
+                            if let Some(cmd) = region_edit::color_command(rid, r.color, ColorChoice::Color(c)) {
+                                // one undo step for a whole drag in the picker
+                                self.cmd_merge(cmd, format!("rcolor{rid}"));
+                            }
+                        }
+                        ui.label(RichText::new("Custom").small().color(theme::TEXT_DIM));
+                    });
                     ui.label(format!(
                         "Start {} · length {:.2} beats · loops {}",
                         p.bar_beat_string(r.start),
                         r.length,
                         r.loop_count
                     ));
-                    let rid = r.id;
                     let mut lc = r.loop_count;
                     if ui
                         .add(
