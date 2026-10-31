@@ -504,3 +504,63 @@ fn bounce_tail_sec_zero_is_sample_exact() {
     let req = spec.input_schema.get("required").and_then(|r| r.as_array()).cloned().unwrap_or_default();
     assert!(!req.iter().any(|v| v == "tail_sec"));
 }
+
+#[test]
+fn load_movie_refuses_options_and_urls() {
+    let mut s = Session::new(false);
+    let tracks = s.project.tracks.len();
+    for bad in ["-f lavfi -i testsrc", "http://x/m.mp4", "concat:a.mp4|b.mp4", "\\\\server\\share\\m.mp4"] {
+        let e = call(&mut s, "load_movie", json!({"path": bad})).unwrap_err();
+        assert!(e.contains("movie path refused"), "{bad}: {e}");
+    }
+    assert!(s.project.movie.is_none());
+    assert_eq!(s.project.tracks.len(), tracks);
+}
+
+#[test]
+fn opened_project_with_url_movie_cannot_reach_ffmpeg() {
+    let mut s = Session::new(false);
+    s.project.movie = Some(aurora_core::model::MovieRef { path: "http://x/m.mp4".into(), offset_sec: 0.0, duration_sec: 4.0, audio_file_id: None });
+    let file = tmp("url_movie.aurora");
+    std::fs::write(&file, aurora_core::save_project_string(&s.project).unwrap()).unwrap();
+    let mut s2 = Session::new(false);
+    ok(&mut s2, "open_project", json!({"path": file.display().to_string()}));
+    let png = tmp("url_movie_frame.png");
+    let mp4 = tmp("url_movie_export.mp4");
+    let _ = std::fs::remove_file(&png);
+    let _ = std::fs::remove_file(&mp4);
+    let e = call(&mut s2, "extract_movie_frame", json!({"path": png.display().to_string(), "beat": 0})).unwrap_err();
+    assert!(e.contains("movie path is refused"), "{e}");
+    let e = call(&mut s2, "export_movie", json!({"path": mp4.display().to_string()})).unwrap_err();
+    assert!(e.contains("movie path is refused"), "{e}");
+    assert!(!png.exists() && !mp4.exists());
+}
+
+#[test]
+fn movie_output_paths_are_checked() {
+    let mut s = Session::new(false);
+    // a syntactically valid local movie: the output check comes before ffmpeg is looked for
+    s.project.movie = Some(aurora_core::model::MovieRef { path: tmp("local_movie.mp4").display().to_string(), offset_sec: 0.0, duration_sec: 4.0, audio_file_id: None });
+    for (tool, path) in [("extract_movie_frame", "-y.png".to_string()), ("extract_movie_frame", tmp("frame.bmp").display().to_string()), ("export_movie", tmp("scored.avi").display().to_string())] {
+        let e = call(&mut s, tool, json!({"path": path})).unwrap_err();
+        assert!(e.contains("output path refused"), "{tool} {path}: {e}");
+    }
+}
+
+#[test]
+fn movie_frame_preview_uses_local_files_only() {
+    assert!(aurora_studio::session_ext::movie_frame_rgb("http://127.0.0.1:9/m.mp4", 0.0, 320, 180).is_err());
+    let Some(ff) = aurora_studio::session_ext::ffmpeg_path() else {
+        eprintln!("ffmpeg not available: skipping");
+        return;
+    };
+    let mp4 = tmp("preview_movie.mp4");
+    let st = std::process::Command::new(&ff)
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=25", "-c:v", "libx264", "-pix_fmt", "yuv420p"])
+        .arg(&mp4)
+        .status()
+        .unwrap();
+    assert!(st.success());
+    let px = aurora_studio::session_ext::movie_frame_rgb(&mp4.display().to_string(), 1.0, 320, 180).unwrap();
+    assert_eq!(px.len(), 320 * 180 * 3);
+}
