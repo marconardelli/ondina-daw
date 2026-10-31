@@ -793,3 +793,42 @@ fn removing_tracks_sends_and_plugins_cleans_references_in_one_undo_step() {
         assert_eq!(ok(&mut s, "get_project_json", json!({})), before, "one undo after {tool} {args}");
     }
 }
+
+#[test]
+fn duplicate_patch_and_instrument_keep_automation_consistent_in_one_undo_step() {
+    let mut s = Session::new(false);
+    let src = ok(&mut s, "add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();
+    let bus = ok(&mut s, "add_track", json!({"kind": "bus"}))["track_id"].as_u64().unwrap();
+    ok(&mut s, "add_send", json!({"track_id": src, "bus_id": bus}));
+    let inst = ok(&mut s, "get_track", json!({"track_id": src}))["instrument"]["id"].as_u64().unwrap();
+    let fx = ok(&mut s, "add_effect", json!({"track_id": src, "kind": "gain"}))["plugin_id"].as_u64().unwrap();
+    let lanes = [("volume".to_string(), -6.0), ("pan".to_string(), 0.5), ("send:0".to_string(), -12.0), (format!("plugin:{inst}:cutoff"), 800.0), (format!("plugin:{fx}:gain"), -60.0)];
+    for (target, value) in &lanes {
+        ok(&mut s, "set_automation", json!({"track_id": src, "target": target, "points": [{"beat": 0, "value": value}]}));
+    }
+    let targets = |v: &Value| -> Vec<String> { v["automation"].as_array().unwrap().iter().map(|l| l["target"].as_str().unwrap().to_string()).collect() };
+
+    // duplicate_track: the copy has the same lanes, on its own plug-ins
+    let before = ok(&mut s, "get_project_json", json!({}));
+    let copy = ok(&mut s, "duplicate_track", json!({"track_id": src}))["track_id"].as_u64().unwrap();
+    let t = ok(&mut s, "get_track", json!({"track_id": copy}));
+    let (inst2, fx2) = (t["instrument"]["id"].as_u64().unwrap(), t["channel"]["inserts"][0]["id"].as_u64().unwrap());
+    assert_eq!(targets(&t), vec!["volume".to_string(), "pan".into(), "send:0".into(), format!("plugin:{inst2}:cutoff"), format!("plugin:{fx2}:gain")]);
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(ok(&mut s, "get_project_json", json!({})), before, "one undo after duplicate_track");
+
+    // apply_patch: instrument and insert lanes go, volume, pan and send stay
+    let r = ok(&mut s, "apply_patch", json!({"track_id": src, "patch": "Lush Pad"}));
+    assert_eq!(r["removed_automation_lanes"], json!(2));
+    assert_eq!(targets(&r), vec!["volume".to_string(), "pan".into(), "send:0".into()]);
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(ok(&mut s, "get_project_json", json!({})), before, "one undo after apply_patch");
+
+    // set_instrument: only the old instrument's lane goes
+    let r = ok(&mut s, "set_instrument", json!({"track_id": src, "kind": "fm_synth"}));
+    assert_eq!(r["removed_automation_lanes"], json!(1));
+    let t = ok(&mut s, "get_track", json!({"track_id": src}));
+    assert_eq!(targets(&t), vec!["volume".to_string(), "pan".into(), "send:0".into(), format!("plugin:{fx}:gain")]);
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(ok(&mut s, "get_project_json", json!({})), before, "one undo after set_instrument");
+}

@@ -51,6 +51,10 @@ R (registrazione), lo slider del volume e il meter.
   automazioni delle mandate e dei parametri del plug-in, le celle di Live Loops della traccia e le route
   MIDI verso di lei. Le automazioni delle mandate rimaste restano sulle mandate giuste. Un solo Ctrl+Z
   rimette tutto a posto (una cella che stava suonando va rilanciata).
+- **Duplicate track** copia anche l'automazione: volume, pan, mandate e parametri dei plug-in. Nella copia
+  i parametri automatizzati muovono i plug-in della copia, non quelli della traccia originale.
+- Se cambi lo strumento o applichi una patch dall'inspector, Ondina toglie le automazioni dei parametri dei
+  plug-in sostituiti. Volume, pan e mandate restano. Un solo Ctrl+Z rimette tutto com'era.
 
 ## Corsia marker
 

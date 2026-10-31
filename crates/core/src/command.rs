@@ -93,7 +93,7 @@ pub enum Command {
     },
     /// Delete a track and everything on it. Sends to it from other tracks are removed with their send automation (later send:<i> lanes are renumbered so they stay on the same sends), automation lanes elsewhere that target its plug-ins are removed, and its Live Loops cells and the MIDI input routes to it are deleted, not moved to another track. Returns how many lanes, cells and routes were removed.
     RemoveTrack { track_id: Id },
-    /// Duplicate a track with its plug-ins and regions.
+    /// Duplicate a track with its plug-ins, regions and automation. In the copy, plugin:<id>:<param> lanes point at the copy's own plug-ins; volume, pan, send and surround lanes are copied as they are. Returns the new track id.
     DuplicateTrack { track_id: Id },
     /// Rename a track.
     RenameTrack { track_id: Id, name: String },
@@ -121,7 +121,7 @@ pub enum Command {
     RemoveSend { track_id: Id, send_index: usize },
     /// Get full details of a track: channel strip, instrument and plug-ins with all parameter values, sends, regions, automation.
     GetTrack { track_id: Id },
-    /// Replace a track's instrument and insert effects with a library patch.
+    /// Replace a track's instrument and insert effects with a library patch. Automation lanes that targeted the replaced plug-ins (plugin:<id>:<param>, on any track) are removed; volume, pan, send and MIDI effect lanes stay. Returns the track details and removed_automation_lanes.
     ApplyPatch { track_id: Id, patch: String },
 
     // ------------------------------------------------------------------ plug-ins
@@ -131,7 +131,7 @@ pub enum Command {
     ListPresets { kind: Option<String> },
     /// List library patches (complete channel strip setups: instrument + effect chain) by category.
     ListPatches {},
-    /// Set (or replace) the instrument of an instrument track.
+    /// Set (or replace) the instrument of an instrument track. Automation lanes that targeted the old instrument are removed. Returns the new plugin_id and removed_automation_lanes.
     SetInstrument { track_id: Id, kind: String, preset: Option<String> },
     /// Insert an audio effect on a track's channel strip (track_id 0 = master). index = slot position (default: last). Returns plugin id.
     AddEffect { track_id: Id, kind: String, preset: Option<String>, index: Option<usize> },
