@@ -321,3 +321,31 @@ fn ml_stem_splitter() {
     let voc = stems.iter().find(|x| x["stem"] == "Vocals").unwrap()["rms_db"].as_f64().unwrap();
     assert!(voc > -40.0, "vocal stem should carry the singer: {st}");
 }
+
+#[test]
+fn note_tools_follow_the_selection() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();
+    let notes = json!([
+        {"pitch": 60, "velocity": 100, "start": 0.1, "length": 0.5},
+        {"pitch": 62, "velocity": 100, "start": 0.8, "length": 0.5},
+        {"pitch": 64, "velocity": 100, "start": 0.9, "length": 0.5},
+        {"pitch": 65, "velocity": 100, "start": 0.95, "length": 0.5}
+    ]);
+    let rid = ok(&mut s, "create_midi_region", json!({"track_id": t, "start": 0, "length": 4, "notes": notes}))["region_id"].as_u64().unwrap();
+    let before = ok(&mut s, "get_region", json!({"region_id": rid}))["notes"].clone();
+    let r = ok(&mut s, "quantize_notes", json!({"region_id": rid, "grid": 0.5, "indices": [1, 2]}));
+    assert_eq!(r["indices"], json!([2, 3]));
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(ok(&mut s, "get_region", json!({"region_id": rid}))["notes"], before);
+    let r = ok(&mut s, "humanize_notes", json!({"region_id": rid, "seed": 1, "indices": [0]}));
+    assert_eq!(r["indices"], json!([0]));
+    let r = ok(&mut s, "quantize_notes", json!({"region_id": rid, "grid": 0.5}));
+    assert!(r.get("indices").is_none(), "{r}");
+    for name in ["quantize_notes", "humanize_notes", "snap_notes_to_key"] {
+        let spec = tool_specs().into_iter().find(|t| t.name == name).unwrap();
+        assert!(spec.input_schema["properties"].get("indices").is_some(), "{name} has no indices");
+        let req = spec.input_schema.get("required").and_then(|r| r.as_array()).cloned().unwrap_or_default();
+        assert!(!req.iter().any(|x| x == "indices"), "{name}: indices must stay optional");
+    }
+}
