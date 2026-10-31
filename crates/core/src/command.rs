@@ -230,6 +230,18 @@ pub enum Command {
     InsertChord { region_id: Id, symbol: String, start: f64, length: f64, octave: Option<i32>, inversion: Option<u8>, velocity: Option<u8>, with_bass: Option<bool> },
     /// Add MIDI controller events (64 sustain, 1 mod wheel, 7 volume...) to a region.
     AddCc { region_id: Id, events: Vec<CcEvent> },
+    /// Replace the events of one MIDI controller in a MIDI region: removes that controller's events with from_beat <= beat < to_beat (from the region start and to its end when omitted, so with neither the whole controller is cleared) and inserts `events`, keeping the events of every other controller. Beats are relative to the region start, values 0..127. Controller numbers as in add_cc: 64 sustain (0 = up, 127 = down), 1 mod wheel, 11 expression, 7 volume, 10 pan, 128 pitch bend (64 = centre). An empty `events` erases the range. Returns `removed` and `added`.
+    ReplaceCc {
+        region_id: Id,
+        /// Controller number 0..127, or 128 for pitch bend.
+        controller: u8,
+        /// Start of the range to replace (inclusive), in beats relative to the region start.
+        from_beat: Option<f64>,
+        /// End of the range to replace (exclusive), in beats relative to the region start.
+        to_beat: Option<f64>,
+        /// The controller's new events; they are stored sorted by beat.
+        events: Vec<CcPoint>,
+    },
 
     // ------------------------------------------------------------------ step sequencer
     /// Set one step of a pattern region: velocity 0 = off.
@@ -458,6 +470,15 @@ pub struct CompSegment {
     pub region_id: Id,
     pub from_beat: f64,
     pub to_beat: f64,
+}
+
+/// One controller event of `replace_cc` (the controller is given once for all events).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct CcPoint {
+    /// Position in beats relative to the region start (0 or more).
+    pub beat: f64,
+    /// Value 0..127.
+    pub value: u8,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]

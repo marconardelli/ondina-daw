@@ -4,7 +4,7 @@
 
 use serde_json::{json, Value};
 
-use crate::command::Command;
+use crate::command::{CcPoint, Command};
 use crate::generate::{self, TimedChord};
 use crate::model::*;
 use crate::plugins::{self, PluginCategory};
@@ -185,6 +185,42 @@ fn midi_mut<'a>(p: &'a mut Project, id: Id) -> Result<&'a mut MidiContent, Strin
         RegionContent::Midi(m) => Ok(m),
         _ => err("region is not a MIDI region"),
     }
+}
+
+/// Replaces the events of `controller` with from <= beat < to by `events` and keeps `cc` sorted by beat (stable:
+/// a kept event and a new one at the same beat stay in that order). Returns (removed, added). No checks: callers
+/// validate first. Shared by `replace_cc` and the piano roll's preview, so both give the same result.
+pub fn replace_cc_events(cc: &mut Vec<CcEvent>, controller: u8, from: f64, to: f64, events: &[CcPoint]) -> (usize, usize) {
+    let before = cc.len();
+    cc.retain(|e| !(e.controller == controller && from <= e.beat && e.beat < to));
+    let removed = before - cc.len();
+    cc.extend(events.iter().map(|p| CcEvent { beat: p.beat, controller, value: p.value }));
+    cc.sort_by(|a, b| a.beat.total_cmp(&b.beat));
+    (removed, events.len())
+}
+
+/// Checks the arguments of `replace_cc` and returns the range, open ends as infinities.
+fn check_replace_cc(controller: u8, from: Option<f64>, to: Option<f64>, events: &[CcPoint]) -> Result<(f64, f64), String> {
+    if controller > 128 {
+        return err("controller must be 0..127, or 128 for pitch bend");
+    }
+    if from.is_some_and(|f| !f.is_finite()) || to.is_some_and(|t| !t.is_finite()) {
+        return err("from_beat and to_beat must be finite numbers");
+    }
+    if let (Some(f), Some(t)) = (from, to) {
+        if f >= t {
+            return err("from_beat must be before to_beat");
+        }
+    }
+    for p in events {
+        if !p.beat.is_finite() || p.beat < 0.0 {
+            return Err(format!("event beat {} must be 0 or more", p.beat));
+        }
+        if p.value > 127 {
+            return Err(format!("event value {} at beat {} is out of range 0..127", p.value, p.beat));
+        }
+    }
+    Ok((from.unwrap_or(f64::NEG_INFINITY), to.unwrap_or(f64::INFINITY)))
 }
 
 fn pattern_mut<'a>(p: &'a mut Project, id: Id) -> Result<&'a mut PatternContent, String> {
@@ -1324,6 +1360,12 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             m.cc.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
             ok(json!({"cc_count": m.cc.len()}))
         }
+        ReplaceCc { region_id, controller, from_beat, to_beat, events } => {
+            let (from, to) = check_replace_cc(*controller, *from_beat, *to_beat, events)?;
+            let m = midi_mut(project, *region_id)?;
+            let (removed, added) = replace_cc_events(&mut m.cc, *controller, from, to, events);
+            ok(json!({"removed": removed, "added": added, "cc_count": m.cc.len()}))
+        }
 
         // pattern
         SetPatternStep { region_id, row, step, velocity } => {
@@ -2143,5 +2185,69 @@ mod tests {
         assert_eq!(r["removed_automation_lanes"], json!(2));
         assert_eq!(audio_patch.track(src).unwrap().instrument.as_ref().unwrap().id, inst);
         assert_eq!(lanes_of(&audio_patch, src), vec![lane("volume", -6.0), lane("pan", 0.5), lane(&format!("plugin:{inst}:cutoff"), 800.0), lane(&format!("plugin:{arp}:gate"), 0.3)]);
+    }
+
+    fn cc(beat: f64, controller: u8, value: u8) -> CcEvent {
+        CcEvent { beat, controller, value }
+    }
+
+    fn cc_of(p: &Project, rid: Id) -> Vec<CcEvent> {
+        match &p.find_region(rid).unwrap().1.content {
+            RegionContent::Midi(m) => m.cc.clone(),
+            _ => panic!("not a MIDI region"),
+        }
+    }
+
+    #[test]
+    fn replace_cc_events_keeps_other_controllers_and_sorts() {
+        let mut v = vec![cc(0.0, 64, 127), cc(0.5, 1, 10), cc(1.0, 64, 0), cc(1.5, 1, 50), cc(2.0, 64, 127), cc(3.0, 64, 0)];
+        let pts = [CcPoint { beat: 2.5, value: 0 }, CcPoint { beat: 1.25, value: 127 }];
+        let (removed, added) = replace_cc_events(&mut v, 64, 1.0, 3.0, &pts);
+        assert_eq!((removed, added), (2, 2));
+        // the event at `from` goes, the one at `to` stays
+        assert_eq!(v, vec![cc(0.0, 64, 127), cc(0.5, 1, 10), cc(1.25, 64, 127), cc(1.5, 1, 50), cc(2.5, 64, 0), cc(3.0, 64, 0)]);
+        assert!(v.windows(2).all(|w| w[0].beat <= w[1].beat));
+    }
+
+    #[test]
+    fn replace_cc_events_with_open_range_clears_the_controller() {
+        let mut v = vec![cc(0.0, 1, 10), cc(1.0, 64, 127), cc(20.0, 1, 90)];
+        let (removed, added) = replace_cc_events(&mut v, 1, f64::NEG_INFINITY, f64::INFINITY, &[]);
+        assert_eq!((removed, added), (2, 0));
+        assert_eq!(v, vec![cc(1.0, 64, 127)]);
+    }
+
+    #[test]
+    fn replace_cc_command_checks_its_arguments() {
+        let (mut p, rid) = midi_region(&[]);
+        run(&mut p, Command::AddCc { region_id: rid, events: vec![cc(0.0, 64, 127), cc(1.0, 64, 0)] });
+        let before = cc_of(&p, rid);
+        let pt = |beat: f64, value: u8| vec![CcPoint { beat, value }];
+        let bad = [
+            (129, None, None, pt(0.0, 1)),
+            (64, None, None, pt(0.0, 128)),
+            (64, Some(3.0), Some(1.0), pt(0.0, 1)),
+            (64, Some(2.0), Some(2.0), pt(0.0, 1)),
+            (64, Some(f64::NAN), None, pt(0.0, 1)),
+            (64, None, None, pt(-1.0, 1)),
+            (64, None, None, pt(f64::NAN, 1)),
+        ];
+        for (controller, from_beat, to_beat, events) in bad {
+            let c = Command::ReplaceCc { region_id: rid, controller, from_beat, to_beat, events };
+            assert!(apply(&mut p, &c).is_err(), "{c:?} should fail");
+            assert_eq!(cc_of(&p, rid), before);
+        }
+        let tid = p.find_region(rid).unwrap().0.id;
+        let pr = run(&mut p, Command::CreatePatternRegion { track_id: tid, start: 8.0, steps: None, step_length: None, rows: None, name: None });
+        let prid = pr["region_id"].as_u64().unwrap();
+        let c = Command::ReplaceCc { region_id: prid, controller: 64, from_beat: None, to_beat: None, events: vec![] };
+        assert!(apply(&mut p, &c).is_err());
+        let c = Command::ReplaceCc { region_id: 9999, controller: 64, from_beat: None, to_beat: None, events: vec![] };
+        assert!(apply(&mut p, &c).is_err());
+        assert_eq!(cc_of(&p, rid), before);
+
+        let v = run(&mut p, Command::ReplaceCc { region_id: rid, controller: 64, from_beat: Some(1.0), to_beat: None, events: pt(1.5, 0) });
+        assert_eq!(v, json!({"removed": 1, "added": 1, "cc_count": 2}));
+        assert_eq!(cc_of(&p, rid), vec![cc(0.0, 64, 127), cc(1.5, 64, 0)]);
     }
 }
