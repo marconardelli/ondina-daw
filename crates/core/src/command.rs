@@ -203,7 +203,8 @@ pub enum Command {
         fade_out: Option<f64>,
         /// Audio: play reversed.
         reverse: Option<bool>,
-        /// Hex color "#RRGGBB".
+        /// Hex color "#RRGGBB". An empty string or "none" removes the region's own color, so it shows its
+        /// track's color again.
         color: Option<String>,
     },
     /// Get a region with its notes (MIDI), steps (pattern) or audio settings.

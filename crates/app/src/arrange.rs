@@ -11,6 +11,7 @@ use eframe::egui::{
 use crate::app::{OndinaApp, BottomTab, Drag};
 use crate::arrange_view::{self, apply_step, max_scroll_y, zoom_track_height, ArrangeView, ViewArea};
 use crate::piano_roll_view::{wheel_zoom, zoom_factor};
+use crate::region_edit::{self, region_name_field};
 use crate::theme;
 
 const HEADER_W: f32 = 210.0;
@@ -33,7 +34,7 @@ const REGION_EDGE_PX: f32 = 6.0;
 const HEADER_FULL_H: f32 = 46.0;
 const HEADER_BUTTON_H: f32 = 16.0;
 
-/// A marker or track name being edited in place.
+/// A marker, track or region name being edited in place.
 pub struct InPlaceRename {
     pub id: Id,
     pub text: String,
@@ -726,6 +727,9 @@ impl OndinaApp {
         let mut hovered_track: Option<(Id, TrackKind)> = None;
         let pointer = ui.input(|i| i.pointer.hover_pos());
         let mut track_rename_rect: Option<Rect> = None;
+        let mut region_rename_rect: Option<Rect> = None;
+        // the tracks area right of the headers: a region name field never covers the headers or the lanes
+        let region_area = Rect::from_min_max(pos2(timeline_x, tracks_top), full.max);
         for (i, t) in p.tracks.iter().enumerate() {
             let y = tracks_top + i as f32 * th - self.scroll_y;
             if y + th < tracks_top || y > full.bottom() {
@@ -885,6 +889,10 @@ impl OndinaApp {
                 );
                 let clip =
                     rect.intersect(Rect::from_min_max(pos2(timeline_x, tracks_top), full.max));
+                let renaming = self.region_rename.as_ref().is_some_and(|e| e.id == r.id);
+                if renaming {
+                    region_rename_rect = region_name_field(rect, region_area);
+                }
                 let base = theme::rgb(r.color.unwrap_or(t.color));
                 let selected = self.selected_region == Some(r.id);
                 let body = if r.muted {
@@ -903,13 +911,16 @@ impl OndinaApp {
                         base
                     },
                 );
-                tpainter.text(
-                    pos2(clip.left() + 4.0, header.center().y),
-                    Align2::LEFT_CENTER,
-                    &r.name,
-                    FontId::proportional(10.5),
-                    Color32::BLACK,
-                );
+                // the name field covers the name while it is being edited
+                if !renaming {
+                    tpainter.text(
+                        pos2(clip.left() + 4.0, header.center().y),
+                        Align2::LEFT_CENTER,
+                        &r.name,
+                        FontId::proportional(10.5),
+                        Color32::BLACK,
+                    );
+                }
                 // loop separators
                 for k in 1..r.loop_count {
                     let lx = rx0 + (k as f64 * r.length) as f32 * self.px_per_beat;
@@ -1067,7 +1078,27 @@ impl OndinaApp {
                 let is_pattern = matches!(r.content, RegionContent::Pattern(_));
                 let loops = r.loop_count;
                 let r_clone = r.clone();
+                let rname = r.name.clone();
+                let rcolor = r.color;
+                let rtid = t.id;
                 body_resp.context_menu(|ui| {
+                    if ui.button("Rename…").clicked() {
+                        self.region_rename = Some(InPlaceRename { id: rid, text: rname.clone(), focus: true });
+                        self.selected_region = Some(rid);
+                        self.selected_track = Some(rtid);
+                        // open the field on this frame: region_rename_rect was decided before the menu
+                        region_rename_rect = region_name_field(rect, region_area);
+                        ui.close_menu();
+                    }
+                    ui.menu_button("Color", |ui| {
+                        if let Some(choice) = region_edit::color_swatches(ui, rcolor) {
+                            if let Some(c) = region_edit::color_command(rid, rcolor, choice) {
+                                self.cmd(c);
+                            }
+                            ui.close_menu();
+                        }
+                    });
+                    ui.separator();
                     if ui.button("Split at playhead").clicked() {
                         let b = self.position();
                         self.cmd(Command::SplitRegion { region_id: rid, beat: b });
@@ -1130,6 +1161,25 @@ impl OndinaApp {
                             track_id: ren.id,
                             name,
                         });
+                    }
+                }
+                RenameEdit::Cancel => {}
+            }
+        }
+
+        // Region name field, registered after every region so it sits on top. A region that scrolled out of
+        // view, was deleted or undone away drops the edit.
+        let target = self.region_rename.take().and_then(|ren| {
+            let old = p.find_region(ren.id)?.1.name.clone();
+            Some((ren, old, region_rename_rect?))
+        });
+        if let Some((mut ren, old, r)) = target {
+            let edit_id = ui.id().with(("rrename", ren.id));
+            match rename_field(ui, edit_id, r, FontId::proportional(10.5), &mut ren.text, &mut ren.focus) {
+                RenameEdit::Editing => self.region_rename = Some(ren),
+                RenameEdit::Commit => {
+                    if let Some(c) = region_edit::name_command(ren.id, &old, &ren.text) {
+                        self.cmd(c);
                     }
                 }
                 RenameEdit::Cancel => {}
@@ -1857,8 +1907,8 @@ fn edge_scroll_speed(pointer_y: f32, top: f32, bottom: f32) -> f32 {
     }
 }
 
-/// The name to send after an in-place rename of a marker or a track, or None when nothing should change.
-fn rename_commit(old: &str, typed: &str) -> Option<String> {
+/// The name to send after an in-place rename of a marker, a track or a region, or None when nothing should change.
+pub(crate) fn rename_commit(old: &str, typed: &str) -> Option<String> {
     let t = typed.trim();
     (!t.is_empty() && t != old).then(|| t.to_string())
 }

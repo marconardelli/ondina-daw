@@ -119,7 +119,9 @@ extension: Ondina opens both.
   draws one); click or drag the lower half, with the bar numbers, to move the playhead. Drag a track header up or
   down to reorder the tracks (a line shows where it lands, Esc cancels) and double-click a track's name to rename it in place. In the marker lane click a section to jump to it,
   right-click it to cycle, repeat or delete it, drag it to move it, drag its right edge to resize it and
-  double-click it to rename it; double-click the empty lane to add a 4-bar section. The wheel scrolls the tracks,
+  double-click it to rename it; double-click the empty lane to add a 4-bar section. Right-click a region and choose
+  Rename… to type a new name over it (Enter or a click elsewhere confirms, Esc cancels), or Color to pick one of 12
+  colors; Track color gives it back the color of its track. The wheel scrolls the tracks,
   Shift+wheel (or a horizontal wheel) scrolls time, Ctrl+wheel zooms time around the pointer and Ctrl+Shift+wheel
   makes the tracks taller or shorter around the one under the pointer; View > Zoom In, Zoom Out, Zoom to Fit, Taller
   Tracks and Shorter Tracks do the same from the menu. On short tracks the M/S/R buttons move next to the name and
@@ -132,7 +134,8 @@ extension: Ondina opens both.
   selection by the snap step (1/16 with snap off), ↑/↓ by a semitone, Shift+↑/↓ by an octave; double-click or
   right-click deletes a single note; drag in the velocity lane to set velocities; the selection stays on the same notes after Undo/Redo and assistant or MCP edits; the view opens on the region's notes (double-click the region to frame them again), the wheel scrolls pitch at the same speed both ways, Shift+wheel scrolls time, Ctrl+wheel zooms time around the pointer, Ctrl+Shift+wheel zooms pitch, and the playhead follows the repeats of a looped region.
 - **Score**: switch the editor to 𝄞 Score to see the selected region as notation, export MusicXML, assign lyrics.
-- **Mixer and inspector**: volume, pan, sends, inserts, plug-in parameters and native VST3 windows.
+- **Mixer and inspector**: volume, pan, sends, inserts, plug-in parameters and native VST3 windows; the inspector's
+  Region section renames and recolors the selected region and sets its loop count and velocity offset.
 - **Unsaved changes**: when the project has unsaved changes (the • in the title bar), closing the window, New,
   Open or a recent project first asks *Save*, *Don't Save* or *Cancel*. Esc cancels, Enter saves. A recording in
   progress is stopped and kept before the question.
