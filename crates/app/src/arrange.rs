@@ -14,7 +14,16 @@ use crate::piano_roll_view::{wheel_zoom, zoom_factor};
 use crate::theme;
 
 const HEADER_W: f32 = 210.0;
-const RULER_H: f32 = 22.0;
+const RULER_H: f32 = 30.0;
+/// Height of the cycle strip at the top of the ruler; the bar numbers and the playhead use the rest.
+const CYCLE_STRIP_H: f32 = 11.0;
+/// Grab distance around a cycle edge on the strip. Inside a narrow cycle it shrinks to a third of its width, so
+/// there is always some body left to grab for moving.
+const CYCLE_EDGE_PX: f32 = 6.0;
+/// While a cycle drag rests, its range is sent again this often, so the whole drag stays one undo step (the
+/// session merges steps with the same key only within 1.5 s).
+const CYCLE_RESEND_S: f64 = 0.5;
+const CYCLE_STRIP_HINT: &str = "Cycle strip: drag the cycle to move it, drag an edge to resize it, click it to turn cycle on or off, drag on empty space to draw a new cycle. Shift+drag anywhere on the ruler also draws one.";
 const LANE_H: f32 = 18.0;
 /// Width of the grab strip on a region's right edge. Narrow regions get a third of their width
 /// instead, so there is always some body left to grab for moving.
@@ -1601,6 +1610,105 @@ fn resized_chord_length(start: f64, pointer_beat: f64, snap: f64, next_start: Op
     (end - start).max(MIN_CHORD_LEN)
 }
 
+/// Shortest cycle a drag on the ruler can make, in beats (a sixteenth note).
+const MIN_CYCLE_LEN: f64 = 0.25;
+
+/// Where the pointer is on the ruler's cycle strip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CycleZone {
+    Outside,
+    Body,
+    Start,
+    End,
+}
+
+/// Zone under screen x for a cycle drawn from `x0` to `x1`. The edges can be grabbed from just outside the band too.
+fn cycle_hit_zone(x: f32, x0: f32, x1: f32) -> CycleZone {
+    let inner = CYCLE_EDGE_PX.min((x1 - x0).max(0.0) / 3.0);
+    if x < x0 - CYCLE_EDGE_PX || x > x1 + CYCLE_EDGE_PX {
+        CycleZone::Outside
+    } else if x <= x0 + inner {
+        CycleZone::Start
+    } else if x >= x1 - inner {
+        CycleZone::End
+    } else {
+        CycleZone::Body
+    }
+}
+
+/// The cycle `start..end` grabbed at `grab_beat` with the pointer now at `pointer_beat`: same length, the start on
+/// the grid, never before the song start.
+fn moved_cycle(start: f64, end: f64, grab_beat: f64, pointer_beat: f64, snap: f64) -> (f64, f64) {
+    let s = dragged_marker_beat(start, grab_beat, pointer_beat, snap);
+    (s, s + (end - start))
+}
+
+/// The cycle after dragging its `edge` (Start or End) to `pointer_beat`. The dragged edge snaps to the grid and stays
+/// at least MIN_CYCLE_LEN from the other one, so the edges never cross; the start never goes below 0.
+fn resized_cycle(start: f64, end: f64, edge: CycleZone, pointer_beat: f64, snap: f64) -> (f64, f64) {
+    let b = snap_to(pointer_beat, snap);
+    match edge {
+        CycleZone::Start => (b.min(end - MIN_CYCLE_LEN).max(0.0), end),
+        CycleZone::End => (start, b.max(start + MIN_CYCLE_LEN)),
+        CycleZone::Body | CycleZone::Outside => (start, end),
+    }
+}
+
+/// What a drag on the ruler does, decided where the press began.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RulerDrag {
+    Playhead,
+    DrawCycle,
+    EditCycle(CycleZone),
+}
+
+fn ruler_drag_action(on_strip: bool, shift: bool, zone: CycleZone) -> RulerDrag {
+    if shift {
+        RulerDrag::DrawCycle
+    } else if !on_strip {
+        RulerDrag::Playhead
+    } else if zone == CycleZone::Outside {
+        RulerDrag::DrawCycle
+    } else {
+        RulerDrag::EditCycle(zone)
+    }
+}
+
+/// What a click on the ruler does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RulerClick {
+    Playhead,
+    ToggleCycle,
+}
+
+fn ruler_click_action(on_strip: bool, zone: CycleZone) -> RulerClick {
+    if on_strip && zone != CycleZone::Outside {
+        RulerClick::ToggleCycle
+    } else {
+        RulerClick::Playhead
+    }
+}
+
+/// The command a click on the cycle sends, the same as the C key.
+fn cycle_toggle(c: Cycle) -> Command {
+    Command::SetCycle {
+        enabled: !c.enabled,
+        start: None,
+        end: None,
+    }
+}
+
+/// Undo key for one cycle gesture: every frame of a drag merges into one step, and two drags in a row stay two.
+fn cycle_gesture_key(gesture: u64) -> String {
+    format!("cycle-{gesture}")
+}
+
+fn next_cycle_gesture() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 /// The symbol to send after typing `typed` in the chord field, where `old` is the chord's current symbol (None for
 /// a new chord). Ok(None): nothing to do (empty, or the same chord). Err: not a chord symbol or roman numeral.
 fn chord_commit(old: Option<&str>, typed: &str, key: Key) -> Result<Option<String>, String> {
@@ -1734,9 +1842,11 @@ pub fn draw_meter(painter: &egui::Painter, r: Rect, m: [f32; 2]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        button_row_top, chord_commit, dragged_marker_beat, edge_scroll_speed, new_chord_span, region_edge_width,
-        region_hit_zone, rename_commit, resized_chord_length, resized_marker_length, track_drop_index,
-        track_move_target, RegionZone, HEADER_BUTTON_H, HEADER_FULL_H, MIN_CHORD_LEN, MIN_MARKER_LEN, REGION_EDGE_PX,
+        button_row_top, chord_commit, cycle_gesture_key, cycle_hit_zone, cycle_toggle, dragged_marker_beat,
+        edge_scroll_speed, moved_cycle, new_chord_span, next_cycle_gesture, region_edge_width, region_hit_zone,
+        rename_commit, resized_chord_length, resized_cycle, resized_marker_length, ruler_click_action,
+        ruler_drag_action, track_drop_index, track_move_target, CycleZone, RegionZone, RulerClick, RulerDrag,
+        CYCLE_EDGE_PX, HEADER_BUTTON_H, HEADER_FULL_H, MIN_CHORD_LEN, MIN_CYCLE_LEN, MIN_MARKER_LEN, REGION_EDGE_PX,
         TRACK_DRAG_SCROLL_PX_S,
     };
     use crate::arrange_view::{TRACK_H_MAX, TRACK_H_MIN};
@@ -1989,5 +2099,107 @@ mod tests {
         // the default height keeps the full layout
         assert_eq!(button_row_top(58.0), 26.0);
         const { assert!(TRACK_H_MIN < HEADER_FULL_H) };
+    }
+
+    #[test]
+    fn cycle_strip_hit_zones() {
+        // cycle drawn from x = 200 to x = 300
+        assert_eq!(cycle_hit_zone(150.0, 200.0, 300.0), CycleZone::Outside);
+        assert_eq!(cycle_hit_zone(200.0 - CYCLE_EDGE_PX - 1.0, 200.0, 300.0), CycleZone::Outside);
+        assert_eq!(cycle_hit_zone(195.0, 200.0, 300.0), CycleZone::Start);
+        assert_eq!(cycle_hit_zone(200.0, 200.0, 300.0), CycleZone::Start);
+        assert_eq!(cycle_hit_zone(200.0 + CYCLE_EDGE_PX, 200.0, 300.0), CycleZone::Start);
+        assert_eq!(cycle_hit_zone(210.0, 200.0, 300.0), CycleZone::Body);
+        assert_eq!(cycle_hit_zone(250.0, 200.0, 300.0), CycleZone::Body);
+        assert_eq!(cycle_hit_zone(300.0 - CYCLE_EDGE_PX, 200.0, 300.0), CycleZone::End);
+        assert_eq!(cycle_hit_zone(300.0, 200.0, 300.0), CycleZone::End);
+        assert_eq!(cycle_hit_zone(305.0, 200.0, 300.0), CycleZone::End);
+        assert_eq!(cycle_hit_zone(300.0 + CYCLE_EDGE_PX + 1.0, 200.0, 300.0), CycleZone::Outside);
+        // a narrow cycle keeps a body to grab: 9 px wide, 3 px edges inside
+        assert_eq!(cycle_hit_zone(202.0, 200.0, 209.0), CycleZone::Start);
+        assert_eq!(cycle_hit_zone(204.5, 200.0, 209.0), CycleZone::Body);
+        assert_eq!(cycle_hit_zone(207.0, 200.0, 209.0), CycleZone::End);
+        // zero width: left of it grabs the start, right of it the end
+        assert_eq!(cycle_hit_zone(198.0, 200.0, 200.0), CycleZone::Start);
+        assert_eq!(cycle_hit_zone(202.0, 200.0, 200.0), CycleZone::End);
+    }
+
+    #[test]
+    fn cycle_move_snaps_keeps_its_length_and_stops_at_zero() {
+        // grabbed at beat 10, pointer moved 3.2 beats to the right
+        assert_eq!(moved_cycle(8.0, 16.0, 10.0, 13.2, 1.0), (11.0, 19.0));
+        let (s, e) = moved_cycle(8.0, 16.0, 10.0, 13.2, 0.0);
+        assert!((s - 11.2).abs() < 1e-9 && (e - 19.2).abs() < 1e-9);
+        // a length that is not a multiple of the grid stays the same
+        assert_eq!(moved_cycle(1.0, 3.5, 2.0, 6.2, 1.0), (5.0, 7.5));
+        // would start at beat -5: stops at 0 and keeps 4 beats
+        assert_eq!(moved_cycle(2.0, 6.0, 10.0, 3.0, 1.0), (0.0, 4.0));
+    }
+
+    #[test]
+    fn cycle_resize_keeps_a_sixteenth_and_edges_never_cross() {
+        assert_eq!(resized_cycle(8.0, 16.0, CycleZone::End, 19.6, 1.0), (8.0, 20.0));
+        assert_eq!(resized_cycle(8.0, 16.0, CycleZone::End, 17.9, 4.0), (8.0, 16.0));
+        assert_eq!(resized_cycle(8.0, 16.0, CycleZone::End, 2.0, 1.0), (8.0, 8.0 + MIN_CYCLE_LEN));
+        assert_eq!(resized_cycle(8.0, 16.0, CycleZone::Start, 5.4, 1.0), (5.0, 16.0));
+        assert_eq!(resized_cycle(8.0, 16.0, CycleZone::Start, 30.0, 1.0), (16.0 - MIN_CYCLE_LEN, 16.0));
+        assert_eq!(resized_cycle(8.0, 16.0, CycleZone::Start, -3.0, 1.0), (0.0, 16.0));
+        let (s, e) = resized_cycle(8.0, 16.0, CycleZone::Start, 9.3, 0.0);
+        assert!((s - 9.3).abs() < 1e-9);
+        assert_eq!(e, 16.0);
+        // the body is not an edge: nothing changes
+        assert_eq!(resized_cycle(8.0, 16.0, CycleZone::Body, 12.0, 1.0), (8.0, 16.0));
+    }
+
+    #[test]
+    fn ruler_lower_half_and_shift_drag_work_as_before() {
+        use CycleZone::*;
+        for z in [Outside, Body, Start, End] {
+            assert_eq!(ruler_drag_action(false, false, z), RulerDrag::Playhead, "lower half {z:?}");
+            assert_eq!(ruler_click_action(false, z), RulerClick::Playhead, "lower half {z:?}");
+            assert_eq!(ruler_drag_action(false, true, z), RulerDrag::DrawCycle, "Shift on the lower half {z:?}");
+            assert_eq!(ruler_drag_action(true, true, z), RulerDrag::DrawCycle, "Shift on the strip {z:?}");
+        }
+        assert_eq!(ruler_drag_action(true, false, Outside), RulerDrag::DrawCycle);
+        for z in [Body, Start, End] {
+            assert_eq!(ruler_drag_action(true, false, z), RulerDrag::EditCycle(z));
+            assert_eq!(ruler_click_action(true, z), RulerClick::ToggleCycle);
+        }
+        assert_eq!(ruler_click_action(true, Outside), RulerClick::Playhead);
+        assert_ne!(cycle_gesture_key(next_cycle_gesture()), cycle_gesture_key(next_cycle_gesture()));
+    }
+
+    #[test]
+    fn cycle_strip_gestures_are_one_undo_step_each() {
+        let mut s = Session::new(false);
+        run(&mut s, "set_cycle", json!({"enabled": true, "start": 8.0, "end": 16.0}));
+        let cycle = |s: &Session| (s.project.cycle.enabled, s.project.cycle.start, s.project.cycle.end);
+        let send = |s: &mut Session, (start, end): (f64, f64), key: &str| {
+            let c = Command::SetCycle { enabled: true, start: Some(start), end: Some(end) };
+            s.execute_coalesced(c, key).unwrap();
+        };
+        // body drag grabbed at beat 10: the frames of one gesture share its key
+        let key = cycle_gesture_key(next_cycle_gesture());
+        for b in [11.3, 13.8, 14.2] {
+            send(&mut s, moved_cycle(8.0, 16.0, 10.0, b, 1.0), &key);
+        }
+        assert_eq!(cycle(&s), (true, 12.0, 20.0));
+        // right edge dragged right after: a gesture of its own
+        let key = cycle_gesture_key(next_cycle_gesture());
+        for b in [21.6, 23.9] {
+            send(&mut s, resized_cycle(12.0, 20.0, CycleZone::End, b, 1.0), &key);
+        }
+        assert_eq!(cycle(&s), (true, 12.0, 24.0));
+        // a click on the band
+        let c = cycle_toggle(s.project.cycle);
+        s.execute(c, Source::Gui).unwrap();
+        assert_eq!(cycle(&s), (false, 12.0, 24.0));
+
+        run(&mut s, "undo", json!({}));
+        assert_eq!(cycle(&s), (true, 12.0, 24.0));
+        run(&mut s, "undo", json!({}));
+        assert_eq!(cycle(&s), (true, 12.0, 20.0));
+        run(&mut s, "undo", json!({}));
+        assert_eq!(cycle(&s), (true, 8.0, 16.0));
     }
 }
