@@ -203,6 +203,8 @@ pub struct OndinaApp {
     /// Region the note selection was made in; when `selected_region` changes the indices mean nothing.
     notes_region: Option<Id>,
     pub note_len: f64,
+    /// Notes copied or cut in the piano roll (Ctrl+C / Ctrl+X); lives for the whole app session.
+    pub note_clipboard: Option<crate::note_clipboard::NoteClip>,
     // misc
     pub meters: HashMap<Id, [f32; 2]>,
     pub waveforms: HashMap<Id, Vec<(f32, f32)>>,
@@ -287,6 +289,7 @@ impl OndinaApp {
             selected_notes: HashSet::new(),
             notes_region: None,
             note_len: 0.25,
+            note_clipboard: None,
             meters: HashMap::new(),
             waveforms: HashMap::new(),
             ai: AiState {
@@ -877,6 +880,7 @@ impl OndinaApp {
                 self.pending.push((Command::Redo {}, None));
             }
         });
+        self.piano_roll_keys(ctx);
         let (space, del, home, r, c, k, d_ctrl, s_ctrl, n_ctrl, o_ctrl, b_ctrl, enter) =
             ctx.input(|i| {
                 (
