@@ -7,6 +7,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-31
+
+### Added
+
+- Piano roll: a controller lane below the velocity lane shows one MIDI controller of the region at a time. Pick
+  Sustain, Mod wheel, Expression, Volume, Pan, Pitch bend or any other controller already in the region from the
+  selector on the left, which also shows how many events each one has.
+- Piano roll: the sustain pedal is drawn as bars where it is down, the other controllers as a stepped line.
+- Piano roll: drag in the controller lane to draw one event per snap step, right-drag to erase, click to set or
+  erase a single step. The rest of the curve stays as it was, and each stroke is a single undo step.
+- Piano roll: the CC button closes the controller lane to leave more room for the notes. The built-in Analog Synth
+  and FM Synth respond to the sustain pedal; VST3 instruments get every controller.
+- MCP: new `replace_cc` tool replaces the events of one controller in a beat range, so the assistant can edit
+  sustain, mod wheel and other curves as well as add them.
+
+### Changed
+
+- Regions: right-click a region and choose **Rename…** to type a new name over it (Enter or a click elsewhere
+  confirms, Esc cancels), or **Color** to pick one of 12 colors. **Track color** gives it back the color of its
+  track and keeps following it.
+- Inspector: the Region section renames and recolors the selected region, with the same colors and a **Custom**
+  picker for any color. Every rename or color change is a single undo step.
+
 ## [0.7.0] - 2026-10-31
 
 ### Added
@@ -228,7 +251,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/marconardelli/ondina-daw/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/marconardelli/ondina-daw/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/marconardelli/ondina-daw/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/marconardelli/ondina-daw/compare/v0.5.0...v0.5.1
