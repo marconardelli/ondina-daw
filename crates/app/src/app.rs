@@ -22,6 +22,7 @@ use serde_json::Value;
 
 use crate::theme;
 use crate::doc_guard::{self, Answer, CloseStep, DocAction, Step};
+use crate::note_selection;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BottomTab {
@@ -170,6 +171,8 @@ pub struct AuroraApp {
     pub pr_top_pitch: i32,
     pub pr_key_height: f32,
     pub selected_notes: HashSet<usize>,
+    /// Region the note selection was made in; when `selected_region` changes the indices mean nothing.
+    notes_region: Option<Id>,
     pub note_len: f64,
     // misc
     pub meters: HashMap<Id, [f32; 2]>,
@@ -248,6 +251,7 @@ impl AuroraApp {
             pr_top_pitch: 84,
             pr_key_height: 12.0,
             selected_notes: HashSet::new(),
+            notes_region: None,
             note_len: 0.25,
             meters: HashMap::new(),
             waveforms: HashMap::new(),
@@ -312,14 +316,19 @@ impl AuroraApp {
     }
 
     /// Execute immediately and return the result (waits briefly if the AI or MCP holds the session).
-    pub fn exec(&mut self, c: Command) -> Option<Value> {
+    pub fn exec(&mut self, mut c: Command) -> Option<Value> {
         let Some(mut s) = self.session.try_lock_for(Duration::from_millis(300)) else {
             self.status = "Session busy (AI/MCP running) — try again".into();
             return None;
         };
+        if s.revision != self.view.revision {
+            // The assistant, MCP or a script changed the project since this command was built from the view.
+            note_selection::reindex_command(&mut c, &self.view.project, &s.project);
+        }
         let r = s.execute(c, Source::Gui);
         let v = Self::make_view(&s);
         drop(s);
+        note_selection::follow(&mut self.selected_notes, self.selected_region, &self.view.project, &v.project);
         self.view = v;
         match r {
             Ok(v) => Some(v),
@@ -334,6 +343,12 @@ impl AuroraApp {
         let Some(mut s) = self.session.try_lock() else {
             return;
         };
+        if s.revision != self.view.revision {
+            // Commands queued this frame address notes by index in the project the GUI showed.
+            for (c, _) in self.pending.iter_mut() {
+                note_selection::reindex_command(c, &self.view.project, &s.project);
+            }
+        }
         for (c, key) in self.pending.drain(..) {
             let r = match key {
                 Some(k) => s.execute_coalesced(c, &k),
@@ -352,7 +367,9 @@ impl AuroraApp {
             || s.log.len() != self.view.log.len().min(200)
             || self.view.log.first().map(|l| l.at) != s.log.back().map(|l| l.at)
         {
-            self.view = Self::make_view(&s);
+            let fresh = Self::make_view(&s);
+            note_selection::follow(&mut self.selected_notes, self.selected_region, &self.view.project, &fresh.project);
+            self.view = fresh;
         }
         // waveform peaks for new audio files
         let missing: Vec<Id> = self
@@ -392,6 +409,10 @@ impl AuroraApp {
                 self.selected_region = None;
                 self.selected_notes.clear();
             }
+        }
+        if self.selected_region != self.notes_region {
+            self.selected_notes.clear();
+            self.notes_region = self.selected_region;
         }
     }
 
