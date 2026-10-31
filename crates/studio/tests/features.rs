@@ -504,3 +504,32 @@ fn bounce_tail_sec_zero_is_sample_exact() {
     let req = spec.input_schema.get("required").and_then(|r| r.as_array()).cloned().unwrap_or_default();
     assert!(!req.iter().any(|v| v == "tail_sec"));
 }
+
+#[test]
+fn marker_update_moves_renames_and_resizes_one_undo_step_each() {
+    let mut s = Session::new(false);
+    let id = ok(&mut s, "add_marker", json!({"beat": 0, "name": "Verse", "length": 16}))["marker_id"].as_u64().unwrap();
+    ok(&mut s, "add_marker", json!({"beat": 32, "name": "Chorus", "length": 16}));
+    let pos = |s: &Session| s.project.markers.iter().position(|m| m.id == id).unwrap();
+    let chorus = |s: &Session| s.project.markers.iter().position(|m| m.name == "Chorus").unwrap();
+
+    ok(&mut s, "update_marker", json!({"marker_id": id, "beat": 48}));
+    assert_eq!(s.project.markers[pos(&s)].beat, 48.0);
+    assert!(pos(&s) > chorus(&s), "markers stay sorted by beat");
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(s.project.markers[pos(&s)].beat, 0.0);
+    assert_eq!(pos(&s), 0);
+
+    ok(&mut s, "update_marker", json!({"marker_id": id, "beat": -3}));
+    assert_eq!(s.project.markers[pos(&s)].beat, 0.0);
+
+    ok(&mut s, "update_marker", json!({"marker_id": id, "name": "Intro"}));
+    assert_eq!(s.project.markers[pos(&s)].name, "Intro");
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(s.project.markers[pos(&s)].name, "Verse");
+
+    ok(&mut s, "update_marker", json!({"marker_id": id, "length": 4}));
+    assert_eq!(s.project.markers[pos(&s)].length, Some(4.0));
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(s.project.markers[pos(&s)].length, Some(16.0));
+}
