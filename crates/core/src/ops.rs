@@ -715,14 +715,14 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
         }
         RemoveTrack { track_id } => {
             let idx = project.track_index(*track_id).ok_or("track not found")?;
-            project.tracks.remove(idx);
-            for t in &mut project.tracks {
-                t.channel.sends.retain(|s| s.bus_id != *track_id);
-                if t.channel.output == Output::Bus(*track_id) {
-                    t.channel.output = Output::Master;
-                }
-            }
-            ok(json!({"ok": true}))
+            let removed = project.tracks.remove(idx);
+            let pruned = prune_references(project, &removed);
+            ok(json!({
+                "ok": true,
+                "removed_automation_lanes": pruned.automation_lanes,
+                "removed_live_cells": pruned.live_cells,
+                "removed_midi_routes": pruned.midi_routes,
+            }))
         }
         DuplicateTrack { track_id } => {
             let idx = project.track_index(*track_id).ok_or("track not found")?;
@@ -817,8 +817,8 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             if *send_index >= t.channel.sends.len() {
                 return err("send not found");
             }
-            t.channel.sends.remove(*send_index);
-            ok(json!({"ok": true}))
+            let lanes = remove_sends(t, |i, _| i == *send_index);
+            ok(json!({"ok": true, "removed_automation_lanes": lanes}))
         }
         GetTrack { track_id } => {
             if *track_id == MASTER_ID {
@@ -896,24 +896,11 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             ok(json!({"plugin_id": id}))
         }
         RemovePlugin { plugin_id } => {
-            let pid = *plugin_id;
-            if project.master.inserts.iter().any(|p| p.id == pid) {
-                project.master.inserts.retain(|p| p.id != pid);
-                return ok(json!({"ok": true}));
+            if !remove_plugin_instance(project, *plugin_id) {
+                return err("plug-in not found");
             }
-            for t in &mut project.tracks {
-                if t.instrument.as_ref().map(|i| i.id == pid).unwrap_or(false) {
-                    t.instrument = None;
-                    return ok(json!({"ok": true}));
-                }
-                let before = t.midi_fx.len() + t.channel.inserts.len();
-                t.midi_fx.retain(|p| p.id != pid);
-                t.channel.inserts.retain(|p| p.id != pid);
-                if t.midi_fx.len() + t.channel.inserts.len() != before {
-                    return ok(json!({"ok": true}));
-                }
-            }
-            err("plug-in not found")
+            let lanes = remove_plugin_lanes(project, &[*plugin_id]);
+            ok(json!({"ok": true, "removed_automation_lanes": lanes}))
         }
         MovePlugin { plugin_id, index } => {
             let owner = project.plugin_owner(*plugin_id).ok_or("plug-in not found")?;
@@ -1503,6 +1490,122 @@ fn validate_target(project: &Project, track_id: Id, target: &str) -> Result<(), 
     err("target must be volume, pan, surround:azimuth, surround:elevation, surround:spread, send:<i> or plugin:<id>:<param>")
 }
 
+/// Rewrites `send:<i>` lane targets after some sends of the same track were removed.
+/// `remap[i]` is the new index of old send `i`, or `None` if it was removed (its lane goes too).
+/// Lanes whose index was already out of range point at nothing today and are left as they are.
+/// Returns the number of lanes removed.
+fn remap_send_lanes(lanes: &mut Vec<AutomationLane>, remap: &[Option<usize>]) -> usize {
+    let before = lanes.len();
+    lanes.retain_mut(|lane| {
+        let Some(i) = lane.target.strip_prefix("send:").and_then(|s| s.parse::<usize>().ok()) else { return true };
+        match remap.get(i) {
+            None => true,
+            Some(None) => false,
+            Some(Some(j)) => {
+                if *j != i {
+                    lane.target = format!("send:{j}");
+                }
+                true
+            }
+        }
+    });
+    before - lanes.len()
+}
+
+/// Removes the sends of `track` for which `remove` is true and keeps every remaining `send:<i>` lane
+/// on the send it was automating. Returns the number of lanes removed.
+fn remove_sends(track: &mut Track, mut remove: impl FnMut(usize, &Send) -> bool) -> usize {
+    let mut next = 0;
+    let remap: Vec<Option<usize>> = track
+        .channel
+        .sends
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            if remove(i, s) {
+                None
+            } else {
+                next += 1;
+                Some(next - 1)
+            }
+        })
+        .collect();
+    let old = std::mem::take(&mut track.channel.sends);
+    track.channel.sends = old.into_iter().zip(&remap).filter(|(_, m)| m.is_some()).map(|(s, _)| s).collect();
+    remap_send_lanes(&mut track.automation, &remap)
+}
+
+/// Plug-in id of a `plugin:<id>:<param>` lane target.
+fn lane_plugin_id(target: &str) -> Option<Id> {
+    target.strip_prefix("plugin:")?.split_once(':')?.0.parse().ok()
+}
+
+/// Removes, on every track, the automation lanes that target one of `plugin_ids`. Returns how many went.
+fn remove_plugin_lanes(project: &mut Project, plugin_ids: &[Id]) -> usize {
+    if plugin_ids.is_empty() {
+        return 0;
+    }
+    let mut n = 0;
+    for t in &mut project.tracks {
+        let before = t.automation.len();
+        t.automation.retain(|l| !lane_plugin_id(&l.target).is_some_and(|id| plugin_ids.contains(&id)));
+        n += before - t.automation.len();
+    }
+    n
+}
+
+/// Ids of every plug-in on a track: instrument, MIDI effects and inserts.
+fn track_plugin_ids(t: &Track) -> Vec<Id> {
+    t.instrument.iter().chain(&t.midi_fx).chain(&t.channel.inserts).map(|p| p.id).collect()
+}
+
+/// Removes a plug-in wherever it is (master inserts, instrument, MIDI effects, inserts). False if not found.
+fn remove_plugin_instance(project: &mut Project, pid: Id) -> bool {
+    if project.master.inserts.iter().any(|p| p.id == pid) {
+        project.master.inserts.retain(|p| p.id != pid);
+        return true;
+    }
+    for t in &mut project.tracks {
+        if t.instrument.as_ref().map(|i| i.id == pid).unwrap_or(false) {
+            t.instrument = None;
+            return true;
+        }
+        let before = t.midi_fx.len() + t.channel.inserts.len();
+        t.midi_fx.retain(|p| p.id != pid);
+        t.channel.inserts.retain(|p| p.id != pid);
+        if t.midi_fx.len() + t.channel.inserts.len() != before {
+            return true;
+        }
+    }
+    false
+}
+
+/// What else went away with a removed track, for the command result.
+struct Pruned {
+    automation_lanes: usize,
+    live_cells: usize,
+    midi_routes: usize,
+}
+
+/// Drops everything that still refers to a track that was just removed: sends to it on the other tracks
+/// (with their lanes, renumbering the later `send:<i>` lanes), output routing to it, lanes on other tracks that
+/// target its plug-ins, its Live Loops cells and the MIDI input routes to it.
+fn prune_references(project: &mut Project, removed: &Track) -> Pruned {
+    let mut automation_lanes = 0;
+    for t in &mut project.tracks {
+        automation_lanes += remove_sends(t, |_, s| s.bus_id == removed.id);
+        if t.channel.output == Output::Bus(removed.id) {
+            t.channel.output = Output::Master;
+        }
+    }
+    automation_lanes += remove_plugin_lanes(project, &track_plugin_ids(removed));
+    let cells = project.live.cells.len();
+    project.live.cells.retain(|c| c.track_id != removed.id);
+    let routes = project.midi_routes.len();
+    project.midi_routes.retain(|r| r.track_id != removed.id);
+    Pruned { automation_lanes, live_cells: cells - project.live.cells.len(), midi_routes: routes - project.midi_routes.len() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1654,5 +1757,143 @@ mod tests {
         assert!(s.starts_with(" Selected notes (40 of 40;"), "{s}");
         assert!(s.contains(" 31:") && !s.contains(" 32:"), "{s}");
         assert!(s.ends_with(", +8 more."), "{s}");
+    }
+
+    fn add_track_named(p: &mut Project, kind: TrackKind, name: &str) -> Id {
+        run(p, Command::AddTrack { kind, name: Some(name.into()), patch: None, instrument: None, preset: None, index: None })["track_id"].as_u64().unwrap()
+    }
+
+    fn set_lane(p: &mut Project, track_id: Id, target: &str, value: f32) {
+        run(p, Command::SetAutomation { track_id, target: target.into(), points: vec![AutomationPoint { beat: 0.0, value }] });
+    }
+
+    /// (target, first point value) of every lane of a track, in order.
+    fn lanes_of(p: &Project, track_id: Id) -> Vec<(String, f32)> {
+        p.track(track_id).unwrap().automation.iter().map(|l| (l.target.clone(), l.points.first().map_or(f32::NAN, |x| x.value))).collect()
+    }
+
+    fn lane(target: &str, value: f32) -> (String, f32) {
+        (target.to_string(), value)
+    }
+
+    #[test]
+    fn remap_send_lanes_renames_drops_and_keeps_out_of_range() {
+        let mk = |target: &str, value: f32| AutomationLane { target: target.into(), points: vec![AutomationPoint { beat: 0.0, value }], enabled: true };
+        let mut lanes = vec![mk("volume", 1.0), mk("send:0", 2.0), mk("send:1", 3.0), mk("send:2", 4.0), mk("send:7", 5.0), mk("send:x", 6.0), mk("plugin:5:mix", 7.0)];
+        assert_eq!(remap_send_lanes(&mut lanes, &[Some(0), None, Some(1)]), 1);
+        let got: Vec<(String, f32)> = lanes.iter().map(|l| (l.target.clone(), l.points[0].value)).collect();
+        assert_eq!(got, vec![lane("volume", 1.0), lane("send:0", 2.0), lane("send:1", 4.0), lane("send:7", 5.0), lane("send:x", 6.0), lane("plugin:5:mix", 7.0)]);
+    }
+
+    #[test]
+    fn remove_send_renumbers_later_send_lanes() {
+        let mut p = Project::new("t");
+        let src = add_track_named(&mut p, TrackKind::Instrument, "src");
+        let a = add_track_named(&mut p, TrackKind::Bus, "A");
+        let b = add_track_named(&mut p, TrackKind::Bus, "B");
+        run(&mut p, Command::AddSend { track_id: src, bus_id: a, level_db: None, pre_fader: None });
+        run(&mut p, Command::AddSend { track_id: src, bus_id: b, level_db: None, pre_fader: None });
+        set_lane(&mut p, src, "volume", -6.0);
+        set_lane(&mut p, src, "send:0", -1.0);
+        set_lane(&mut p, src, "send:1", -2.0);
+        let mut last = p.clone();
+        let r = run(&mut p, Command::RemoveSend { track_id: src, send_index: 0 });
+        assert_eq!(r, json!({"ok": true, "removed_automation_lanes": 1}));
+        let sends = &p.track(src).unwrap().channel.sends;
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].bus_id, b);
+        assert_eq!(lanes_of(&p, src), vec![lane("volume", -6.0), lane("send:0", -2.0)]);
+
+        // removing the last send leaves the earlier lanes alone
+        let r = run(&mut last, Command::RemoveSend { track_id: src, send_index: 1 });
+        assert_eq!(r, json!({"ok": true, "removed_automation_lanes": 1}));
+        assert_eq!(lanes_of(&last, src), vec![lane("volume", -6.0), lane("send:0", -1.0)]);
+        assert_eq!(last.track(src).unwrap().channel.sends[0].bus_id, a);
+        assert!(apply(&mut last, &Command::RemoveSend { track_id: src, send_index: 1 }).is_err());
+    }
+
+    #[test]
+    fn remove_track_renumbers_send_lanes_of_other_tracks() {
+        let mut p = Project::new("t");
+        let src = add_track_named(&mut p, TrackKind::Instrument, "src");
+        let other = add_track_named(&mut p, TrackKind::Instrument, "other");
+        let a = add_track_named(&mut p, TrackKind::Bus, "A");
+        let b = add_track_named(&mut p, TrackKind::Bus, "B");
+        let c = add_track_named(&mut p, TrackKind::Bus, "C");
+        for bus in [a, b, c] {
+            run(&mut p, Command::AddSend { track_id: src, bus_id: bus, level_db: None, pre_fader: None });
+        }
+        run(&mut p, Command::AddSend { track_id: other, bus_id: c, level_db: None, pre_fader: None });
+        set_lane(&mut p, src, "send:0", -1.0);
+        set_lane(&mut p, src, "send:1", -2.0);
+        set_lane(&mut p, src, "send:2", -3.0);
+        set_lane(&mut p, other, "send:0", -4.0);
+        let routed = add_track_named(&mut p, TrackKind::Audio, "routed");
+        p.track_mut(routed).unwrap().channel.output = Output::Bus(b);
+
+        let r = run(&mut p, Command::RemoveTrack { track_id: b });
+        assert_eq!(r["ok"], json!(true));
+        assert_eq!(r["removed_automation_lanes"], json!(1));
+        assert_eq!(r["removed_live_cells"], json!(0));
+        assert_eq!(r["removed_midi_routes"], json!(0));
+        let buses: Vec<Id> = p.track(src).unwrap().channel.sends.iter().map(|s| s.bus_id).collect();
+        assert_eq!(buses, vec![a, c]);
+        assert_eq!(lanes_of(&p, src), vec![lane("send:0", -1.0), lane("send:1", -3.0)]);
+        assert_eq!(lanes_of(&p, other), vec![lane("send:0", -4.0)]);
+        assert_eq!(p.track(other).unwrap().channel.sends[0].bus_id, c);
+        assert_eq!(p.track(routed).unwrap().channel.output, Output::Master);
+    }
+
+    #[test]
+    fn remove_plugin_drops_only_its_lanes() {
+        let mut p = Project::new("t");
+        let src = add_track_named(&mut p, TrackKind::Instrument, "src");
+        let other = add_track_named(&mut p, TrackKind::Instrument, "other");
+        let fx = |p: &mut Project, track_id: Id| run(p, Command::AddEffect { track_id, kind: "reverb".into(), preset: None, index: None })["plugin_id"].as_u64().unwrap();
+        let fx1 = fx(&mut p, src);
+        let fx2 = fx(&mut p, src);
+        set_lane(&mut p, src, &format!("plugin:{fx1}:mix"), 0.1);
+        set_lane(&mut p, src, &format!("plugin:{fx1}:size"), 0.2);
+        set_lane(&mut p, src, &format!("plugin:{fx2}:mix"), 0.3);
+        set_lane(&mut p, src, "volume", -6.0);
+        set_lane(&mut p, other, &format!("plugin:{fx1}:mix"), 0.4);
+
+        let r = run(&mut p, Command::RemovePlugin { plugin_id: fx1 });
+        assert_eq!(r, json!({"ok": true, "removed_automation_lanes": 3}));
+        assert_eq!(lanes_of(&p, src), vec![lane(&format!("plugin:{fx2}:mix"), 0.3), lane("volume", -6.0)]);
+        assert!(lanes_of(&p, other).is_empty());
+        assert_eq!(p.track(src).unwrap().channel.inserts.len(), 1);
+        assert_eq!(apply(&mut p, &Command::RemovePlugin { plugin_id: 9999 }).err().as_deref(), Some("plug-in not found"));
+
+        // an effect on the master, automated from a track
+        let m = fx(&mut p, MASTER_ID);
+        set_lane(&mut p, other, &format!("plugin:{m}:mix"), 0.5);
+        let r = run(&mut p, Command::RemovePlugin { plugin_id: m });
+        assert_eq!(r, json!({"ok": true, "removed_automation_lanes": 1}));
+        assert!(p.master.inserts.is_empty());
+        assert!(lanes_of(&p, other).is_empty());
+    }
+
+    #[test]
+    fn remove_track_drops_its_live_cells_routes_and_plugin_lanes() {
+        let mut p = Project::new("t");
+        let t1 = add_track_named(&mut p, TrackKind::Instrument, "t1");
+        let t2 = add_track_named(&mut p, TrackKind::Instrument, "t2");
+        let cell = |p: &mut Project, track_id: Id, scene: usize| run(p, Command::CreateLiveCell { track_id, scene, length: Some(4.0), notes: Some(vec![]), from_region_id: None, name: None })["cell_id"].as_u64().unwrap();
+        cell(&mut p, t1, 0);
+        cell(&mut p, t1, 1);
+        let kept_cell = cell(&mut p, t2, 0);
+        let route = |name: &str, track_id: Id| MidiRoute { name: name.into(), channel: None, note_min: None, note_max: None, transpose: 0, velocity_scale: None, track_id };
+        run(&mut p, Command::SetMidiRoutes { routes: vec![route("one", t1), route("two", t2)] });
+        let fx = run(&mut p, Command::AddEffect { track_id: t1, kind: "reverb".into(), preset: None, index: None })["plugin_id"].as_u64().unwrap();
+        set_lane(&mut p, t2, &format!("plugin:{fx}:mix"), 0.4);
+        set_lane(&mut p, t1, "volume", -3.0);
+
+        let r = run(&mut p, Command::RemoveTrack { track_id: t1 });
+        assert_eq!(r, json!({"ok": true, "removed_automation_lanes": 1, "removed_live_cells": 2, "removed_midi_routes": 1}));
+        let cells: Vec<Id> = p.live.cells.iter().map(|c| c.id).collect();
+        assert_eq!(cells, vec![kept_cell]);
+        assert_eq!(p.midi_routes, vec![route("two", t2)]);
+        assert!(lanes_of(&p, t2).is_empty());
     }
 }
