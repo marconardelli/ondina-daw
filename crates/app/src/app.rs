@@ -434,10 +434,10 @@ impl AuroraApp {
                 " Selected region: '{}' (id {}) on track {} from beat {} length {}.",
                 r.name, r.id, t.id, r.start, r.length
             );
-            if !self.selected_notes.is_empty() {
-                let mut v: Vec<_> = self.selected_notes.iter().copied().collect();
-                v.sort();
-                ctx += &format!(" Selected note indices: {v:?}.");
+            if let RegionContent::Midi(m) = &r.content {
+                let v: Vec<usize> = self.selected_notes.iter().copied().collect();
+                // 32 notes keep the context to a few hundred characters; the count says how many more there are.
+                ctx += &aurora_core::ops::selected_notes_context(&m.notes, &v, 32);
             }
         }
         let session = self.session.clone();
