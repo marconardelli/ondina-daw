@@ -171,6 +171,8 @@ pub struct AuroraApp {
     pub pr_top_pitch: i32,
     pub pr_key_height: f32,
     pub selected_notes: HashSet<usize>,
+    /// Region the note selection was made in; when `selected_region` changes the indices mean nothing.
+    notes_region: Option<Id>,
     pub note_len: f64,
     // misc
     pub meters: HashMap<Id, [f32; 2]>,
@@ -249,6 +251,7 @@ impl AuroraApp {
             pr_top_pitch: 84,
             pr_key_height: 12.0,
             selected_notes: HashSet::new(),
+            notes_region: None,
             note_len: 0.25,
             meters: HashMap::new(),
             waveforms: HashMap::new(),
@@ -406,6 +409,10 @@ impl AuroraApp {
                 self.selected_region = None;
                 self.selected_notes.clear();
             }
+        }
+        if self.selected_region != self.notes_region {
+            self.selected_notes.clear();
+            self.notes_region = self.selected_region;
         }
     }
 
