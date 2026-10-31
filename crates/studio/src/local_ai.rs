@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use ondina_core::command::Command;
 use ondina_core::ops;
-use crossbeam_channel::Sender;
+use crossbeam_channel::{RecvTimeoutError, Sender};
 use serde_json::{json, Value};
 
 use crate::ai::AiEvent;
@@ -87,6 +87,42 @@ fn trim_history(messages: &mut Vec<Value>, budget: usize) -> bool {
         messages.drain(assistants[0]..assistants[1]);
     }
     true
+}
+
+/// A conversation must not end on a user or tool message before the next user text: some chat
+/// templates reject two user messages in a row.
+fn close_dangling_turn(messages: &mut Vec<Value>) {
+    if messages.last().map(|m| m["role"] != "assistant").unwrap_or(false) {
+        messages.push(json!({"role": "assistant", "content": "(stopped)"}));
+    }
+}
+
+/// Posts `body` on a helper thread and waits for the answer while watching `cancel`.
+/// Returns Ok(None) when the user pressed Stop: the request is abandoned and its thread ends on its own
+/// when the server answers (the reply goes nowhere).
+fn post_cancellable(url: &str, body: String, cancel: &AtomicBool) -> Result<Option<Value>, String> {
+    let (tx, rx) = crossbeam_channel::bounded::<Result<Value, String>>(1);
+    let url = url.to_string();
+    std::thread::Builder::new()
+        .name("local-ai-request".into())
+        .spawn(move || {
+            let r = match ureq::post(&url).timeout(Duration::from_secs(600)).set("content-type", "application/json").send_string(&body) {
+                Ok(r) => r.into_string().ok().and_then(|t| serde_json::from_str(&t).ok()).ok_or_else(|| "invalid response from the local model".to_string()),
+                Err(e) => Err(format!("local model error: {e}")),
+            };
+            let _ = tx.send(r);
+        })
+        .map_err(|e| format!("cannot start the request thread: {e}"))?;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(r) => return r.map(Some),
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => return Err("the local model request ended unexpectedly".into()),
+        }
+    }
 }
 
 /// Bundled llama.cpp server and model, looked up next to the executable or in ./tools/llm.
@@ -182,21 +218,20 @@ impl LocalAssistant {
         let url = format!("{}/chat/completions", base_url(settings));
         for _ in 0..20 {
             if cancel.load(Ordering::Relaxed) {
+                let _ = events.send(AiEvent::Status("Stopped.".into()));
                 break;
             }
             let _ = events.send(AiEvent::Status("Thinking (local model)…".into()));
             trim_history(&mut self.messages, budget);
             let body = json!({"model": settings.local_model, "messages": self.messages, "tools": tools, "tool_choice": "auto", "temperature": 0.2, "max_tokens": MAX_TOKENS});
-            let resp: Value = match ureq::post(&url).timeout(Duration::from_secs(600)).set("content-type", "application/json").send_string(&body.to_string()) {
-                Ok(r) => match r.into_string().ok().and_then(|t| serde_json::from_str(&t).ok()) {
-                    Some(v) => v,
-                    None => {
-                        let _ = events.send(AiEvent::Error("invalid response from the local model".into()));
-                        break;
-                    }
-                },
+            let resp = match post_cancellable(&url, body.to_string(), cancel) {
+                Ok(Some(v)) => v,
+                Ok(None) => {
+                    let _ = events.send(AiEvent::Status("Stopped.".into()));
+                    break;
+                }
                 Err(e) => {
-                    let _ = events.send(AiEvent::Error(format!("local model error: {e}")));
+                    let _ = events.send(AiEvent::Error(e));
                     break;
                 }
             };
@@ -216,6 +251,11 @@ impl LocalAssistant {
             }
             for c in calls {
                 let id = c.get("id").and_then(|x| x.as_str()).unwrap_or("call").to_string();
+                if cancel.load(Ordering::Relaxed) {
+                    // every tool call still gets its answer, but nothing more runs after Stop
+                    self.messages.push(json!({"role": "tool", "tool_call_id": id, "content": "Error: stopped by the user"}));
+                    continue;
+                }
                 let name = c.pointer("/function/name").and_then(|x| x.as_str()).unwrap_or("").to_string();
                 let args_raw = c.pointer("/function/arguments").cloned().unwrap_or(json!("{}"));
                 let args: Value = match &args_raw {
@@ -238,6 +278,7 @@ impl LocalAssistant {
                 self.messages.push(json!({"role": "tool", "tool_call_id": id, "content": short}));
             }
         }
+        close_dangling_turn(&mut self.messages);
         let _ = events.send(AiEvent::Done);
     }
 }
@@ -245,6 +286,7 @@ impl LocalAssistant {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::Session;
 
     /// One user request, `steps` tool-calling steps with `payload` characters of tool output each, a final answer.
     fn turn(tag: &str, steps: usize, payload: usize) -> Vec<Value> {
@@ -373,5 +415,99 @@ mod tests {
     fn history_budget_leaves_room_for_the_local_tools() {
         assert!(history_budget(local_tools().to_string().len()) > MIN_HISTORY_CHARS);
         assert_eq!(history_budget(usize::MAX / 2), MIN_HISTORY_CHARS);
+    }
+
+    #[test]
+    fn close_dangling_turn_ends_on_an_assistant_message() {
+        let mut ms = history(&[]);
+        ms.push(json!({"role": "user", "content": "hi"}));
+        close_dangling_turn(&mut ms);
+        assert_eq!(ms.last().unwrap(), &json!({"role": "assistant", "content": "(stopped)"}));
+        let mut ms = history(&[turn("d", 1, 10)]);
+        ms.pop();
+        assert_eq!(ms.last().unwrap()["role"], "tool");
+        close_dangling_turn(&mut ms);
+        assert_eq!(ms.last().unwrap(), &json!({"role": "assistant", "content": "(stopped)"}));
+        let mut ms = history(&[turn("e", 1, 10)]);
+        let n = ms.len();
+        close_dangling_turn(&mut ms);
+        assert_eq!(ms.len(), n);
+    }
+
+    /// OpenAI-compatible mock on a free port: `/health` answers at once, each chat request gets the next
+    /// reply of `replies` (the last one repeats) after `delay`.
+    fn mock_server(delay: Duration, replies: Vec<Value>) -> u16 {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        std::thread::spawn(move || {
+            let mut next = 0;
+            for mut req in server.incoming_requests() {
+                if req.url().ends_with("/health") {
+                    let _ = req.respond(tiny_http::Response::from_string(json!({"status": "ok"}).to_string()));
+                    continue;
+                }
+                let mut body = String::new();
+                let _ = req.as_reader().read_to_string(&mut body);
+                let reply = replies[next.min(replies.len() - 1)].clone();
+                next += 1;
+                std::thread::spawn(move || {
+                    std::thread::sleep(delay);
+                    let _ = req.respond(tiny_http::Response::from_string(reply.to_string()));
+                });
+            }
+        });
+        port
+    }
+
+    fn local_settings(port: u16) -> Settings {
+        Settings { provider: "local".into(), local_url: format!("http://127.0.0.1:{port}/v1"), ..Default::default() }
+    }
+
+    #[test]
+    fn local_turn_runs_tools_against_a_mock_server() {
+        let port = mock_server(Duration::ZERO, vec![
+            json!({"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "set_tempo", "arguments": "{\"bpm\":90}"}}]}}]}),
+            json!({"choices": [{"message": {"role": "assistant", "content": "Done."}}]}),
+        ]);
+        let session = Session::shared(false);
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut a = LocalAssistant::default();
+        a.run_turn(&session, &local_settings(port), "set tempo", "", &tx, &Arc::new(AtomicBool::new(false)));
+        assert_eq!(session.lock().project.tempo.initial_bpm(), 90.0);
+        let events: Vec<AiEvent> = rx.try_iter().collect();
+        assert!(events.iter().any(|e| matches!(e, AiEvent::ToolCall { name, ok: true, .. } if name == "set_tempo")));
+        assert!(events.iter().any(|e| matches!(e, AiEvent::Text(t) if t == "Done.")));
+        assert!(!events.iter().any(|e| matches!(e, AiEvent::Error(_))));
+        assert!(matches!(events.last(), Some(AiEvent::Done)));
+        let last = a.messages.last().unwrap();
+        assert_eq!(last["role"], "assistant");
+        assert_eq!(last["content"], "Done.");
+    }
+
+    #[test]
+    fn stop_abandons_a_pending_local_request() {
+        let port = mock_server(Duration::from_secs(5), vec![json!({"choices": [{"message": {"role": "assistant", "content": "late"}}]})]);
+        let session = Session::shared(false);
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let c = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            c.store(true, Ordering::Relaxed);
+        });
+        let mut a = LocalAssistant::default();
+        let t0 = Instant::now();
+        a.run_turn(&session, &local_settings(port), "hello", "", &tx, &cancel);
+        let took = t0.elapsed();
+        assert!(took < Duration::from_millis(1500), "Stop took {took:?}");
+        let events: Vec<AiEvent> = rx.try_iter().collect();
+        assert!(matches!(events.last(), Some(AiEvent::Done)));
+        assert!(events.iter().any(|e| matches!(e, AiEvent::Status(s) if s == "Stopped.")));
+        assert!(!events.iter().any(|e| matches!(e, AiEvent::Text(t) if t == "late")));
+        assert!(!events.iter().any(|e| matches!(e, AiEvent::Error(_))));
+        assert_eq!(a.messages.len(), 3);
+        assert_eq!(a.messages[0]["role"], "system");
+        assert_eq!(a.messages[1]["role"], "user");
+        assert_eq!(a.messages[2], json!({"role": "assistant", "content": "(stopped)"}));
     }
 }
