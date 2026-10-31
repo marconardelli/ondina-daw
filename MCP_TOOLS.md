@@ -23,7 +23,7 @@ Open a project file (.aurora JSON).
 Parameters: `path`
 
 ### `save_project` · read-only
-Save the project. Without a path saves to the current file (or fails if never saved).
+Save the project. Without a path saves to the current file (or fails if never saved). The path must be a .aurora file on a local drive (no network shares); .aurora is added when the path has no extension. An existing file is overwritten only if it is an Aurora project.
 
 Parameters: `path`
 
@@ -493,7 +493,7 @@ Insert empty time at a position, pushing later material.
 Parameters: `at_beat, length`
 
 ### `bounce` · read-only
-Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed). After the end the render goes on until reverb and delay tails fade below about -90 dBFS (at least 2 s, at most 20 s: a sound that never fades, like a note held past the end or a noisy plug-in, stops at 20 s). tail_sec sets an exact tail instead: 0 cuts exactly at end, e.g. to export a loop.
+Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed). After the end the render goes on until reverb and delay tails fade below about -90 dBFS (at least 2 s, at most 20 s: a sound that never fades, like a note held past the end or a noisy plug-in, stops at 20 s). tail_sec sets an exact tail instead: 0 cuts exactly at end, e.g. to export a loop. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
 
 Parameters: `bit_depth, end, normalize, path, start, tail_sec, track_ids`
 
@@ -503,7 +503,7 @@ Render a track to audio and place it on a new audio track (bounce in place). The
 Parameters: `track_id`
 
 ### `export_midi` · read-only
-Export MIDI regions to a Standard MIDI File.
+Export MIDI regions to a Standard MIDI File. The path must be a .mid or .midi file on a local drive (no network shares); .mid is added when the path has no extension.
 
 Parameters: `path, track_ids`
 
@@ -613,7 +613,7 @@ Get a region as music notation: measures with notes (pitch names, note values, d
 Parameters: `region_id`
 
 ### `export_music_xml` · read-only
-Export the score of instrument tracks as MusicXML (opens in MuseScore, Sibelius, Finale, Dorico).
+Export the score of instrument tracks as MusicXML (opens in MuseScore, Sibelius, Finale, Dorico). The path must be a .musicxml or .xml file on a local drive (no network shares); .musicxml is added when the path has no extension.
 
 Parameters: `path, track_ids`
 
@@ -693,17 +693,17 @@ Position a track in 3D space for surround/binaural mixing (azimuth degrees: 0 fr
 Parameters: `azimuth, elevation, object, spread, track_id`
 
 ### `bounce_surround` · read-only
-Bounce a multichannel surround WAV (channel order L R C LFE Ls Rs, plus Lrs Rrs for 7.1, plus Ltf Rtf Ltr Rtr for 7.1.4). Reverb and delay tails are kept (at least 2 s, at most 20 s after the end).
+Bounce a multichannel surround WAV (channel order L R C LFE Ls Rs, plus Lrs Rrs for 7.1, plus Ltf Rtf Ltr Rtr for 7.1.4). Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
 
 Parameters: `format, path`
 
 ### `bounce_binaural` · read-only
-Bounce a binaural (headphone spatial audio) stereo WAV from the 3D positions. Reverb and delay tails are kept (at least 2 s, at most 20 s after the end).
+Bounce a binaural (headphone spatial audio) stereo WAV from the 3D positions. Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
 
 Parameters: `path`
 
 ### `export_adm` · read-only
-Export an ADM BWF master (ITU-R BS.2076 metadata in a BW64 file, 48 kHz / 24-bit), the interchange format used for Dolby Atmos deliveries: a 7.1.2 channel bed plus one audio object per object track, with time-varying positions from the surround automation.
+Export an ADM BWF master (ITU-R BS.2076 metadata in a BW64 file, 48 kHz / 24-bit), the interchange format used for Dolby Atmos deliveries: a 7.1.2 channel bed plus one audio object per object track, with time-varying positions from the surround automation. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
 
 Parameters: `end, path, start`
 
