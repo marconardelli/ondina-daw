@@ -153,9 +153,12 @@ impl OndinaApp {
 
         painter.rect_filled(full, Rounding::ZERO, theme::BG);
 
-        // ---------------- ruler
+        // ---------------- ruler: the cycle strip on top, bar numbers and the playhead below
         let ruler = Rect::from_min_max(pos2(timeline_x, top), pos2(full.right(), top + RULER_H));
+        let strip = Rect::from_min_max(ruler.min, pos2(ruler.right(), top + CYCLE_STRIP_H));
+        let numbers = Rect::from_min_max(pos2(timeline_x, strip.bottom()), ruler.max);
         painter.rect_filled(ruler, Rounding::ZERO, theme::PANEL);
+        painter.rect_filled(strip, Rounding::ZERO, theme::BG);
         let visible_beats = ((full.right() - timeline_x) / self.px_per_beat) as f64;
         let bar_px = bpb as f32 * self.px_per_beat;
         let label_every = if bar_px < 18.0 {
@@ -169,21 +172,34 @@ impl OndinaApp {
         };
         let first_bar = (self.scroll_beat / bpb).floor() as i64;
         let last_bar = ((self.scroll_beat + visible_beats) / bpb).ceil() as i64;
-        // cycle band
-        if p.cycle.end > p.cycle.start {
-            let x0 = self.beat_to_x(p.cycle.start, timeline_x).max(timeline_x);
-            let x1 = self.beat_to_x(p.cycle.end, timeline_x);
-            if x1 > timeline_x {
-                let col = if p.cycle.enabled {
-                    theme::CYCLE
-                } else {
-                    Color32::from_rgba_premultiplied(80, 80, 80, 60)
-                };
-                painter.rect_filled(
-                    Rect::from_min_max(pos2(x0, top + 2.0), pos2(x1, top + RULER_H - 2.0)),
-                    Rounding::same(3.0_f32),
-                    col,
-                );
+        // cycle band: solid in the strip with both edges marked, a faint tint behind the bar numbers
+        let has_cycle = p.cycle.end > p.cycle.start;
+        let cx0 = self.beat_to_x(p.cycle.start, timeline_x);
+        let cx1 = self.beat_to_x(p.cycle.end, timeline_x);
+        if has_cycle && cx1 > timeline_x {
+            let x0 = cx0.max(timeline_x);
+            let (col, edge_col) = if p.cycle.enabled {
+                (theme::CYCLE, theme::ACCENT)
+            } else {
+                (Color32::from_rgba_premultiplied(80, 80, 80, 60), theme::TEXT_DIM)
+            };
+            painter.rect_filled(
+                Rect::from_min_max(pos2(x0, strip.top() + 1.0), pos2(cx1, strip.bottom() - 1.0)),
+                Rounding::same(3.0_f32),
+                col,
+            );
+            painter.rect_filled(
+                Rect::from_min_max(pos2(x0, numbers.top()), pos2(cx1, numbers.bottom())),
+                Rounding::ZERO,
+                col.gamma_multiply(0.4),
+            );
+            for x in [cx0, cx1] {
+                if x >= timeline_x {
+                    painter.line_segment(
+                        [pos2(x, strip.top() + 1.0), pos2(x, strip.bottom() - 1.0)],
+                        Stroke::new(2.0_f32, edge_col),
+                    );
+                }
             }
         }
         for bar in first_bar..=last_bar {
@@ -192,12 +208,12 @@ impl OndinaApp {
                 continue;
             }
             painter.line_segment(
-                [pos2(x, top + RULER_H * 0.45), pos2(x, top + RULER_H)],
+                [pos2(x, numbers.top() + numbers.height() * 0.45), pos2(x, numbers.bottom())],
                 Stroke::new(1.0_f32, theme::TEXT_DIM),
             );
             if bar % label_every == 0 {
                 painter.text(
-                    pos2(x + 3.0, top + 2.0),
+                    pos2(x + 3.0, numbers.top() + 2.0),
                     Align2::LEFT_TOP,
                     format!("{}", bar + 1),
                     FontId::proportional(11.0),
@@ -206,37 +222,123 @@ impl OndinaApp {
             }
         }
         let ruler_resp = ui.interact(ruler, ui.id().with("ruler"), Sense::click_and_drag());
-        if let Some(pp) = ruler_resp.interact_pointer_pos() {
-            let b = self.snap_beat(self.x_to_beat(pp.x, timeline_x).max(0.0));
-            let shift = ui.input(|i| i.modifiers.shift);
-            if ruler_resp.drag_started() && shift {
-                self.drag = Some(Drag::Cycle { anchor: b });
+        let shift = ui.input(|i| i.modifiers.shift);
+        let zone_at = |x: f32| if has_cycle { cycle_hit_zone(x, cx0, cx1) } else { CycleZone::Outside };
+        let on_strip = |pt: Pos2| pt.y < strip.bottom();
+        let strip_hover = ruler_resp.hover_pos().filter(|h| on_strip(*h));
+        if self.drag.is_none() {
+            match strip_hover.map(|h| zone_at(h.x)) {
+                Some(CycleZone::Body) => ui.ctx().set_cursor_icon(egui::CursorIcon::Grab),
+                Some(CycleZone::Start | CycleZone::End) => {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal)
+                }
+                _ => {}
             }
-            if let Some(Drag::Cycle { anchor }) = self.drag {
-                if ruler_resp.dragged() {
+        }
+        let ruler_resp = if strip_hover.is_some() { ruler_resp.on_hover_text(CYCLE_STRIP_HINT) } else { ruler_resp };
+        if ruler_resp.drag_started() {
+            // Decide from where the press began: the drag starts a few pixels later.
+            let origin = ui.input(|i| i.pointer.press_origin()).or_else(|| ruler_resp.interact_pointer_pos());
+            if let Some(o) = origin {
+                let gesture = next_cycle_gesture();
+                match ruler_drag_action(on_strip(o), shift, zone_at(o.x)) {
+                    RulerDrag::DrawCycle => {
+                        let anchor = self.snap_beat(self.x_to_beat(o.x, timeline_x).max(0.0));
+                        self.drag = Some(Drag::Cycle { anchor, gesture });
+                    }
+                    RulerDrag::EditCycle(zone) => {
+                        self.drag = Some(Drag::CycleEdit {
+                            zone,
+                            grab_beat: self.x_to_beat(o.x, timeline_x),
+                            start: p.cycle.start,
+                            end: p.cycle.end,
+                            enabled: p.cycle.enabled,
+                            gesture,
+                            sent: None,
+                            sent_at: 0.0,
+                        });
+                    }
+                    RulerDrag::Playhead => {}
+                }
+            }
+        }
+        if !matches!(self.drag, Some(Drag::Cycle { .. } | Drag::CycleEdit { .. })) {
+            if let Some(pp) = ruler_resp.interact_pointer_pos() {
+                let b = self.snap_beat(self.x_to_beat(pp.x, timeline_x).max(0.0));
+                if ruler_resp.clicked() {
+                    match ruler_click_action(on_strip(pp), zone_at(pp.x)) {
+                        RulerClick::ToggleCycle => self.cmd(cycle_toggle(p.cycle)),
+                        RulerClick::Playhead => {
+                            self.exec(Command::SetPlayhead {
+                                beat: Some(b),
+                                bar: None,
+                            });
+                        }
+                    }
+                } else if ruler_resp.dragged() && !shift {
+                    self.exec(Command::SetPlayhead {
+                        beat: Some(b),
+                        bar: None,
+                    });
+                }
+            }
+        }
+        // Cycle drags: every frame of a gesture goes to the same undo step.
+        let pointer_x = ui.input(|i| i.pointer.interact_pos().filter(|_| i.pointer.primary_down()).map(|pp| pp.x));
+        let now = ui.input(|i| i.time);
+        match self.drag {
+            Some(Drag::Cycle { anchor, gesture }) => {
+                if let Some(x) = pointer_x {
+                    let b = self.snap_beat(self.x_to_beat(x, timeline_x).max(0.0));
                     let (s, e) = if b < anchor { (b, anchor) } else { (anchor, b) };
-                    if e - s >= 0.25 {
+                    if e - s >= MIN_CYCLE_LEN {
                         self.cmd_merge(
                             Command::SetCycle {
                                 enabled: true,
                                 start: Some(s),
                                 end: Some(e),
                             },
-                            "cycle-drag",
+                            cycle_gesture_key(gesture),
                         );
                     }
                 }
-            } else if ruler_resp.clicked() || (ruler_resp.dragged() && !shift) {
-                self.exec(Command::SetPlayhead {
-                    beat: Some(b),
-                    bar: None,
+            }
+            Some(Drag::CycleEdit { zone, grab_beat, start, end, enabled, gesture, sent, sent_at }) => {
+                ui.ctx().set_cursor_icon(if zone == CycleZone::Body {
+                    egui::CursorIcon::Grabbing
+                } else {
+                    egui::CursorIcon::ResizeHorizontal
                 });
+                if let Some(x) = pointer_x {
+                    let b = self.x_to_beat(x, timeline_x);
+                    let span = match zone {
+                        CycleZone::Body => moved_cycle(start, end, grab_beat, b, self.snap),
+                        _ => resized_cycle(start, end, zone, b, self.snap),
+                    };
+                    let last = sent.unwrap_or((start, end));
+                    let changed = (span.0 - last.0).abs() > 1e-9 || (span.1 - last.1).abs() > 1e-9;
+                    if changed || (sent.is_some() && now - sent_at >= CYCLE_RESEND_S) {
+                        self.cmd_merge(
+                            Command::SetCycle {
+                                enabled,
+                                start: Some(span.0),
+                                end: Some(span.1),
+                            },
+                            cycle_gesture_key(gesture),
+                        );
+                        if let Some(Drag::CycleEdit { sent, sent_at, .. }) = &mut self.drag {
+                            *sent = Some(span);
+                            *sent_at = now;
+                        }
+                    }
+                }
+                // keep frames coming while the mouse rests, for the resend above
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(CYCLE_RESEND_S / 2.0));
             }
+            _ => {}
         }
-        if ruler_resp.drag_stopped() {
-            if let Some(Drag::Cycle { .. }) = self.drag {
-                self.drag = None;
-            }
+        if ruler_resp.drag_stopped() && matches!(self.drag, Some(Drag::Cycle { .. } | Drag::CycleEdit { .. })) {
+            self.drag = None;
         }
 
         // ---------------- marker lane
@@ -1241,7 +1343,7 @@ impl OndinaApp {
                         self.cmd(Command::MoveTrack { track_id: id, index });
                     }
                 }
-                other => self.drag = other.filter(|d| !matches!(d, Drag::Cycle { .. })),
+                other => self.drag = other.filter(|d| !matches!(d, Drag::Cycle { .. } | Drag::CycleEdit { .. })),
             }
         }
 
@@ -1317,9 +1419,9 @@ impl OndinaApp {
             );
             painter.add(egui::Shape::convex_polygon(
                 vec![
-                    pos2(px - 5.0, top),
-                    pos2(px + 5.0, top),
-                    pos2(px, top + 8.0),
+                    pos2(px - 5.0, top + CYCLE_STRIP_H),
+                    pos2(px + 5.0, top + CYCLE_STRIP_H),
+                    pos2(px, top + CYCLE_STRIP_H + 8.0),
                 ],
                 theme::PLAYHEAD,
                 Stroke::NONE,
