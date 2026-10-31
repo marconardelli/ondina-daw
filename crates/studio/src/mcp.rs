@@ -34,6 +34,7 @@ Ondina is a digital audio workstation. Everything is controlled through tools th
 - MIDI pitch 60 = C4 (middle C). Drums use the General MIDI map: 36 kick, 38 snare, 39 clap, 42 closed hat, 46 open hat, 49 crash, 51 ride, 45/47/50 toms.
 - track_id 0 addresses the master channel (volume, pan, effects).
 - Every edit is undoable with `undo`.
+- `get_selection` tells you what the user selected in the Ondina window (track, region, notes with their index, playhead, cycle). When the user says "these notes" or "this region", call it first and pass the note `index` values as `indices` to `quantize_notes`, `transpose_notes`, `humanize_notes`, `set_note_velocities`, `snap_notes_to_key` or `remove_notes`. Read it again after editing: indices change when notes move.
 
 ## Typical workflow to create a song
 1. `get_project` to see what exists (ids!).
