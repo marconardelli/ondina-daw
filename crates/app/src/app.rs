@@ -92,8 +92,22 @@ pub enum Drag {
         orig_len: f64,
         cur_len: f64,
     },
+    /// Drawing a new cycle on the ruler from `anchor`; `gesture` keys its single undo step.
     Cycle {
         anchor: f64,
+        gesture: u64,
+    },
+    /// Moving the cycle (zone Body) or one of its edges on the ruler's cycle strip. `start`, `end` and `enabled` are
+    /// the cycle when the drag began; `sent` is the last range sent and `sent_at` when (egui time, seconds).
+    CycleEdit {
+        zone: crate::arrange::CycleZone,
+        grab_beat: f64,
+        start: f64,
+        end: f64,
+        enabled: bool,
+        gesture: u64,
+        sent: Option<(f64, f64)>,
+        sent_at: f64,
     },
     /// Moving a marker in the marker lane; only `cur_beat` changes until release.
     MoveMarker {

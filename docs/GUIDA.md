@@ -80,6 +80,28 @@ R (registrazione), lo slider del volume e il meter.
 - Con tracce basse i pulsanti M, S e R stanno accanto al nome e il volume si regola dal mixer.
 - Zoom e altezza delle tracce non si salvano nel progetto e non entrano in Annulla.
 
+## Righello e ciclo
+
+Il righello in cima all'arrangiamento ha due parti: la striscia alta, più scura, è quella del ciclo;
+la parte bassa, con i numeri delle battute, è quella del playhead.
+
+- Clic o trascinamento nella parte bassa: sposta il playhead.
+- Trascinamento del ciclo nella striscia alta: lo sposta e ne tiene la lunghezza. L'inizio si
+  aggancia allo snap della barra degli strumenti e il ciclo non va prima dell'inizio della canzone.
+- Trascinamento di un bordo del ciclo (il puntatore diventa una doppia freccia): sposta solo quel
+  bordo. Il bordo si aggancia alla griglia, il ciclo dura almeno un sedicesimo e i bordi non si
+  incrociano.
+- Clic sul ciclo: lo accende o lo spegne, come il tasto C. Spento, il ciclo è grigio e si può
+  comunque spostare o allungare.
+- Trascinamento sulla striscia fuori dal ciclo: disegna un ciclo nuovo e lo accende. Un clic nello
+  stesso punto sposta il playhead.
+- Maiusc+trascinamento in qualsiasi punto del righello: disegna un ciclo nuovo, come prima.
+- Ogni gesto si annulla con un solo Ctrl+Z.
+
+Durante la riproduzione il ciclo nuovo vale subito. Se lo sposti tutto prima del playhead, la
+riproduzione prosegue: riporta il playhead dentro il ciclo con un clic nella parte bassa per
+farlo ripetere.
+
 ## Corsia marker
 
 La corsia marker sta sotto il righello dell'arrangiamento e contiene le sezioni (marker con una
