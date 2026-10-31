@@ -10,6 +10,7 @@ use aurora_core::model::*;
 use aurora_core::ops;
 use aurora_dsp::{audio_ops, AudioData, MidiKind};
 use aurora_engine::{load_audio_file, render_offline, render_surround, write_multichannel_wav, write_wav, OfflineOptions};
+use aurora_engine::offline::{AUTO_TAIL_MAX_SEC, BOUNCE_TAIL_SEC};
 use serde_json::{json, Value};
 
 use crate::session::Session;
@@ -148,7 +149,7 @@ impl Session {
                     return Some(Err("project is empty".into()));
                 }
                 let sr = self.engine.sample_rate();
-                let (names, chans) = render_surround(&self.project, Arc::new(self.pool.clone()), sr, 0.0, end, name, 0.0);
+                let (names, chans) = render_surround(&self.project, Arc::new(self.pool.clone()), sr, 0.0, end, name, AUTO_TAIL_MAX_SEC);
                 if let Err(e) = write_multichannel_wav(Path::new(path), &chans, sr) {
                     return Some(Err(e));
                 }
@@ -163,7 +164,7 @@ impl Session {
                 let mut p = self.project.clone();
                 p.surround = SurroundFormat::Binaural;
                 let sr = self.engine.sample_rate();
-                let res = render_offline(&p, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start: 0.0, end, tail_sec: 2.0, auto_tail_max_sec: 0.0, solo: None, analyze: false, keep_audio: true });
+                let res = render_offline(&p, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start: 0.0, end, tail_sec: BOUNCE_TAIL_SEC, auto_tail_max_sec: AUTO_TAIL_MAX_SEC, solo: None, analyze: false, keep_audio: true });
                 match write_wav(Path::new(path), &res.left, &res.right, sr, 24) {
                     Ok(()) => Ok(json!({"path": path, "duration_sec": res.left.len() as f64 / sr as f64})),
                     Err(e) => Err(e),

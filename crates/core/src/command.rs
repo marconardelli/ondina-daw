@@ -286,9 +286,18 @@ pub enum Command {
     InsertTime { at_beat: f64, length: f64 },
 
     // ------------------------------------------------------------------ import / export
-    /// Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed).
-    Bounce { path: String, start: Option<f64>, end: Option<f64>, bit_depth: Option<u16>, normalize: Option<bool>, track_ids: Option<Vec<Id>> },
-    /// Render a track to audio and place it on a new audio track (bounce in place). The source track is muted.
+    /// Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed). After the end the render goes on until reverb and delay tails fade below about -90 dBFS (at least 2 s, at most 20 s: a sound that never fades, like a note held past the end or a noisy plug-in, stops at 20 s). tail_sec sets an exact tail instead: 0 cuts exactly at end, e.g. to export a loop.
+    Bounce {
+        path: String,
+        start: Option<f64>,
+        end: Option<f64>,
+        bit_depth: Option<u16>,
+        normalize: Option<bool>,
+        track_ids: Option<Vec<Id>>,
+        /// Exact tail after end, in seconds (0 to 60). Omit it for the automatic tail; 0 cuts exactly at end.
+        tail_sec: Option<f64>,
+    },
+    /// Render a track to audio and place it on a new audio track (bounce in place). The source track is muted. Reverb and delay tails are kept: the render goes on until they fade (at least 2 s, at most 20 s after the last region).
     BounceInPlace { track_id: Id },
     /// Export MIDI regions to a Standard MIDI File.
     ExportMidi { path: String, track_ids: Option<Vec<Id>> },
@@ -380,9 +389,9 @@ pub enum Command {
     SetSurroundFormat { format: SurroundFormat },
     /// Position a track in 3D space for surround/binaural mixing (azimuth degrees: 0 front, 90 right, -90 left, 180 rear). object=true makes it an audio object (object-based mixing, exported as an ADM object) instead of part of the bed. Animate positions with automation targets "surround:azimuth", "surround:elevation", "surround:spread".
     SetSurroundPan { track_id: Id, azimuth: f32, elevation: Option<f32>, spread: Option<f32>, object: Option<bool> },
-    /// Bounce a multichannel surround WAV (channel order L R C LFE Ls Rs, plus Lrs Rrs for 7.1, plus Ltf Rtf Ltr Rtr for 7.1.4).
+    /// Bounce a multichannel surround WAV (channel order L R C LFE Ls Rs, plus Lrs Rrs for 7.1, plus Ltf Rtf Ltr Rtr for 7.1.4). Reverb and delay tails are kept (at least 2 s, at most 20 s after the end).
     BounceSurround { path: String, format: Option<SurroundFormat> },
-    /// Bounce a binaural (headphone spatial audio) stereo WAV from the 3D positions.
+    /// Bounce a binaural (headphone spatial audio) stereo WAV from the 3D positions. Reverb and delay tails are kept (at least 2 s, at most 20 s after the end).
     BounceBinaural { path: String },
     /// Export an ADM BWF master (ITU-R BS.2076 metadata in a BW64 file, 48 kHz / 24-bit), the interchange format used for Dolby Atmos deliveries: a 7.1.2 channel bed plus one audio object per object track, with time-varying positions from the surround automation.
     ExportAdm { path: String, start: Option<f64>, end: Option<f64> },

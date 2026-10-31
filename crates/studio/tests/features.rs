@@ -435,3 +435,72 @@ fn resize_region_is_one_undo_step() {
     let g = ok(&mut s, "get_region", json!({"region_id": r}));
     assert_eq!(g["length"].as_f64(), Some(6.0), "{g}");
 }
+
+/// A 120 bpm session with one instrument track and a short note in a 4-beat region. Returns (session, track id).
+fn short_note_session(reverb: bool) -> (Session, u64) {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();
+    ok(&mut s, "create_midi_region", json!({"track_id": t, "start": 0, "length": 4, "notes": [{"pitch": 60, "velocity": 110, "start": 0, "length": 0.5}]}));
+    if reverb {
+        let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "reverb"}))["plugin_id"].as_u64().unwrap();
+        ok(&mut s, "set_plugin_params", json!({"plugin_id": fx, "params": {"size": 0.95, "damping": 0.0, "mix": 0.5}}));
+    }
+    (s, t)
+}
+
+#[test]
+fn bounce_keeps_the_reverb_tail() {
+    let (mut s, t) = short_note_session(true);
+    let path = tmp("tail_auto.wav");
+    let r = ok(&mut s, "bounce", json!({"path": path.display().to_string(), "bit_depth": 32}));
+    let dur = r["duration_sec"].as_f64().unwrap();
+    assert!(dur > 2.0 + 2.5, "{r}");
+    assert!(dur < 2.0 + 19.0, "{r}");
+    assert!(r["tail_sec"].as_f64().unwrap() > 2.5, "{r}");
+    let sr = r["sample_rate"].as_u64().unwrap() as usize;
+    let samples: Vec<f32> = hound::WavReader::open(&path).unwrap().into_samples::<f32>().map(|x| x.unwrap()).collect();
+    let last = (sr / 100) * 2;
+    let peak = samples[samples.len() - last..].iter().fold(0.0f32, |a, b| a.max(b.abs()));
+    assert!(peak < 1e-4, "last 10 ms peak {peak}");
+    let b = ok(&mut s, "bounce_in_place", json!({"track_id": t}));
+    let g = ok(&mut s, "get_region", json!({"region_id": b["region_id"]}));
+    assert!(g["length"].as_f64().unwrap() > 4.0 + 5.0, "{g}");
+}
+
+#[test]
+fn bounce_without_tails_keeps_two_seconds() {
+    let (mut s, _) = short_note_session(false);
+    let path = tmp("tail_dry.wav");
+    let r = ok(&mut s, "bounce", json!({"path": path.display().to_string()}));
+    let sr = r["sample_rate"].as_u64().unwrap() as u32;
+    assert_eq!(hound::WavReader::open(&path).unwrap().duration(), 4 * sr, "{r}");
+    assert_eq!(r["tail_sec"].as_f64(), Some(2.0), "{r}");
+}
+
+#[test]
+fn bounce_tail_sec_zero_is_sample_exact() {
+    let mut s = Session::new(false);
+    ok(&mut s, "set_tempo", json!({"bpm": 100}));
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();
+    ok(&mut s, "create_midi_region", json!({"track_id": t, "start": 0, "length": 24, "notes": [
+        {"pitch": 60, "velocity": 100, "start": 0, "length": 1},
+        {"pitch": 64, "velocity": 100, "start": 8, "length": 1},
+        {"pitch": 67, "velocity": 100, "start": 19, "length": 2}
+    ]}));
+    let path = tmp("tail_zero.wav");
+    let p = path.display().to_string();
+    let r = ok(&mut s, "bounce", json!({"path": p, "start": 4, "end": 20, "tail_sec": 0}));
+    let sr = r["sample_rate"].as_u64().unwrap() as f64;
+    assert_eq!(hound::WavReader::open(&path).unwrap().duration() as f64, (9.6 * sr).round(), "{r}");
+    assert_eq!(r["tail_sec"].as_f64(), Some(0.0), "{r}");
+    let r = ok(&mut s, "bounce", json!({"path": p, "start": 4, "end": 20, "tail_sec": 1.5}));
+    assert_eq!(hound::WavReader::open(&path).unwrap().duration() as f64, ((9.6 + 1.5) * sr).round(), "{r}");
+    for bad in [-1.0, 61.0] {
+        let e = call(&mut s, "bounce", json!({"path": p, "tail_sec": bad})).unwrap_err();
+        assert!(e.contains("tail_sec"), "{e}");
+    }
+    let spec = tool_specs().into_iter().find(|t| t.name == "bounce").unwrap();
+    assert!(spec.input_schema["properties"].get("tail_sec").is_some());
+    let req = spec.input_schema.get("required").and_then(|r| r.as_array()).cloned().unwrap_or_default();
+    assert!(!req.iter().any(|v| v == "tail_sec"));
+}
