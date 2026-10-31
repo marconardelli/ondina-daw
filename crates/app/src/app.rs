@@ -107,6 +107,12 @@ pub enum Drag {
         orig_len: f64,
         cur_len: f64,
     },
+    /// Dragging a track header to reorder tracks; `gap` is where it would drop
+    /// (0 = above the first track, the track count = below the last).
+    MoveTrack {
+        id: Id,
+        gap: usize,
+    },
     Notes {
         region: Id,
         orig: Vec<Note>,

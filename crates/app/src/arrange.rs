@@ -395,6 +395,7 @@ impl OndinaApp {
         let ctrl_alt = ui.input(|i| i.modifiers.alt);
         let mut hovered_track: Option<(Id, TrackKind)> = None;
         let pointer = ui.input(|i| i.pointer.hover_pos());
+        let mut track_rename_rect: Option<Rect> = None;
         for (i, t) in p.tracks.iter().enumerate() {
             let y = tracks_top + i as f32 * th - self.scroll_y;
             if y + th < tracks_top || y > full.bottom() {
@@ -778,7 +779,31 @@ impl OndinaApp {
 
             // header
             let header = Rect::from_min_max(pos2(full.left(), y), pos2(timeline_x, y + th));
-            self.track_header(ui, &tpainter, header, t, sel);
+            if let Some(r) = self.track_header(ui, &tpainter, header, t, i, sel) {
+                track_rename_rect = Some(r);
+            }
+        }
+
+        // Track name field, registered after every header so it sits on top. A track that scrolled out of
+        // view, was deleted or undone away drops the edit.
+        let target = self.track_rename.take().and_then(|ren| {
+            let old = p.track(ren.id)?.name.clone();
+            Some((ren, old, track_rename_rect?))
+        });
+        if let Some((mut ren, old, r)) = target {
+            let edit_id = ui.id().with(("trename", ren.id));
+            match rename_field(ui, edit_id, r, FontId::proportional(12.5), &mut ren) {
+                RenameEdit::Editing => self.track_rename = Some(ren),
+                RenameEdit::Commit => {
+                    if let Some(name) = rename_commit(&old, &ren.text) {
+                        self.cmd(Command::RenameTrack {
+                            track_id: ren.id,
+                            name,
+                        });
+                    }
+                }
+                RenameEdit::Cancel => {}
+            }
         }
 
         // dragging updates
@@ -786,6 +811,9 @@ impl OndinaApp {
         let released = ui.input(|i| i.pointer.any_released());
         let pointer_beat = pointer_pos.map(|pp| self.x_to_beat(pp.x, timeline_x));
         let snap = self.snap;
+        if matches!(self.drag, Some(Drag::MoveTrack { .. })) && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.drag = None;
+        }
         match &mut self.drag {
             Some(Drag::MoveRegion {
                 grab_beat,
@@ -841,7 +869,27 @@ impl OndinaApp {
                     *cur_len = resized_marker_length(*start, b, snap);
                 }
             }
+            Some(Drag::MoveTrack { gap, .. }) => {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                if let Some(pp) = pointer_pos {
+                    let n = p.tracks.len();
+                    *gap = track_drop_index(pp.y, tracks_top - self.scroll_y, th, n);
+                    let v = edge_scroll_speed(pp.y, tracks_top, full.bottom());
+                    if v != 0.0 {
+                        let dt = ui.input(|i| i.stable_dt).min(0.1);
+                        // same limit as the mouse wheel above
+                        let max = (n as f32 * th + 80.0 - (full.bottom() - tracks_top)).max(0.0);
+                        self.scroll_y = (self.scroll_y + v * dt).clamp(0.0, max);
+                        // keep scrolling while the pointer rests in the band
+                        ui.ctx().request_repaint();
+                    }
+                }
+            }
             _ => {}
+        }
+        if let Some(Drag::MoveTrack { gap, .. }) = &self.drag {
+            let y = (tracks_top - self.scroll_y + *gap as f32 * th).clamp(tracks_top + 1.0, full.bottom() - 1.0);
+            tpainter.line_segment([pos2(full.left(), y), pos2(full.right(), y)], Stroke::new(2.0_f32, theme::SELECT));
         }
         if released {
             match self.drag.take() {
@@ -923,6 +971,15 @@ impl OndinaApp {
                             beat: None,
                             length: Some(cur_len),
                         });
+                    }
+                }
+                Some(Drag::MoveTrack { id, gap }) => {
+                    // Found by id: the assistant or MCP may have reordered the tracks during the drag.
+                    if let Some(index) = p
+                        .track_index(id)
+                        .and_then(|from| track_move_target(from, gap.min(p.tracks.len())))
+                    {
+                        self.cmd(Command::MoveTrack { track_id: id, index });
                     }
                 }
                 other => self.drag = other.filter(|d| !matches!(d, Drag::Cycle { .. })),
@@ -1025,14 +1082,17 @@ impl OndinaApp {
         ui.allocate_rect(full, Sense::hover());
     }
 
+    /// Draws one track header and handles its clicks, drag-to-reorder and double-click-to-rename.
+    /// Returns where the rename field goes when this track is being renamed and its name row is fully visible.
     fn track_header(
         &mut self,
         ui: &mut egui::Ui,
         painter: &egui::Painter,
         rect: Rect,
         t: &Track,
+        index: usize,
         selected: bool,
-    ) {
+    ) -> Option<Rect> {
         painter.rect_filled(
             rect,
             Rounding::ZERO,
@@ -1047,9 +1107,26 @@ impl OndinaApp {
             Rounding::ZERO,
             theme::rgb(t.color),
         );
-        let resp = ui.interact(rect, ui.id().with(("hdr", t.id)), Sense::click());
+        // Background first: M/S/R, the volume slider and the rename field are registered after it and sit on top.
+        let resp = ui.interact(rect, ui.id().with(("hdr", t.id)), Sense::click_and_drag());
         if resp.clicked() {
             self.selected_track = Some(t.id);
+        }
+        if resp.drag_started() && self.drag.is_none() {
+            self.selected_track = Some(t.id);
+            self.drag = Some(Drag::MoveTrack { id: t.id, gap: index });
+        }
+        // the top row (icon and name) opens the rename; the rest of the header only selects
+        let name_row = Rect::from_min_max(
+            pos2(rect.left() + 6.0, rect.top()),
+            pos2(rect.right() - 26.0, rect.top() + 22.0),
+        );
+        if resp.double_clicked() && resp.interact_pointer_pos().is_some_and(|pp| name_row.contains(pp)) {
+            self.track_rename = Some(InPlaceRename {
+                id: t.id,
+                text: t.name.clone(),
+                focus: true,
+            });
         }
         let icon = match t.kind {
             TrackKind::Instrument => {
@@ -1066,13 +1143,27 @@ impl OndinaApp {
             TrackKind::Audio => "🎤",
             TrackKind::Bus => "🔀",
         };
-        painter.text(
-            pos2(rect.left() + 10.0, rect.top() + 12.0),
-            Align2::LEFT_CENTER,
-            format!("{icon} {}", t.name),
-            FontId::proportional(12.5),
-            Color32::WHITE,
-        );
+        // decided after the double-click above, so the field opens on the same frame
+        let renaming = self.track_rename.as_ref().is_some_and(|e| e.id == t.id);
+        let name_pos = pos2(rect.left() + 10.0, rect.top() + 12.0);
+        let mut field = None;
+        if renaming {
+            let ir = painter.text(name_pos, Align2::LEFT_CENTER, icon, FontId::proportional(12.5), Color32::WHITE);
+            let r = Rect::from_min_max(
+                pos2(ir.right() + 4.0, rect.top() + 3.0),
+                pos2(rect.right() - 28.0, rect.top() + 21.0),
+            );
+            // half-hidden under the lanes or the window edge: drop the edit rather than draw over them
+            field = painter.clip_rect().contains_rect(r).then_some(r);
+        } else {
+            painter.text(
+                name_pos,
+                Align2::LEFT_CENTER,
+                format!("{icon} {}", t.name),
+                FontId::proportional(12.5),
+                Color32::WHITE,
+            );
+        }
         let tid = t.id;
         resp.context_menu(|ui| {
             if ui.button("Duplicate track").clicked() {
@@ -1164,6 +1255,12 @@ impl OndinaApp {
             pos2(rect.right() - 8.0, rect.bottom() - 6.0),
         );
         draw_meter(painter, mr, m);
+        if matches!(&self.drag, Some(Drag::MoveTrack { id, .. }) if *id == t.id) {
+            // the dragged header stays in place, dimmed, until it is dropped
+            painter.rect_filled(rect, Rounding::ZERO, Color32::from_black_alpha(110));
+            painter.rect_stroke(rect.shrink(1.0), Rounding::ZERO, Stroke::new(1.5_f32, theme::SELECT));
+        }
+        field
     }
 }
 
