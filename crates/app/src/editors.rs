@@ -1,14 +1,18 @@
 //! Bottom editors: Piano Roll, Step Sequencer and audio region editor.
 
+use std::collections::HashSet;
+
 use ondina_core::command::Command;
 use ondina_core::model::*;
 use ondina_core::theory::note_name;
 use ondina_dsp::MidiKind;
 use eframe::egui::{
-    self, pos2, vec2, Align2, Color32, FontId, Rect, RichText, Rounding, Sense, Stroke,
+    self, pos2, vec2, Align2, Color32, FontId, Key, Rect, RichText, Rounding, Sense, Stroke,
 };
 
-use crate::app::{OndinaApp, Drag};
+use crate::app::{BottomTab, OndinaApp, Drag};
+use crate::note_clipboard as nc;
+use crate::note_selection;
 use crate::piano_roll_view::{
     follow_scroll, initial_view, loop_local_beat, scroll_pitch, wheel_zoom, zoom_factor, zoom_pitch, zoom_time,
 };
@@ -19,6 +23,28 @@ const VEL_H: f32 = 56.0;
 
 fn is_black(p: i32) -> bool {
     matches!(p.rem_euclid(12), 1 | 3 | 6 | 8 | 10)
+}
+
+/// Removes the events that match `f` and tells whether there was one.
+fn take_event(events: &mut Vec<egui::Event>, f: impl Fn(&egui::Event) -> bool) -> bool {
+    let before = events.len();
+    events.retain(|e| !f(e));
+    events.len() != before
+}
+
+/// Consumes the first arrow key pressed this frame (Shift+↑/↓ before the plain keys) and returns its move.
+fn consume_arrow(i: &mut egui::InputState) -> Option<nc::Nudge> {
+    for k in [Key::ArrowUp, Key::ArrowDown] {
+        if i.consume_key(egui::Modifiers::SHIFT, k) {
+            return nc::arrow_nudge(k, true);
+        }
+    }
+    for k in [Key::ArrowUp, Key::ArrowDown, Key::ArrowLeft, Key::ArrowRight] {
+        if i.consume_key(egui::Modifiers::NONE, k) {
+            return nc::arrow_nudge(k, false);
+        }
+    }
+    None
 }
 
 impl OndinaApp {
@@ -74,7 +100,7 @@ impl OndinaApp {
         // toolbar
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("🎹 {} — {}", track.name, region.name)).strong())
-                .on_hover_text("Wheel: scroll pitch · Shift+wheel: scroll time · Ctrl+wheel: zoom time · Ctrl+Shift+wheel: zoom pitch");
+                .on_hover_text("Wheel: scroll pitch · Shift+wheel: scroll time · Ctrl+wheel: zoom time · Ctrl+Shift+wheel: zoom pitch · Ctrl+C/X/V: copy/cut/paste · Ctrl+A: select all · ←/→: move by the snap step · ↑/↓: semitone · Shift+↑/↓: octave");
             ui.separator();
             ui.label("Note length");
             egui::ComboBox::from_id_salt("notelen").width(60.0).selected_text(len_label(self.note_len)).show_ui(ui, |ui| {
@@ -105,8 +131,8 @@ impl OndinaApp {
             if ui.button("Snap to key").on_hover_text("Move the selected notes to the nearest pitch in the project key (all notes when nothing is selected)").clicked() {
                 self.exec_on_selection(Command::SnapNotesToKey { region_id: rid, indices: sel.clone() });
             }
-            if ui.button("Select all").clicked() {
-                self.selected_notes = (0..m.notes.len()).collect();
+            if ui.button("Select all").on_hover_text("Select every note (Ctrl+A)").clicked() {
+                self.selected_notes = nc::select_all(m.notes.len());
             }
             ui.separator();
             let mut tr = m.transpose;
@@ -753,6 +779,77 @@ impl OndinaApp {
         if let Some(ix) = v.get("indices").and_then(|x| x.as_array()) {
             self.selected_notes = ix.iter().filter_map(|i| i.as_u64()).map(|i| i as usize).collect();
         }
+    }
+
+    /// Copy, cut, paste, select all and arrow moves on the piano roll's notes. Runs from `handle_keys` before the
+    /// panels, so no widget sees the keys it uses.
+    pub(crate) fn piano_roll_keys(&mut self, ctx: &egui::Context) {
+        if !nc::keys_on(self.bottom == BottomTab::Editor, self.extra.show_score, ctx.wants_keyboard_input(), self.drag.is_some()) {
+            return;
+        }
+        let p = self.project();
+        let Some(rid) = self.selected_region else { return };
+        let Some((_, region)) = p.find_region(rid) else { return };
+        let RegionContent::Midi(m) = &region.content else { return };
+        let has_sel = !self.selected_notes.is_empty();
+        let has_clip = self.note_clipboard.is_some();
+        let arrows = nc::arrows_on(true, self.musical_typing, has_sel);
+        let (cut, copy, paste, all, nudge) = ctx.input_mut(|i| {
+            let cut = has_sel && take_event(&mut i.events, |e| matches!(e, egui::Event::Cut));
+            let copy = has_sel && take_event(&mut i.events, |e| matches!(e, egui::Event::Copy));
+            let paste = has_clip && take_event(&mut i.events, |e| matches!(e, egui::Event::Paste(_)));
+            let all = i.consume_key(egui::Modifiers::COMMAND, Key::A);
+            let nudge = if arrows { consume_arrow(i) } else { None };
+            (cut, copy, paste, all, nudge)
+        });
+        if cut || copy {
+            let Some(clip) = nc::copy(&m.notes, &self.selected_notes) else { return };
+            let count = clip.notes.len();
+            ctx.copy_text(nc::clip_text(&clip));
+            self.note_clipboard = Some(clip);
+            if cut {
+                let mut idx: Vec<usize> = self.selected_notes.iter().copied().collect();
+                idx.sort_unstable();
+                self.cmd(Command::RemoveNotes { region_id: rid, indices: Some(idx), pitch: None, from_beat: None, to_beat: None });
+                self.selected_notes.clear();
+                self.status = format!("Cut {count} notes");
+            } else {
+                self.status = format!("Copied {count} notes");
+            }
+        } else if paste {
+            let Some(clip) = self.note_clipboard.clone() else { return };
+            let at = nc::paste_start(&clip, nc::playhead_in_region(self.position(), region), nc::grid(self.snap));
+            let added = nc::pasted_notes(&clip, at, region.length);
+            if added.is_empty() {
+                self.status = "Nothing pasted: the notes would start past the end of the region".into();
+            } else {
+                let count = added.len();
+                let edit = nc::paste(&m.notes, &added);
+                if self.apply_note_edit(rid, Command::AddNotes { region_id: rid, notes: added }, edit) {
+                    self.status = format!("Pasted {count} notes");
+                }
+            }
+        } else if all {
+            self.selected_notes = nc::select_all(m.notes.len());
+        } else if let Some(n) = nudge {
+            let d_beat = f64::from(n.steps) * nc::nudge_step(self.snap);
+            if let Some(edit) = nc::nudge(&m.notes, &self.selected_notes, d_beat, n.semitones) {
+                self.apply_note_edit(rid, Command::ReplaceNotes { region_id: rid, notes: edit.notes.clone() }, edit);
+            }
+        }
+    }
+
+    /// Run a command whose resulting notes and selection were worked out in advance, and select the edited notes.
+    /// `exec` already moved the old selection along, so setting it afterwards is not remapped twice. When the
+    /// project changed from elsewhere in between, the stored notes differ and the selection is cleared instead of
+    /// pointing at the wrong notes.
+    fn apply_note_edit(&mut self, rid: Id, c: Command, edit: nc::NoteEdit) -> bool {
+        if self.exec(c).is_none() {
+            return false;
+        }
+        let stored = note_selection::region_notes(&self.view.project, rid);
+        self.selected_notes = if stored == Some(edit.notes.as_slice()) { edit.selected } else { HashSet::new() };
+        true
     }
 
     fn step_sequencer(

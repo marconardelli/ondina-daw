@@ -16,6 +16,7 @@ mod editors;
 mod extra_ui;
 mod inspector;
 mod mixer;
+mod note_clipboard;
 mod note_selection;
 mod piano_roll_view;
 mod theme;
