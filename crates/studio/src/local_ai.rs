@@ -19,14 +19,17 @@ use crate::session::{AssistantUndoGroup, SharedSession, Source};
 use crate::settings::Settings;
 
 /// Tools offered to small local models (the full set exceeds their context and abilities).
+/// Keep the schema small: `history_budget` subtracts its length from the room for the conversation.
 pub const LOCAL_TOOLS: &[&str] = &[
     "get_project", "set_tempo", "set_key", "set_time_signature", "list_patches", "add_track", "remove_track", "rename_track",
     "set_chord_progression", "generate_drums", "generate_bass", "generate_chords", "generate_arpeggio", "generate_melody",
     "create_midi_region", "add_notes", "duplicate_region", "delete_region", "set_volume", "set_pan", "set_mute", "add_effect",
     "add_marker", "copy_section", "play", "stop", "set_playhead", "analyze_mix", "auto_master", "undo", "bounce",
+    "redo", "get_region", "replace_notes", "quantize_notes", "transpose_notes", "set_note_velocities", "set_pattern_row",
+    "add_pattern_row", "get_plugin", "set_plugin_params", "add_scene", "create_live_cell",
 ];
 
-const SYSTEM: &str = "You are the assistant inside Ondina DAW. You control the DAW only by calling the provided tools. Positions are in beats (quarter notes); bar N starts at beat (N-1)*4 in 4/4. MIDI pitch 60 = C4. Call get_project to learn track ids before editing existing tracks; add_track returns the new track_id. Prefer library patches (e.g. \"Pop Drum Kit\", \"Deep Sub Bass\", \"Lush Pad\", \"Stage Electric Piano\") and the generate_* tools. After finishing, answer briefly in the user's language. All your edits for one request are one undo step: undo reverts everything you did in this request, so fix a single mistake directly.";
+const SYSTEM: &str = "You are the assistant inside Ondina DAW. You control the DAW only by calling the provided tools. Positions are in beats (quarter notes); bar N starts at beat (N-1)*4 in 4/4. MIDI pitch 60 = C4. Call get_project to learn track ids before editing existing tracks; add_track returns the new track_id. Prefer library patches (e.g. \"Pop Drum Kit\", \"Deep Sub Bass\", \"Lush Pad\", \"Stage Electric Piano\") and the generate_* tools. The [Ondina context] lists the selected notes as index:pitch@start+length; to change only those notes pass their index values as indices (quantize_notes, transpose_notes, set_note_velocities). Read a region with get_region before rewriting it and a plug-in with get_plugin before setting its parameters. After finishing, answer briefly in the user's language. All your edits for one request are one undo step: undo reverts everything you did in this request, so fix a single mistake directly.";
 
 /// Context size the bundled server is started with; the history budget is derived from it.
 const CONTEXT_TOKENS: usize = 16384;
@@ -38,6 +41,17 @@ const CHARS_PER_TOKEN: usize = 3;
 const MIN_HISTORY_CHARS: usize = 6000;
 /// Appended once to the system message when older turns are dropped.
 const OMITTED_NOTE: &str = "(earlier conversation omitted)";
+/// Characters of a tool result the model sees.
+const TOOL_RESULT_CHARS: usize = 1500;
+/// The reads the ✨ requests depend on (a synth has about 3000 characters of parameters) get more room.
+const READ_RESULT_CHARS: usize = 4000;
+const LONG_READS: &[&str] = &["get_region", "get_plugin"];
+
+/// The part of a tool result that goes back to the model.
+fn result_for_model(name: &str, out: &str) -> String {
+    let limit = if LONG_READS.contains(&name) { READ_RESULT_CHARS } else { TOOL_RESULT_CHARS };
+    out.chars().take(limit).collect()
+}
 
 fn local_tools() -> Value {
     Value::Array(
@@ -343,7 +357,7 @@ impl LocalAssistant {
                         Err(e) => (false, format!("Error: {e}")),
                     }
                 };
-                let short: String = out.chars().take(1500).collect();
+                let short = result_for_model(&name, &out);
                 let _ = events.send(AiEvent::ToolCall { name: name.clone(), input: args.clone(), ok, result: short.chars().take(300).collect() });
                 self.messages.push(json!({"role": "tool", "tool_call_id": id, "content": short}));
             }
@@ -358,7 +372,9 @@ impl LocalAssistant {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prompts;
     use crate::session::Session;
+    use ondina_core::model::RegionContent;
     use std::process::Stdio;
 
     /// One user request, `steps` tool-calling steps with `payload` characters of tool output each, a final answer.
@@ -486,8 +502,62 @@ mod tests {
 
     #[test]
     fn history_budget_leaves_room_for_the_local_tools() {
-        assert!(history_budget(local_tools().to_string().len()) > MIN_HISTORY_CHARS);
+        let budget = history_budget(local_tools().to_string().len());
+        assert!(budget >= 2 * MIN_HISTORY_CHARS, "only {budget} characters left for the conversation");
         assert_eq!(history_budget(usize::MAX / 2), MIN_HISTORY_CHARS);
+    }
+
+    #[test]
+    fn local_tools_cover_the_contextual_requests() {
+        let design = prompts::design_sound(7, "Analog Synth");
+        assert_eq!(design, "Adjust the parameters of plug-in 7 (Analog Synth) to get a great sound for this track's role in the song. Explain briefly.");
+        // tools each request needs even when its text does not name them
+        let cases: [(&str, &[&str]); 7] = [
+            (prompts::CONTINUE_IMPROVE, &["get_region", "replace_notes", "add_notes", "quantize_notes", "transpose_notes"]),
+            (prompts::WRITE_GROOVE, &["get_region", "set_pattern_row", "add_pattern_row"]),
+            (design.as_str(), &["get_plugin", "set_plugin_params"]),
+            (prompts::FILL_GRID, &["get_project", "add_scene", "create_live_cell"]),
+            (prompts::FIX_MIX, &["analyze_mix", "set_volume", "set_pan", "add_effect", "set_plugin_params"]),
+            (prompts::WRITE_PART, &["get_project", "list_patches", "create_midi_region", "add_notes", "generate_melody"]),
+            (prompts::VARY_REGION, &["get_region", "create_midi_region", "duplicate_region", "replace_notes"]),
+        ];
+        let all: Vec<&str> = mcp::tools().iter().map(|t| t.name.as_str()).collect();
+        for (text, needed) in cases {
+            for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                if all.contains(&word) {
+                    assert!(LOCAL_TOOLS.contains(&word), "{word}, named in {text:?}, is not offered to the local model");
+                }
+            }
+            for tool in needed {
+                assert!(LOCAL_TOOLS.contains(tool), "{tool} is needed by {text:?}");
+            }
+        }
+        assert!(SYSTEM.contains("indices"), "the local system prompt must explain indices");
+    }
+
+    #[test]
+    fn long_reads_reach_the_local_model_whole() {
+        let big = "x".repeat(3000);
+        assert_eq!(result_for_model("get_plugin", &big).len(), 3000);
+        assert_eq!(result_for_model("get_region", &big).len(), 3000);
+        assert_eq!(result_for_model("set_tempo", &big).len(), TOOL_RESULT_CHARS);
+        assert_eq!(result_for_model("get_plugin", &"y".repeat(9000)).len(), READ_RESULT_CHARS);
+        // characters, not bytes
+        assert_eq!(result_for_model("set_tempo", &"é".repeat(2000)).chars().count(), TOOL_RESULT_CHARS);
+    }
+
+    #[test]
+    fn local_tools_are_existing_tools() {
+        let specs = ondina_core::command::tool_specs();
+        for name in LOCAL_TOOLS {
+            assert!(specs.iter().any(|t| t.name == *name), "{name} is not a tool");
+        }
+        let unique: std::collections::HashSet<&&str> = LOCAL_TOOLS.iter().collect();
+        assert_eq!(unique.len(), LOCAL_TOOLS.len(), "duplicate names in LOCAL_TOOLS");
+        assert_eq!(local_tools().as_array().unwrap().len(), LOCAL_TOOLS.len());
+        for name in ["set_pattern_row", "get_plugin", "set_plugin_params", "create_live_cell", "get_region", "replace_notes", "quantize_notes", "transpose_notes"] {
+            assert!(LOCAL_TOOLS.contains(&name), "{name} is missing");
+        }
     }
 
     #[test]
@@ -578,6 +648,58 @@ mod tests {
         assert_eq!(s.project.tempo.initial_bpm(), 120.0);
         assert!(s.project.tracks.is_empty());
         assert_eq!(s.can_undo(), None);
+    }
+
+    #[test]
+    fn local_turn_edits_a_pattern_and_selected_notes_in_one_undo_step() {
+        let session = Session::shared(false);
+        let (pattern_id, midi_id) = {
+            let mut s = session.lock();
+            let mut run = |name: &str, args: Value| s.execute(Command::from_tool_call(name, &args).unwrap(), Source::Gui).unwrap();
+            let t = run("add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();
+            let p = run("create_pattern_region", json!({"track_id": t, "start": 0}))["region_id"].as_u64().unwrap();
+            let notes = json!([
+                {"pitch": 60, "velocity": 100, "start": 0.1, "length": 0.5},
+                {"pitch": 62, "velocity": 100, "start": 1.05, "length": 0.5},
+                {"pitch": 64, "velocity": 100, "start": 2.2, "length": 0.5}
+            ]);
+            let m = run("create_midi_region", json!({"track_id": t, "start": 4, "length": 4, "notes": notes}))["region_id"].as_u64().unwrap();
+            (p, m)
+        };
+        let row0 = |s: &Session| match &s.project.find_region(pattern_id).unwrap().1.content {
+            RegionContent::Pattern(p) => p.rows[0].steps.clone(),
+            _ => panic!("not a pattern"),
+        };
+        let start_of = |s: &Session, pitch: u8| match &s.project.find_region(midi_id).unwrap().1.content {
+            RegionContent::Midi(m) => m.notes.iter().find(|n| n.pitch == pitch).unwrap().start,
+            _ => panic!("not a MIDI region"),
+        };
+        let row_before = row0(&session.lock());
+        let port = mock_server(Duration::ZERO, vec![
+            json!({"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "set_pattern_row", "arguments": json!({"region_id": pattern_id, "row": 0, "pattern": "x...x...x...x..."}).to_string()}},
+                {"id": "c2", "type": "function", "function": {"name": "quantize_notes", "arguments": json!({"region_id": midi_id, "grid": 1.0, "indices": [0, 2]}).to_string()}}
+            ]}}]}),
+            json!({"choices": [{"message": {"role": "assistant", "content": "Done."}}]}),
+        ]);
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut a = LocalAssistant::default();
+        a.run_turn(&session, &local_settings(port), "tighten the groove", "", &tx, &Arc::new(AtomicBool::new(false)));
+        let events: Vec<AiEvent> = rx.try_iter().collect();
+        for tool in ["set_pattern_row", "quantize_notes"] {
+            assert!(events.iter().any(|e| matches!(e, AiEvent::ToolCall { name, ok: true, .. } if name == tool)), "{tool}: {events:?}");
+        }
+        let mut s = session.lock();
+        assert_eq!(row0(&s), vec![115, 0, 0, 0, 115, 0, 0, 0, 115, 0, 0, 0, 115, 0, 0, 0]);
+        assert!((start_of(&s, 60) - 0.0).abs() < 1e-9);
+        assert!((start_of(&s, 62) - 1.05).abs() < 1e-9, "a note outside indices moved");
+        assert!((start_of(&s, 64) - 2.0).abs() < 1e-9);
+        assert_eq!(s.can_undo(), Some("assistant: tighten the groove"));
+        s.execute(Command::Undo {}, Source::Gui).unwrap();
+        assert_eq!(row0(&s), row_before);
+        assert!((start_of(&s, 60) - 0.1).abs() < 1e-9);
+        assert!((start_of(&s, 64) - 2.2).abs() < 1e-9);
+        assert!(s.can_undo().is_some() && !s.last_undo_is_ai(), "one undo must remove the whole request");
     }
 
     #[test]

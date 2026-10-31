@@ -1857,7 +1857,7 @@ impl OndinaApp {
                     });
                 });
                 if ui.button(RichText::new("✨ Ask the AI to fix the mix").color(theme::AI)).clicked() {
-                    self.ask_ai("Analyze the mix and fix the problems you find, then verify with analyze_mix.".into());
+                    self.ask_ai(ondina_studio::prompts::FIX_MIX.into());
                 }
             });
             if !open {

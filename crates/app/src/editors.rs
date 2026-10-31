@@ -115,7 +115,7 @@ impl OndinaApp {
             }
             ui.separator();
             if ui.button(RichText::new("✨ AI: continue / improve").color(theme::AI)).clicked() {
-                self.ask_ai("Improve or complete the selected MIDI region musically (keep its character). Edit the notes directly.".into());
+                self.ask_ai(ondina_studio::prompts::CONTINUE_IMPROVE.into());
             }
         });
         let full = ui.available_rect_before_wrap();
@@ -778,7 +778,7 @@ impl OndinaApp {
                 self.cmd(Command::ConvertPatternToMidi { region_id: rid });
             }
             if ui.button(RichText::new("✨ AI: write a groove").color(theme::AI)).clicked() {
-                self.ask_ai("Program a tight groove in the selected step-sequencer pattern using set_pattern_row (fit the project's style).".into());
+                self.ask_ai(ondina_studio::prompts::WRITE_GROOVE.into());
             }
         });
         ui.label(
