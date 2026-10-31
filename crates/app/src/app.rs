@@ -92,6 +92,20 @@ pub enum Drag {
     Cycle {
         anchor: f64,
     },
+    /// Moving a marker in the marker lane; only `cur_beat` changes until release.
+    MoveMarker {
+        id: Id,
+        grab_beat: f64,
+        orig_beat: f64,
+        cur_beat: f64,
+    },
+    /// Dragging the right edge of a section marker.
+    ResizeMarker {
+        id: Id,
+        start: f64,
+        orig_len: f64,
+        cur_len: f64,
+    },
     Notes {
         region: Id,
         orig: Vec<Note>,
@@ -169,6 +183,7 @@ pub struct AuroraApp {
     pub show_about: bool,
     pub mix_report: Option<Value>,
     pub rename_buf: String,
+    pub marker_rename: Option<crate::arrange::MarkerRename>,
     pub vst_filter: String,
     pub api_key_buf: String,
     pub devices_cache: Option<Value>,
@@ -255,6 +270,7 @@ impl AuroraApp {
             show_about: false,
             mix_report: None,
             rename_buf: String::new(),
+            marker_rename: None,
             vst_filter: String::new(),
             devices_cache: None,
             midi_inputs_cache: vec![],

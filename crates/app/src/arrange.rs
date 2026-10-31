@@ -17,6 +17,14 @@ const LANE_H: f32 = 18.0;
 /// instead, so there is always some body left to grab for moving.
 const REGION_EDGE_PX: f32 = 6.0;
 
+/// A marker being renamed in place in the marker lane.
+pub struct MarkerRename {
+    pub id: Id,
+    pub text: String,
+    /// Give the text field focus and select its text on the next frame it is shown.
+    pub focus: bool,
+}
+
 impl AuroraApp {
     pub fn beat_to_x(&self, beat: f64, origin: f32) -> f32 {
         origin + ((beat - self.scroll_beat) as f32) * self.px_per_beat
@@ -176,12 +184,33 @@ impl AuroraApp {
             FontId::proportional(11.0),
             theme::TEXT_DIM,
         );
+        // Background first: markers registered after it sit on top and get clicks, drags and menus.
+        let mresp = ui.interact(mlane, ui.id().with("mlane"), Sense::click());
+        if mresp.double_clicked() {
+            if let Some(pp) = mresp.interact_pointer_pos() {
+                let b = (self.x_to_beat(pp.x, timeline_x) / bpb).floor() * bpb;
+                let n = p.markers.len() + 1;
+                self.cmd(Command::AddMarker {
+                    beat: b.max(0.0),
+                    name: format!("Section {n}"),
+                    length: Some(bpb * 4.0),
+                });
+            }
+        }
+        let mut rename_rect: Option<Rect> = None;
         for m in &p.markers {
-            let x = self.beat_to_x(m.beat, timeline_x);
-            let w = m
-                .length
-                .map(|l| l as f32 * self.px_per_beat)
-                .unwrap_or(60.0);
+            // a marker being dragged is drawn where it will land
+            let (beat, len, ghost) = match &self.drag {
+                Some(Drag::MoveMarker { id, cur_beat, .. }) if *id == m.id => {
+                    (*cur_beat, m.length, true)
+                }
+                Some(Drag::ResizeMarker { id, cur_len, .. }) if *id == m.id => {
+                    (m.beat, Some(*cur_len), true)
+                }
+                _ => (m.beat, m.length, false),
+            };
+            let x = self.beat_to_x(beat, timeline_x);
+            let w = len.map(|l| l as f32 * self.px_per_beat).unwrap_or(60.0);
             if x + w < timeline_x || x > full.right() {
                 continue;
             }
@@ -195,18 +224,72 @@ impl AuroraApp {
                 Color32::from_rgb(110, 90, 60)
             };
             painter.rect_filled(r, Rounding::same(2.0_f32), col);
-            painter.text(
-                pos2(r.left() + 4.0, r.center().y),
-                Align2::LEFT_CENTER,
-                &m.name,
-                FontId::proportional(11.0),
-                Color32::WHITE,
-            );
-            let resp = ui.interact(r, ui.id().with(("marker", m.id)), Sense::click());
+            if ghost {
+                painter.rect_stroke(r, Rounding::same(2.0_f32), Stroke::new(1.5_f32, theme::SELECT));
+            }
+            if self.marker_rename.as_ref().is_some_and(|e| e.id == m.id) {
+                rename_rect = Some(r);
+            } else {
+                painter.text(
+                    pos2(r.left() + 4.0, r.center().y),
+                    Align2::LEFT_CENTER,
+                    &m.name,
+                    FontId::proportional(11.0),
+                    Color32::WHITE,
+                );
+            }
+            if ghost {
+                // like regions: no interaction while it is being dragged
+                continue;
+            }
+            let resp = ui.interact(r, ui.id().with(("marker", m.id)), Sense::click_and_drag());
+            // Same grab strip as regions; point markers have no length to resize.
+            let edge = m.length.map(|_| {
+                let er = Rect::from_min_max(pos2(r.right() - region_edge_width(r.width()), r.top()), r.max);
+                ui.interact(er, ui.id().with(("medge", m.id)), Sense::drag())
+            });
+            if self.drag.is_none() && edge.as_ref().is_some_and(|e| e.hovered()) {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
+            // Decide from where the press began, as for regions.
+            let press_origin = ui.input(|i| i.pointer.press_origin());
+            let press_zone = match (m.length, press_origin) {
+                (Some(_), Some(o)) => region_hit_zone(o.x, r.left(), r.right()),
+                _ => RegionZone::Body,
+            };
+            let start_resize = m.length.is_some()
+                && (edge.as_ref().is_some_and(|e| e.drag_started())
+                    || (resp.drag_started() && press_zone == RegionZone::Edge));
+            let start_move = resp.drag_started() && !start_resize;
+            if start_resize {
+                let l = m.length.unwrap_or(MIN_MARKER_LEN);
+                self.drag = Some(Drag::ResizeMarker {
+                    id: m.id,
+                    start: m.beat,
+                    orig_len: l,
+                    cur_len: l,
+                });
+            } else if start_move {
+                if let Some(pp) = press_origin.or_else(|| resp.interact_pointer_pos()) {
+                    self.drag = Some(Drag::MoveMarker {
+                        id: m.id,
+                        grab_beat: self.x_to_beat(pp.x, timeline_x),
+                        orig_beat: m.beat,
+                        cur_beat: m.beat,
+                    });
+                }
+            }
             if resp.clicked() {
                 self.exec(Command::SetPlayhead {
                     beat: Some(m.beat),
                     bar: None,
+                });
+            }
+            if resp.double_clicked() {
+                self.marker_rename = Some(MarkerRename {
+                    id: m.id,
+                    text: m.name.clone(),
+                    focus: true,
                 });
             }
             let mid = m.id;
@@ -237,16 +320,51 @@ impl AuroraApp {
                 }
             });
         }
-        let mresp = ui.interact(mlane, ui.id().with("mlane"), Sense::click());
-        if mresp.double_clicked() {
-            if let Some(pp) = mresp.interact_pointer_pos() {
-                let b = (self.x_to_beat(pp.x, timeline_x) / bpb).floor() * bpb;
-                let n = p.markers.len() + 1;
-                self.cmd(Command::AddMarker {
-                    beat: b.max(0.0),
-                    name: format!("Section {n}"),
-                    length: Some(bpb * 4.0),
-                });
+        // Rename field, registered last so it sits on top of the lane. A marker that scrolled out of
+        // view, was deleted or undone away drops the edit.
+        let target = self.marker_rename.take().and_then(|ren| {
+            let old = p.markers.iter().find(|m| m.id == ren.id)?.name.clone();
+            Some((ren, old, rename_rect?))
+        });
+        if let Some((mut ren, old, r)) = target {
+            let edit_id = ui.id().with(("mrename", ren.id));
+            let er = Rect::from_min_size(r.min, vec2(r.width().max(120.0), r.height()));
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(er));
+            let resp = child.add(
+                egui::TextEdit::singleline(&mut ren.text)
+                    .id(edit_id)
+                    .font(FontId::proportional(11.0))
+                    .margin(vec2(3.0, 1.0))
+                    .desired_width(er.width() - 6.0),
+            );
+            if ren.focus {
+                resp.request_focus();
+                // select the whole name so typing replaces it
+                if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), edit_id) {
+                    let n = ren.text.chars().count();
+                    st.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(0),
+                        egui::text::CCursor::new(n),
+                    )));
+                    st.store(ui.ctx(), edit_id);
+                }
+                ren.focus = false;
+            }
+            if resp.lost_focus() {
+                // egui drops the focus on Esc before the field sees it: check the key to tell cancel from commit
+                let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                if !cancelled {
+                    if let Some(name) = marker_rename_commit(&old, &ren.text) {
+                        self.cmd(Command::UpdateMarker {
+                            marker_id: ren.id,
+                            name: Some(name),
+                            beat: None,
+                            length: None,
+                        });
+                    }
+                }
+            } else {
+                self.marker_rename = Some(ren);
             }
         }
 
@@ -687,6 +805,8 @@ impl AuroraApp {
         // dragging updates
         let pointer_pos = ui.input(|i| i.pointer.interact_pos());
         let released = ui.input(|i| i.pointer.any_released());
+        let pointer_beat = pointer_pos.map(|pp| self.x_to_beat(pp.x, timeline_x));
+        let snap = self.snap;
         match &mut self.drag {
             Some(Drag::MoveRegion {
                 grab_beat,
@@ -724,6 +844,22 @@ impl AuroraApp {
                         l = (l / self.snap).round() * self.snap;
                     }
                     *cur_len = l.max(0.25);
+                }
+            }
+            Some(Drag::MoveMarker {
+                grab_beat,
+                orig_beat,
+                cur_beat,
+                ..
+            }) => {
+                if let Some(b) = pointer_beat {
+                    *cur_beat = dragged_marker_beat(*orig_beat, *grab_beat, b, snap);
+                }
+            }
+            Some(Drag::ResizeMarker { start, cur_len, .. }) => {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                if let Some(b) = pointer_beat {
+                    *cur_len = resized_marker_length(*start, b, snap);
                 }
             }
             _ => {}
@@ -777,6 +913,36 @@ impl AuroraApp {
                         self.cmd(Command::ResizeRegion {
                             region_id: id,
                             length: cur_len,
+                        });
+                    }
+                }
+                Some(Drag::MoveMarker {
+                    id,
+                    orig_beat,
+                    cur_beat,
+                    ..
+                }) => {
+                    if (cur_beat - orig_beat).abs() > 1e-9 {
+                        self.cmd(Command::UpdateMarker {
+                            marker_id: id,
+                            name: None,
+                            beat: Some(cur_beat),
+                            length: None,
+                        });
+                    }
+                }
+                Some(Drag::ResizeMarker {
+                    id,
+                    orig_len,
+                    cur_len,
+                    ..
+                }) => {
+                    if (cur_len - orig_len).abs() > 1e-9 {
+                        self.cmd(Command::UpdateMarker {
+                            marker_id: id,
+                            name: None,
+                            beat: None,
+                            length: Some(cur_len),
                         });
                     }
                 }
@@ -1043,6 +1209,35 @@ fn region_hit_zone(x: f32, left: f32, right: f32) -> RegionZone {
     }
 }
 
+/// Shortest section a marker can be resized to, in beats.
+const MIN_MARKER_LEN: f64 = 1.0;
+
+/// `b` rounded to a grid of `snap` beats; 0 turns the grid off.
+fn snap_to(b: f64, snap: f64) -> f64 {
+    if snap > 0.0 {
+        (b / snap).round() * snap
+    } else {
+        b
+    }
+}
+
+/// Where a dragged marker lands: it was grabbed at `grab_beat` and the pointer is now at `pointer_beat`.
+fn dragged_marker_beat(orig_beat: f64, grab_beat: f64, pointer_beat: f64, snap: f64) -> f64 {
+    snap_to(orig_beat + (pointer_beat - grab_beat), snap).max(0.0)
+}
+
+/// Length of a section marker starting at `start` whose right edge is dragged to `pointer_beat`.
+/// The end snaps to the grid (not the length), so an off-grid section still ends on a grid line.
+fn resized_marker_length(start: f64, pointer_beat: f64, snap: f64) -> f64 {
+    (snap_to(pointer_beat, snap) - start).max(MIN_MARKER_LEN)
+}
+
+/// The name to send after an in-place rename, or None when nothing should change.
+fn marker_rename_commit(old: &str, typed: &str) -> Option<String> {
+    let t = typed.trim();
+    (!t.is_empty() && t != old).then(|| t.to_string())
+}
+
 pub fn draw_meter(painter: &egui::Painter, r: Rect, m: [f32; 2]) {
     painter.rect_filled(r, Rounding::same(2.0_f32), Color32::from_rgb(20, 22, 26));
     let w = (r.width() - 1.0) / 2.0;
@@ -1069,7 +1264,10 @@ pub fn draw_meter(painter: &egui::Painter, r: Rect, m: [f32; 2]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{region_edge_width, region_hit_zone, RegionZone, REGION_EDGE_PX};
+    use super::{
+        dragged_marker_beat, marker_rename_commit, region_edge_width, region_hit_zone,
+        resized_marker_length, RegionZone, MIN_MARKER_LEN, REGION_EDGE_PX,
+    };
 
     #[test]
     fn region_edge_hit_zones() {
@@ -1090,5 +1288,36 @@ mod tests {
         assert_eq!(region_hit_zone(5.0, 0.0, 10.0), RegionZone::Body);
         // the smallest region drawn is 4 px wide
         assert!(region_edge_width(4.0) < 4.0);
+    }
+
+    #[test]
+    fn marker_drag_snaps_and_stops_at_zero() {
+        // grabbed at beat 10, pointer moved 3.2 beats to the right
+        assert_eq!(dragged_marker_beat(8.0, 10.0, 13.2, 1.0), 11.0);
+        assert!((dragged_marker_beat(8.0, 10.0, 13.2, 0.0) - 11.2).abs() < 1e-9);
+        assert_eq!(dragged_marker_beat(8.0, 10.0, 11.9, 4.0), 8.0);
+        // would land on beat -5
+        assert_eq!(dragged_marker_beat(2.0, 10.0, 3.0, 1.0), 0.0);
+        assert_eq!(dragged_marker_beat(2.0, 10.0, 3.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn marker_resize_snaps_end_and_keeps_one_beat() {
+        assert_eq!(resized_marker_length(16.0, 23.6, 1.0), 8.0);
+        assert_eq!(resized_marker_length(16.0, 23.6, 4.0), 8.0);
+        // off-grid start, the end still lands on the grid
+        assert_eq!(resized_marker_length(1.5, 7.9, 4.0), 6.5);
+        assert_eq!(resized_marker_length(16.0, 16.2, 1.0), MIN_MARKER_LEN);
+        assert_eq!(resized_marker_length(16.0, 10.0, 1.0), MIN_MARKER_LEN);
+        assert!((resized_marker_length(16.0, 19.3, 0.0) - 3.3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn marker_rename_trims_and_ignores_empty_or_unchanged() {
+        assert_eq!(marker_rename_commit("Verse", "  Chorus "), Some("Chorus".into()));
+        assert_eq!(marker_rename_commit("Verse", "Verse"), None);
+        assert_eq!(marker_rename_commit("Verse", " Verse "), None);
+        assert_eq!(marker_rename_commit("Verse", "   "), None);
+        assert_eq!(marker_rename_commit("Verse", ""), None);
     }
 }
