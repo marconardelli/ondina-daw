@@ -96,6 +96,55 @@ fn every_tool_is_implemented() {
 }
 
 #[test]
+fn open_project_starts_a_fresh_history() {
+    let mut s = Session::new(false);
+    ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}));
+    let path = tmp("fresh_history_open.aurora");
+    ok(&mut s, "save_project", json!({"path": path.display().to_string()}));
+    ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}));
+    assert_eq!(s.project.tracks.len(), 2);
+    assert!(s.dirty);
+    let rev = s.revision;
+
+    ok(&mut s, "open_project", json!({"path": path.display().to_string()}));
+    assert_eq!(s.project.tracks.len(), 1);
+    assert!(s.revision > rev, "the GUI must see a new revision");
+    assert_eq!(s.engine.project().tracks.len(), 1, "the engine must play the opened project");
+    assert_eq!(s.can_undo(), None, "opening a project must not be undoable");
+    assert_eq!(s.can_redo(), None);
+    assert!(!s.dirty, "a freshly opened project has no unsaved changes");
+    assert_eq!(call(&mut s, "undo", json!({})).unwrap_err(), "nothing to undo");
+    assert_eq!(s.project.tracks.len(), 1);
+
+    // editing after the open is undoable as usual
+    ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}));
+    assert!(s.dirty);
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(s.project.tracks.len(), 1);
+    assert_eq!(call(&mut s, "undo", json!({})).unwrap_err(), "nothing to undo");
+}
+
+#[test]
+fn new_project_starts_a_fresh_history() {
+    let mut s = Session::new(false);
+    ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}));
+    assert!(s.can_undo().is_some());
+    assert!(s.dirty);
+    let rev = s.revision;
+
+    ok(&mut s, "new_project", json!({"name": "Second", "tempo": 90}));
+    assert!(s.project.tracks.is_empty());
+    assert!(s.revision > rev);
+    assert_eq!(s.engine.project().name, "Second", "the engine must play the new project");
+    assert!(s.engine.project().tracks.is_empty());
+    assert_eq!(s.can_undo(), None, "a new project must not be undoable");
+    assert_eq!(s.can_redo(), None);
+    assert!(!s.dirty);
+    assert!(s.path.is_none());
+    assert_eq!(call(&mut s, "undo", json!({})).unwrap_err(), "nothing to undo");
+}
+
+#[test]
 fn flex_stems_tempo_transcription() {
     let wav = song_wav();
     let mut s = Session::new(false);
