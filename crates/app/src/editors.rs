@@ -7,10 +7,11 @@ use ondina_core::model::*;
 use ondina_core::theory::note_name;
 use ondina_dsp::MidiKind;
 use eframe::egui::{
-    self, pos2, vec2, Align2, Color32, FontId, Key, Rect, RichText, Rounding, Sense, Stroke,
+    self, pos2, vec2, Align2, Color32, FontId, Key, PointerButton, Rect, RichText, Rounding, Sense, Stroke,
 };
 
 use crate::app::{BottomTab, OndinaApp, Drag};
+use crate::cc_lane::{self, CcStroke};
 use crate::note_clipboard as nc;
 use crate::note_selection;
 use crate::piano_roll_view::{
@@ -100,7 +101,7 @@ impl OndinaApp {
         // toolbar
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("🎹 {} — {}", track.name, region.name)).strong())
-                .on_hover_text("Wheel: scroll pitch · Shift+wheel: scroll time · Ctrl+wheel: zoom time · Ctrl+Shift+wheel: zoom pitch · Ctrl+C/X/V: copy/cut/paste · Ctrl+A: select all · ←/→: move by the snap step · ↑/↓: semitone · Shift+↑/↓: octave");
+                .on_hover_text("Wheel: scroll pitch · Shift+wheel: scroll time · Ctrl+wheel: zoom time · Ctrl+Shift+wheel: zoom pitch · Ctrl+C/X/V: copy/cut/paste · Ctrl+A: select all · ←/→: move by the snap step · ↑/↓: semitone · Shift+↑/↓: octave · Controller lane: drag to draw, right-drag to erase");
             ui.separator();
             ui.label("Note length");
             egui::ComboBox::from_id_salt("notelen").width(60.0).selected_text(len_label(self.note_len)).show_ui(ui, |ui| {
@@ -145,14 +146,17 @@ impl OndinaApp {
             }
         });
         let full = ui.available_rect_before_wrap();
+        let cc_h = cc_lane::lane_height(self.cc_lane.open, full.height(), VEL_H);
         let grid = Rect::from_min_max(
             pos2(full.left() + KEYS_W, full.top()),
-            pos2(full.right(), full.bottom() - VEL_H),
+            pos2(full.right(), full.bottom() - VEL_H - cc_h),
         );
         let vel_rect = Rect::from_min_max(
-            pos2(full.left() + KEYS_W, full.bottom() - VEL_H + 2.0),
-            full.max,
+            pos2(full.left() + KEYS_W, full.bottom() - VEL_H - cc_h + 2.0),
+            pos2(full.right(), full.bottom() - cc_h),
         );
+        let cc_rect = Rect::from_min_max(pos2(full.left() + KEYS_W, full.bottom() - cc_h + 2.0), full.max);
+        let cc_gutter = Rect::from_min_max(pos2(full.left(), full.bottom() - cc_h + 2.0), pos2(full.left() + KEYS_W, full.bottom()));
         let painter = ui.painter_at(full);
         painter.rect_filled(full, Rounding::ZERO, theme::BG);
         // Frame the region's notes the first time it is shown; before the input so this frame already
@@ -645,6 +649,80 @@ impl OndinaApp {
                 }
             }
         }
+        // controller lane
+        painter.rect_filled(cc_rect, Rounding::ZERO, theme::PANEL);
+        let cresp = ui.interact(cc_rect, ui.id().with(("cc", rid)), Sense::click_and_drag());
+        let ctrl = self.cc_lane.controller;
+        let cc_value_at = |y: f32| cc_lane::value_from_y(y, cc_rect.top() + 3.0, cc_rect.bottom() - 3.0);
+        if self.cc_lane.open {
+            let stroke = match &self.drag {
+                Some(Drag::CcStroke { region, stroke }) if *region == rid => Some(stroke.clone()),
+                _ => None,
+            };
+            let shown = stroke.as_ref().map_or_else(|| m.cc.clone(), |s| s.preview(&m.cc));
+            let segs = cc_lane::segments(&shown, ctrl, region.length);
+            let cpainter = painter.with_clip_rect(cc_rect);
+            cc_lane::paint(&cpainter, cc_rect, &segs, ctrl, base, &|b| beat_x(b, sb));
+            let small = FontId::proportional(9.5);
+            match &stroke {
+                Some(s) if s.erase => {
+                    if let Some((from, to)) = s.range() {
+                        let r = Rect::from_min_max(pos2(beat_x(from, sb), cc_rect.top()), pos2(beat_x(to, sb), cc_rect.bottom()));
+                        cpainter.rect_filled(r, Rounding::ZERO, Color32::from_rgba_unmultiplied(220, 60, 60, 40));
+                    }
+                }
+                Some(s) => {
+                    if let Some(v) = s.last_value() {
+                        painter.text(pos2(cc_rect.right() - 4.0, cc_rect.top() + 2.0), Align2::RIGHT_TOP, cc_lane::value_label(ctrl, v), small.clone(), theme::TEXT_DIM);
+                    }
+                }
+                None => {}
+            }
+            if segs.is_empty() && stroke.is_none() {
+                painter.text(pos2(cc_rect.left() + 6.0, cc_rect.center().y), Align2::LEFT_CENTER, format!("No {} events: drag to draw", cc_lane::short_name(ctrl)), FontId::proportional(10.0), theme::TEXT_DIM);
+            }
+            let kind = track.instrument.as_ref().map(|pl| pl.kind.as_str());
+            if let Some(hint) = cc_lane::ignored_hint(kind, ctrl) {
+                painter.text(pos2(cc_rect.right() - 4.0, cc_rect.bottom() - 2.0), Align2::RIGHT_BOTTOM, hint, small, theme::TEXT_DIM);
+            }
+            if self.drag.is_none() {
+                let erase_drag = cresp.drag_started_by(PointerButton::Secondary);
+                let start = if erase_drag || cresp.drag_started_by(PointerButton::Primary) {
+                    ui.input(|i| i.pointer.press_origin())
+                } else {
+                    None
+                };
+                let click = if cresp.clicked() || cresp.secondary_clicked() { cresp.interact_pointer_pos() } else { None };
+                if let Some(pp) = start.or(click) {
+                    let erase = if start.is_some() { erase_drag } else { cresp.secondary_clicked() };
+                    let mut s = CcStroke::new(ctrl, erase, cc_lane::draw_step(self.snap), region.length);
+                    s.add(x_to_beat(pp.x), cc_value_at(pp.y));
+                    if start.is_some() {
+                        self.drag = Some(Drag::CcStroke { region: rid, stroke: s });
+                    } else if let Some((from, to, events)) = s.command_parts(&m.cc) {
+                        self.cmd(Command::ReplaceCc { region_id: rid, controller: ctrl, from_beat: Some(from), to_beat: Some(to), events });
+                    }
+                }
+            }
+            let _ = cresp.on_hover_text("Controller lane · drag: draw · right-drag: erase · click: one point");
+        }
+        let mut g = ui.new_child(egui::UiBuilder::new().max_rect(cc_gutter.shrink(2.0)).layout(egui::Layout::top_down(egui::Align::LEFT)));
+        if g.selectable_label(self.cc_lane.open, "CC").on_hover_text("Show or hide the controller lane").clicked() {
+            self.cc_lane.open = !self.cc_lane.open;
+        }
+        if self.cc_lane.open {
+            let _ = egui::ComboBox::from_id_salt("cc_ctrl")
+                .width(KEYS_W - 6.0)
+                .selected_text(cc_lane::short_name(ctrl))
+                .show_ui(&mut g, |ui| {
+                    for (c, n) in cc_lane::lane_choices(&m.cc) {
+                        let label = if n > 0 { format!("{} · {n}", cc_lane::controller_name(c)) } else { cc_lane::controller_name(c) };
+                        ui.selectable_value(&mut self.cc_lane.controller, c, label);
+                    }
+                })
+                .response
+                .on_hover_text("Controller shown and drawn in this lane. The Analog Synth and FM Synth respond only to Sustain (64); VST3 instruments receive every controller.");
+        }
         // playhead (inside a looped region it is drawn in the repeat being played)
         let px = beat_x(local, sb);
         if px >= grid.left() && px <= grid.right() {
@@ -692,6 +770,7 @@ impl OndinaApp {
                     *b1 = x_to_beat(pp.x.clamp(grid.left(), grid.right()));
                     *p1 = y_to_pitch(pp.y.clamp(grid.top(), grid.bottom()));
                 }
+                Some(Drag::CcStroke { stroke, .. }) => stroke.add(x_to_beat(pp.x), cc_value_at(pp.y)),
                 _ => {}
             }
         }
@@ -762,6 +841,12 @@ impl OndinaApp {
                         }
                     }
                 }
+                Some(Drag::CcStroke { region, stroke }) if region == rid => {
+                    if let Some((from, to, events)) = stroke.command_parts(&m.cc) {
+                        self.cmd(Command::ReplaceCc { region_id: region, controller: stroke.controller, from_beat: Some(from), to_beat: Some(to), events });
+                    }
+                }
+                Some(Drag::CcStroke { .. }) => {}
                 other => self.drag = other,
             }
         }
