@@ -15,6 +15,7 @@ mod editors;
 mod extra_ui;
 mod inspector;
 mod mixer;
+mod note_selection;
 mod theme;
 
 use aurora_studio::{Session, Settings, Source};
