@@ -14,11 +14,13 @@ Aurora is a desktop application. Its most sensitive surface is the **local MCP s
 files, loading native VST3 plug-ins and running ffmpeg. The server:
 
 - listens on `127.0.0.1` only;
-- rejects requests whose `Origin` header is not local (protection against DNS rebinding from web pages);
+- rejects requests whose `Origin` header is not local (protection against DNS rebinding from web pages),
+  including `Origin: null` (sent by sandboxed iframes and pages opened from files) unless `AURORA_MCP_TOKEN` is set;
 - requires a bearer token when the `AURORA_MCP_TOKEN` environment variable is set.
 
 Run Aurora with `--no-mcp` if you don't need external agents, and set `AURORA_MCP_TOKEN` if other software on your
-machine could reach the port.
+machine could reach the port. A local HTML page opened from a file sends `Origin: null`: to let it call the server, set
+`AURORA_MCP_TOKEN` and send the token as a bearer.
 
 ## Known issues being worked on
 
@@ -34,7 +36,5 @@ These were found in an automated review of the first release and are tracked for
   confirmation, and refuse to overwrite unrelated files.
 - **Paths passed to ffmpeg.** Movie paths are passed to ffmpeg as arguments. Planned fix: reject paths starting with
   `-` or containing a URL scheme, prefix inputs with `file:` and restrict ffmpeg to the `file` protocol.
-- **`Origin: null` is accepted** by the MCP server's origin check; a sandboxed web page sends `Origin: null`.
-  Planned fix: reject `null` unless a bearer token is configured.
 
 Until these are fixed, only open projects you trust and only connect MCP clients you trust.

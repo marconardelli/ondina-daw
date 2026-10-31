@@ -168,7 +168,8 @@ Example `claude_desktop_config.json`:
 The server exposes **tools** (156, annotated read-only/destructive), **resources** (`aurora://guide`,
 `aurora://project`, `aurora://project/document`, `aurora://plugins`, `aurora://patches`) and **prompts**
 (`compose_song`, `mix_review`, `arrange_sections`). It listens on `127.0.0.1` only, rejects non-local `Origin`
-headers (DNS-rebinding protection) and requires a bearer token when `AURORA_MCP_TOKEN` is set.
+headers (DNS-rebinding protection), including `Origin: null` unless a token is set, and requires a bearer token when
+`AURORA_MCP_TOKEN` is set.
 
 API conventions: positions are in **beats** (quarter notes, beat 0 = bar 1), note positions are relative to the
 region start, MIDI pitch 60 = C4, `track_id` 0 = master.
