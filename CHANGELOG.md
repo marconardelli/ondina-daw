@@ -7,6 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-31
+
+### Fixed
+
+- Arrange window: dragging the right edge of a region resizes it again, as a single undo step.
+
+### Security
+
+- The MCP server now refuses requests with `Origin: null` (sent by sandboxed iframes and pages opened from files)
+  unless `AURORA_MCP_TOKEN` is set, so a web page can no longer drive Aurora through the local server.
+
 ## [0.1.1] - 2026-10-31
 
 ### Changed
@@ -50,6 +61,7 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/aurora-daw/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/marconardelli/aurora-daw/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/marconardelli/aurora-daw/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/marconardelli/aurora-daw/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/marconardelli/aurora-daw/releases/tag/v0.1.0
