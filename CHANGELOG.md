@@ -7,6 +7,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-31
+
+### Changed
+
+- Offline assistant: the Stop button now interrupts the request in progress right away. Changes already made stay
+  and can be undone with Ctrl+Z.
+- Offline assistant: in long conversations the oldest requests are forgotten so the chat always fits in the model's
+  context. New chat starts over.
+
+### Fixed
+
+- Duplicate track now copies the track's automation too (volume, pan, sends and plug-in parameters). In the copy,
+  plug-in automation moves the copy's own plug-ins, not the original track's.
+- Changing a track's instrument or applying a patch removes the automation of the plug-ins that were replaced,
+  instead of leaving lanes pointing at plug-ins that no longer exist. Volume, pan and sends stay, and one Ctrl+Z
+  brings everything back.
+- The bundled llama.cpp server started by Ondina is now closed when Ondina exits. A server you started yourself
+  (Ollama, LM Studio, your own llama-server) is left running.
+
 ## [0.4.0] - 2026-10-31
 
 ### Added
@@ -130,7 +149,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/marconardelli/ondina-daw/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/marconardelli/ondina-daw/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/marconardelli/ondina-daw/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/marconardelli/ondina-daw/compare/v0.2.1...v0.2.2
