@@ -112,6 +112,11 @@ Get transport state: playing, recording, playhead position (beats, bar.beat.tick
 
 Parameters: none
 
+### `get_selection` · read-only
+Get what the user has selected in the Ondina window: the selected track, the selected region and up to 256 selected notes of that region (each with its index, pitch, name, start and length in beats from the region start, velocity), plus the playhead and the cycle range. To act on "the notes I selected", pass the note index values as `indices` to quantize_notes, transpose_notes, humanize_notes, set_note_velocities, snap_notes_to_key or remove_notes. Indices refer to the region as it is now: read the selection again after editing the region, and compare pitch and start if in doubt. selected_note_count is the real number of selected notes and can be larger than the list. A headless session has no window: track and region are null and notes is empty.
+
+Parameters: none
+
 ### `panic` · read-only
 Silence all sounding notes immediately.
 

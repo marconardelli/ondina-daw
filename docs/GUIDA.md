@@ -31,6 +31,9 @@ selezione. Se selezioni un'altra regione, la selezione delle note si svuota.
 Anche l'assistente AI vede quali note sono selezionate. Puoi dirgli, per esempio, "quantizza
 queste note" e lui agirà solo sulla selezione.
 
+Lo stesso vale per un agente esterno collegato via MCP (per esempio Claude Desktop): con il tool
+`get_selection` legge la traccia, la regione e le note che hai selezionato.
+
 ## Tracce nell'arrangiamento
 
 A sinistra di ogni traccia c'è la sua intestazione, con il nome, i pulsanti M (mute), S (solo) e
