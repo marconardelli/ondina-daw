@@ -5,7 +5,7 @@
 # They stay on this PC only; tests that need them skip themselves when they are missing.
 /tools/
 
-# Logic Pro reference manuals (108 MB): read them from the main checkout, docs/*.pdf
+# Local reference PDFs (not distributed)
 /docs/*.pdf
 
 # OS / editor

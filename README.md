@@ -8,9 +8,7 @@ assistant and a complete MCP API, so that every single operation is available to
 ![Rust](https://img.shields.io/badge/rust-stable-orange)
 ![MCP tools](https://img.shields.io/badge/MCP%20tools-156-8a5cf6)
 
-Aurora covers the full workflow of a modern DAW — compose, record, arrange, mix, master and export — and was
-designed using the Logic Pro user manuals as a *functional* reference. It is an original product: no Apple code,
-assets, artwork or trademarks are used, and the manuals are not part of this repository.
+Aurora covers the full workflow of a modern DAW — compose, record, arrange, mix, master and export.
 
 > **Status: early (0.x).** Aurora is usable and broad, but young. Expect rough edges, especially in the editors.
 > Bug reports and contributions are very welcome — see [Contributing](#contributing).
@@ -285,6 +283,4 @@ vulnerabilities privately as described there, not in public issues.
 
 [MIT](LICENSE) © 2026 Marco Nardelli.
 
-Aurora is not affiliated with or endorsed by Apple. Logic Pro is a trademark of Apple Inc.; the Logic Pro manuals
-were used only as a functional reference and are not distributed with this project. VST is a trademark of Steinberg
-Media Technologies GmbH.
+VST is a trademark of Steinberg Media Technologies GmbH.
