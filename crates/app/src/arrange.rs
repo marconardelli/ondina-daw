@@ -2,7 +2,8 @@
 
 use ondina_core::command::Command;
 use ondina_core::model::*;
-use ondina_core::ops::pattern_to_notes;
+use ondina_core::ops::{pattern_to_notes, resolve_chord_symbol};
+use ondina_core::theory::Key;
 use eframe::egui::{
     self, pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Rounding, Sense, Stroke,
 };
@@ -1357,7 +1358,7 @@ fn snap_to(b: f64, snap: f64) -> f64 {
     }
 }
 
-/// Where a dragged marker lands: it was grabbed at `grab_beat` and the pointer is now at `pointer_beat`.
+/// Where a dragged marker or chord lands: it was grabbed at `grab_beat` and the pointer is now at `pointer_beat`.
 fn dragged_marker_beat(orig_beat: f64, grab_beat: f64, pointer_beat: f64, snap: f64) -> f64 {
     snap_to(orig_beat + (pointer_beat - grab_beat), snap).max(0.0)
 }
@@ -1366,6 +1367,41 @@ fn dragged_marker_beat(orig_beat: f64, grab_beat: f64, pointer_beat: f64, snap: 
 /// The end snaps to the grid (not the length), so an off-grid section still ends on a grid line.
 fn resized_marker_length(start: f64, pointer_beat: f64, snap: f64) -> f64 {
     (snap_to(pointer_beat, snap) - start).max(MIN_MARKER_LEN)
+}
+
+/// Shortest chord the right edge can be dragged to, in beats.
+const MIN_CHORD_LEN: f64 = 0.25;
+
+/// Where a chord typed on the empty chord lane at `pointer_beat` goes: on the grid line at or before the pointer
+/// (`snap` beats, 0 = no grid), `bar` beats long, but never over the chords around it. None when there is no room.
+fn new_chord_span(pointer_beat: f64, snap: f64, bar: f64, chords: &[ChordEvent]) -> Option<(f64, f64)> {
+    let floor = if snap > 0.0 { (pointer_beat / snap).floor() * snap } else { pointer_beat };
+    let prev_end = chords.iter().filter(|c| c.beat <= pointer_beat).map(|c| c.beat + c.length).fold(0.0, f64::max);
+    let next = chords.iter().filter(|c| c.beat > pointer_beat).map(|c| c.beat).fold(f64::INFINITY, f64::min);
+    let beat = floor.max(prev_end).max(0.0);
+    let len = bar.min(next - beat);
+    (len > 1e-6).then_some((beat, len))
+}
+
+/// Length of a chord starting at `start` whose right edge is dragged to `pointer_beat`. The end snaps to the grid
+/// and stops at `next_start` (the next chord), so lengthening a chord never covers the one after it.
+fn resized_chord_length(start: f64, pointer_beat: f64, snap: f64, next_start: Option<f64>) -> f64 {
+    let mut end = snap_to(pointer_beat, snap);
+    if let Some(n) = next_start.filter(|n| *n > start) {
+        end = end.min(n);
+    }
+    (end - start).max(MIN_CHORD_LEN)
+}
+
+/// The symbol to send after typing `typed` in the chord field, where `old` is the chord's current symbol (None for
+/// a new chord). Ok(None): nothing to do (empty, or the same chord). Err: not a chord symbol or roman numeral.
+fn chord_commit(old: Option<&str>, typed: &str, key: Key) -> Result<Option<String>, String> {
+    let t = typed.trim();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    let sym = resolve_chord_symbol(t, key)?;
+    Ok((old != Some(sym.as_str())).then_some(sym))
 }
 
 /// Height of the band at the top and bottom of the track area where a dragged header scrolls the view.
@@ -1489,12 +1525,15 @@ pub fn draw_meter(painter: &egui::Painter, r: Rect, m: [f32; 2]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        button_row_top, dragged_marker_beat, edge_scroll_speed, region_edge_width, region_hit_zone, rename_commit,
-        resized_marker_length, track_drop_index, track_move_target, RegionZone, HEADER_BUTTON_H, HEADER_FULL_H,
-        MIN_MARKER_LEN, REGION_EDGE_PX, TRACK_DRAG_SCROLL_PX_S,
+        button_row_top, chord_commit, dragged_marker_beat, edge_scroll_speed, new_chord_span, region_edge_width,
+        region_hit_zone, rename_commit, resized_chord_length, resized_marker_length, track_drop_index,
+        track_move_target, RegionZone, HEADER_BUTTON_H, HEADER_FULL_H, MIN_CHORD_LEN, MIN_MARKER_LEN, REGION_EDGE_PX,
+        TRACK_DRAG_SCROLL_PX_S,
     };
     use crate::arrange_view::{TRACK_H_MAX, TRACK_H_MIN};
     use ondina_core::command::Command;
+    use ondina_core::model::ChordEvent;
+    use ondina_core::theory::{Key, ScaleKind};
     use ondina_studio::{Session, Source};
     use serde_json::{json, Value};
 
@@ -1552,6 +1591,53 @@ mod tests {
         assert_eq!(resized_marker_length(16.0, 16.2, 1.0), MIN_MARKER_LEN);
         assert_eq!(resized_marker_length(16.0, 10.0, 1.0), MIN_MARKER_LEN);
         assert!((resized_marker_length(16.0, 19.3, 0.0) - 3.3).abs() < 1e-9);
+    }
+
+    fn chord(id: u64, beat: f64, length: f64) -> ChordEvent {
+        ChordEvent { id, beat, length, symbol: "C".into() }
+    }
+
+    fn close(a: Option<(f64, f64)>, b: (f64, f64)) -> bool {
+        a.is_some_and(|(x, y)| (x - b.0).abs() < 1e-9 && (y - b.1).abs() < 1e-9)
+    }
+
+    #[test]
+    fn new_chord_snaps_to_the_grid_and_stops_at_the_next_chord() {
+        assert_eq!(new_chord_span(5.7, 1.0, 4.0, &[]), Some((5.0, 4.0)));
+        assert!(close(new_chord_span(5.7, 0.0, 4.0, &[]), (5.7, 4.0)));
+        assert_eq!(new_chord_span(5.7, 4.0, 4.0, &[]), Some((4.0, 4.0)));
+        assert_eq!(new_chord_span(-0.5, 1.0, 4.0, &[]), Some((0.0, 4.0)));
+        // shortened so it ends where the next chord begins
+        assert_eq!(new_chord_span(6.2, 1.0, 4.0, &[chord(1, 8.0, 4.0)]), Some((6.0, 2.0)));
+        // starts where the chord before it ends, even off the grid
+        assert_eq!(new_chord_span(2.7, 1.0, 4.0, &[chord(1, 0.0, 2.5)]), Some((2.5, 4.0)));
+        // no room between overlapping chords
+        assert_eq!(new_chord_span(3.9, 1.0, 4.0, &[chord(1, 0.0, 6.0), chord(2, 4.0, 4.0)]), None);
+    }
+
+    #[test]
+    fn chord_resize_snaps_the_end_and_stops_at_the_next_chord() {
+        assert_eq!(resized_chord_length(0.0, 5.6, 1.0, None), 6.0);
+        assert_eq!(resized_chord_length(0.0, 5.6, 1.0, Some(4.0)), 4.0);
+        assert_eq!(resized_chord_length(1.5, 7.9, 4.0, None), 6.5);
+        assert_eq!(resized_chord_length(8.0, 8.1, 1.0, None), MIN_CHORD_LEN);
+        assert_eq!(resized_chord_length(8.0, 3.0, 1.0, None), MIN_CHORD_LEN);
+        assert!((resized_chord_length(0.0, 3.3, 0.0, None) - 3.3).abs() < 1e-9);
+        // a next chord before the start is not in the way
+        assert_eq!(resized_chord_length(8.0, 11.6, 1.0, Some(2.0)), 4.0);
+    }
+
+    #[test]
+    fn chord_commit_resolves_roman_numerals_and_rejects_unknown_symbols() {
+        let key = Key { root: 0, scale: ScaleKind::Major };
+        assert_eq!(chord_commit(None, "IV", key), Ok(Some("F".into())));
+        assert_eq!(chord_commit(None, " Am7 ", key), Ok(Some("Am7".into())));
+        assert_eq!(chord_commit(None, "   ", key), Ok(None));
+        assert_eq!(chord_commit(Some("G"), "V", key), Ok(None));
+        assert_eq!(chord_commit(Some("G"), "G", key), Ok(None));
+        assert_eq!(chord_commit(Some("G"), "G7", key), Ok(Some("G7".into())));
+        let e = chord_commit(None, "H9x", key).unwrap_err();
+        assert!(e.contains("cannot parse chord"), "{e}");
     }
 
     #[test]
