@@ -124,8 +124,11 @@ extension: Ondina opens both.
   the volume slider is left to the mixer.
 - **Piano roll**: click on empty space to add a note (length from the toolbar); click a note to select it,
   Ctrl/Shift+click to add to the selection; drag on empty space to box-select (stacked notes included); drag a note
-  to move it, drag its right edge to resize; Delete/Backspace removes the selection; double-click or right-click
-  deletes a single note; drag in the velocity lane to set velocities; the selection stays on the same notes after Undo/Redo and assistant or MCP edits; the view opens on the region's notes (double-click the region to frame them again), the wheel scrolls pitch at the same speed both ways, Shift+wheel scrolls time, Ctrl+wheel zooms time around the pointer, Ctrl+Shift+wheel zooms pitch, and the playhead follows the repeats of a looped region.
+  to move it, drag its right edge to resize; Delete/Backspace removes the selection; Ctrl+C/Ctrl+X/Ctrl+V copy, cut
+  and paste the selected notes (pasted at the playhead when it is inside the region, otherwise at their original
+  position; the copied notes also go to the system clipboard as JSON); Ctrl+A selects every note; ←/→ move the
+  selection by the snap step (1/16 with snap off), ↑/↓ by a semitone, Shift+↑/↓ by an octave; double-click or
+  right-click deletes a single note; drag in the velocity lane to set velocities; the selection stays on the same notes after Undo/Redo and assistant or MCP edits; the view opens on the region's notes (double-click the region to frame them again), the wheel scrolls pitch at the same speed both ways, Shift+wheel scrolls time, Ctrl+wheel zooms time around the pointer, Ctrl+Shift+wheel zooms pitch, and the playhead follows the repeats of a looped region.
 - **Score**: switch the editor to 𝄞 Score to see the selected region as notation, export MusicXML, assign lyrics.
 - **Mixer and inspector**: volume, pan, sends, inserts, plug-in parameters and native VST3 windows.
 - **Unsaved changes**: when the project has unsaved changes (the • in the title bar), closing the window, New,
@@ -143,6 +146,8 @@ extension: Ondina opens both.
 | Home | go to start | Ctrl+B | bounce |
 | Ctrl+wheel | zoom time around the pointer | Shift+wheel | scroll time |
 | Ctrl+Shift+wheel | track height (piano roll: key height) | | |
+| Ctrl+C / X / V | copy / cut / paste notes (piano roll) | Ctrl+A | select all notes (piano roll) |
+| ← / → | move selected notes by the snap step | ↑ / ↓ (Shift: octave) | transpose selected notes |
 
 Musical Typing: `A W S E D F T G Y H U J K` play notes, `Z` / `X` change octave.
 

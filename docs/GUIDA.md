@@ -9,6 +9,19 @@ Questa guida spiega come usare gli editor di Ondina con mouse, tastiera e menu.
 - Trascinamento su uno spazio vuoto: selezione a riquadro, comprese le note sovrapposte.
 - Trascinamento di una nota: la sposta. Trascinando il bordo destro ne cambi la durata.
 - Canc o Backspace: elimina le note selezionate. Doppio clic o clic destro elimina una sola nota.
+- Ctrl+C copia le note selezionate, Ctrl+X le taglia, Ctrl+V le incolla. Se il playhead è dentro la regione
+  aperta, la prima nota va sul playhead (arrotondato alla griglia dello snap); altrimenti le note tornano alla
+  posizione da cui le hai copiate, anche in un'altra regione. Le note che cadrebbero oltre la fine della regione
+  si scartano. Le note incollate restano selezionate. Ogni operazione si annulla con un solo Ctrl+Z.
+- Le note copiate vanno anche negli appunti di Windows come testo (JSON), che puoi incollare nella chat
+  dell'assistente. Se dopo aver copiato in Ondina copi un'immagine in un altro programma, Ctrl+V nel piano roll
+  non fa nulla finché non copi di nuovo le note.
+- Ctrl+A seleziona tutte le note.
+- Frecce ←/→: spostano le note selezionate di un passo di snap (1/16 con lo snap spento, 1/4 con Bar);
+  ↑/↓ di un semitono, Maiusc+↑/↓ di un'ottava. Lo spostamento si ferma all'inizio della regione e ai limiti
+  delle altezze MIDI senza cambiare la forma degli accordi.
+- Queste scorciatoie agiscono quando il pannello Editor mostra il piano roll e non stai scrivendo in un campo
+  di testo; le frecce sono spente con Musical Typing attivo.
 - Corsia delle velocity: trascina per impostare la velocity.
 - Quando apri una regione la vista si porta sulle sue note (su C4 se è vuota). Doppio clic sulla regione
   nell'arrangiamento: la inquadra di nuovo.
@@ -238,3 +251,7 @@ take resta nel progetto.
 | Ctrl+rotella | zoom orizzontale attorno al puntatore |
 | Maiusc+rotella | scorrimento orizzontale |
 | Ctrl+Maiusc+rotella | altezza delle tracce (nel piano roll: altezza dei tasti) |
+| Ctrl+C / Ctrl+X / Ctrl+V | copia / taglia / incolla le note (piano roll) |
+| Ctrl+A | seleziona tutte le note (piano roll) |
+| ← / → | sposta le note selezionate di un passo di snap |
+| ↑ / ↓, Maiusc+↑ / ↓ | trasporta le note selezionate di un semitono / un'ottava |
