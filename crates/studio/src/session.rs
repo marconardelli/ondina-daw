@@ -352,7 +352,7 @@ impl Session {
                 let start = start.unwrap_or(0.0);
                 let end = end.unwrap_or_else(|| self.project.content_end()).max(start + 1.0);
                 let sr = self.engine.sample_rate();
-                let mut res = render_offline(&self.project, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start, end, tail_sec: 2.0, solo: track_ids, analyze: true, keep_audio: true });
+                let mut res = render_offline(&self.project, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start, end, tail_sec: 2.0, auto_tail_max_sec: 0.0, solo: track_ids, analyze: true, keep_audio: true });
                 if normalize.unwrap_or(false) {
                     aurora_engine::offline::normalize(&mut res.left, &mut res.right);
                 }
@@ -384,7 +384,7 @@ impl Session {
                     tt.channel.output = Output::Master;
                     tt.channel.mute = false;
                 }
-                let res = render_offline(&solo_proj, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start: 0.0, end, tail_sec: 2.0, solo: Some(vec![track_id]), analyze: false, keep_audio: true });
+                let res = render_offline(&solo_proj, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start: 0.0, end, tail_sec: 2.0, auto_tail_max_sec: 0.0, solo: Some(vec![track_id]), analyze: false, keep_audio: true });
                 let file = self.media_dir().join(format!("{} (bounce {}).wav", sanitize(&t.name), self.project.next_id));
                 write_wav(&file, &res.left, &res.right, sr, 32)?;
                 let file_id = self.load_audio(&file)?;
@@ -684,7 +684,7 @@ impl Session {
         if end <= start {
             return Err("project is empty: nothing to analyze".into());
         }
-        let res = render_offline(&self.project, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: 44100, start, end, tail_sec: 1.0, solo: None, analyze: true, keep_audio: false });
+        let res = render_offline(&self.project, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: 44100, start, end, tail_sec: 1.0, auto_tail_max_sec: 0.0, solo: None, analyze: true, keep_audio: false });
         let a = res.analysis.unwrap_or_default();
         let master = a.get(&MASTER_ID).cloned();
         let mut tracks = vec![];

@@ -148,7 +148,7 @@ impl Session {
                     return Some(Err("project is empty".into()));
                 }
                 let sr = self.engine.sample_rate();
-                let (names, chans) = render_surround(&self.project, Arc::new(self.pool.clone()), sr, 0.0, end, name);
+                let (names, chans) = render_surround(&self.project, Arc::new(self.pool.clone()), sr, 0.0, end, name, 0.0);
                 if let Err(e) = write_multichannel_wav(Path::new(path), &chans, sr) {
                     return Some(Err(e));
                 }
@@ -163,7 +163,7 @@ impl Session {
                 let mut p = self.project.clone();
                 p.surround = SurroundFormat::Binaural;
                 let sr = self.engine.sample_rate();
-                let res = render_offline(&p, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start: 0.0, end, tail_sec: 2.0, solo: None, analyze: false, keep_audio: true });
+                let res = render_offline(&p, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start: 0.0, end, tail_sec: 2.0, auto_tail_max_sec: 0.0, solo: None, analyze: false, keep_audio: true });
                 match write_wav(Path::new(path), &res.left, &res.right, sr, 24) {
                     Ok(()) => Ok(json!({"path": path, "duration_sec": res.left.len() as f64 / sr as f64})),
                     Err(e) => Err(e),
@@ -194,7 +194,7 @@ impl Session {
                         t.regions.retain(|r| !matches!(&r.content, RegionContent::Audio(a) if a.file_id == aid));
                     }
                 }
-                let res = render_offline(&p, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start, end, tail_sec: 0.0, solo: None, analyze: false, keep_audio: true });
+                let res = render_offline(&p, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start, end, tail_sec: 0.0, auto_tail_max_sec: 0.0, solo: None, analyze: false, keep_audio: true });
                 if let Err(e) = write_wav(&tmp, &res.left, &res.right, sr, 24) {
                     return Some(Err(e));
                 }
