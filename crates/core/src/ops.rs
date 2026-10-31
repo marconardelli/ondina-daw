@@ -192,14 +192,67 @@ fn pattern_mut<'a>(p: &'a mut Project, id: Id) -> Result<&'a mut PatternContent,
     }
 }
 
+fn clamp_note(n: &mut Note) {
+    n.pitch = n.pitch.min(127);
+    n.velocity = n.velocity.clamp(1, 127);
+    n.start = n.start.max(0.0);
+    n.length = n.length.max(0.01);
+}
+
+fn note_order(a: &Note, b: &Note) -> std::cmp::Ordering {
+    a.start.partial_cmp(&b.start).unwrap().then(a.pitch.cmp(&b.pitch))
+}
+
 fn sanitize_notes(notes: &mut Vec<Note>) {
-    for n in notes.iter_mut() {
-        n.pitch = n.pitch.min(127);
-        n.velocity = n.velocity.clamp(1, 127);
-        n.start = n.start.max(0.0);
-        n.length = n.length.max(0.01);
+    notes.iter_mut().for_each(clamp_note);
+    notes.sort_by(note_order);
+}
+
+/// Same as `sanitize_notes`, and also reports where the notes flagged in `mask` are after sorting,
+/// so a caller that addresses notes by index can follow them.
+fn sanitize_notes_tracked(notes: &mut Vec<Note>, mask: &[bool]) -> Vec<usize> {
+    notes.iter_mut().for_each(clamp_note);
+    let mut order: Vec<usize> = (0..notes.len()).collect();
+    order.sort_by(|&a, &b| note_order(&notes[a], &notes[b]));
+    let sorted: Vec<Note> = order.iter().map(|&i| notes[i]).collect();
+    *notes = sorted;
+    order.iter().enumerate().filter(|&(_, &old)| mask[old]).map(|(new, _)| new).collect()
+}
+
+/// Which notes a command acts on: all of them without `indices`, otherwise the listed ones.
+/// Indices past the end are ignored, as `TransposeNotes` does.
+fn note_mask(len: usize, indices: Option<&[usize]>) -> Vec<bool> {
+    match indices {
+        None => vec![true; len],
+        Some(ix) => {
+            let mut m = vec![false; len];
+            for &i in ix {
+                if i < len {
+                    m[i] = true;
+                }
+            }
+            m
+        }
     }
-    notes.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap().then(a.pitch.cmp(&b.pitch)));
+}
+
+/// Run `f` on the masked notes only, in their current order, and write them back in place.
+/// Humanize's random sequence then depends only on the chosen notes, so a seed is reproducible
+/// for the same selection.
+fn on_masked(notes: &mut [Note], mask: &[bool], f: impl FnOnce(&mut [Note])) {
+    let mut sub: Vec<Note> = notes.iter().zip(mask).filter(|(_, s)| **s).map(|(n, _)| *n).collect();
+    f(&mut sub);
+    for (n, v) in notes.iter_mut().zip(mask).filter(|(_, s)| **s).map(|(n, _)| n).zip(sub) {
+        *n = v;
+    }
+}
+
+/// The `indices` field is added only when the caller sent indices, so results without it stay as they were.
+fn with_indices(mut v: Value, asked: bool, indices: Vec<usize>) -> Value {
+    if asked {
+        v["indices"] = json!(indices);
+    }
+    v
 }
 
 pub fn default_drum_rows(steps: u32) -> Vec<PatternRow> {
@@ -481,6 +534,42 @@ fn channel_brief(c: &Channel) -> Value {
         "sends": c.sends.iter().enumerate().map(|(i, s)| json!({"index": i, "bus_id": s.bus_id, "level_db": s.level_db, "pre_fader": s.pre_fader})).collect::<Vec<_>>(),
         "inserts": c.inserts.iter().map(plugin_brief).collect::<Vec<_>>(),
     })
+}
+
+/// The selected notes as one sentence for the assistant's context, so the model knows what the
+/// indices point at without calling get_region first. Indices past the end (a stale selection) are skipped.
+pub fn selected_notes_context(notes: &[Note], indices: &[usize], limit: usize) -> String {
+    let mut ix: Vec<usize> = indices.iter().copied().filter(|&i| i < notes.len()).collect();
+    ix.sort_unstable();
+    ix.dedup();
+    if ix.is_empty() {
+        return String::new();
+    }
+    let shown: Vec<String> = ix
+        .iter()
+        .take(limit)
+        .map(|&i| {
+            let n = &notes[i];
+            format!("{i}:{}@{}+{} v{}", theory::note_name(n.pitch), beat_text(n.start), beat_text(n.length), n.velocity)
+        })
+        .collect();
+    let mut s = format!(
+        " Selected notes ({} of {}; index:pitch@start+length velocity, beats from the region start): {}",
+        ix.len(),
+        notes.len(),
+        shown.join(", ")
+    );
+    if ix.len() > limit {
+        s += &format!(", +{} more", ix.len() - limit);
+    }
+    s.push('.');
+    s
+}
+
+/// Beats with at most three decimals and no trailing zeros: 1 instead of 1.000, 2.333 instead of 2.3333333.
+fn beat_text(b: f64) -> String {
+    let s = format!("{b:.3}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 pub fn project_summary(p: &Project) -> Value {
@@ -1116,17 +1205,21 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             }
             ok(json!({"ok": true}))
         }
-        QuantizeNotes { region_id, grid, strength, swing, quantize_ends } => {
+        QuantizeNotes { region_id, grid, strength, swing, quantize_ends, indices } => {
             let m = midi_mut(project, *region_id)?;
-            generate::quantize(&mut m.notes, *grid, strength.unwrap_or(1.0).clamp(0.0, 1.0), swing.unwrap_or(0.0), quantize_ends.unwrap_or(false));
-            sanitize_notes(&mut m.notes);
-            ok(json!({"ok": true}))
+            let mask = note_mask(m.notes.len(), indices.as_deref());
+            let (g, st, sw, qe) = (*grid, strength.unwrap_or(1.0).clamp(0.0, 1.0), swing.unwrap_or(0.0), quantize_ends.unwrap_or(false));
+            on_masked(&mut m.notes, &mask, |sub| generate::quantize(sub, g, st, sw, qe));
+            let moved = sanitize_notes_tracked(&mut m.notes, &mask);
+            ok(with_indices(json!({"ok": true}), indices.is_some(), moved))
         }
-        HumanizeNotes { region_id, timing, velocity, seed } => {
+        HumanizeNotes { region_id, timing, velocity, seed, indices } => {
             let m = midi_mut(project, *region_id)?;
-            generate::humanize(&mut m.notes, timing.unwrap_or(0.01), velocity.unwrap_or(8), seed_or_random(*seed));
-            sanitize_notes(&mut m.notes);
-            ok(json!({"ok": true}))
+            let mask = note_mask(m.notes.len(), indices.as_deref());
+            let (t, v, s) = (timing.unwrap_or(0.01), velocity.unwrap_or(8), seed_or_random(*seed));
+            on_masked(&mut m.notes, &mask, |sub| generate::humanize(sub, t, v, s));
+            let moved = sanitize_notes_tracked(&mut m.notes, &mask);
+            ok(with_indices(json!({"ok": true}), indices.is_some(), moved))
         }
         SetNoteVelocities { region_id, velocity, scale, indices } => {
             let m = midi_mut(project, *region_id)?;
@@ -1142,18 +1235,21 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             }
             ok(json!({"ok": true}))
         }
-        SnapNotesToKey { region_id } => {
+        SnapNotesToKey { region_id, indices } => {
             let key = project.key;
             let m = midi_mut(project, *region_id)?;
+            let mask = note_mask(m.notes.len(), indices.as_deref());
             let mut changed = 0;
-            for n in &mut m.notes {
+            for (n, _) in m.notes.iter_mut().zip(&mask).filter(|(_, s)| **s) {
                 let s = key.snap(n.pitch);
                 if s != n.pitch {
                     changed += 1;
                     n.pitch = s;
                 }
             }
-            ok(json!({"changed": changed}))
+            // Snap does not re-sort, so the chosen notes keep their positions.
+            let kept: Vec<usize> = (0..mask.len()).filter(|&i| mask[i]).collect();
+            ok(with_indices(json!({"changed": changed}), indices.is_some(), kept))
         }
         InsertChord { region_id, symbol, start, length, octave, inversion, velocity, with_bass } => {
             let chord = parse_chord_or_roman(symbol, project.key)?;
@@ -1443,5 +1539,120 @@ mod tests {
         run(&mut p, Command::AddSend { track_id: bid, bus_id, level_db: None, pre_fader: None });
         run(&mut p, Command::AddAutomationPoint { track_id: bid, target: "send:0".into(), beat: 0.0, value: -20.0 });
         assert!(apply(&mut p, &Command::AddAutomationPoint { track_id: bid, target: "send:5".into(), beat: 0.0, value: 0.0 }).is_err());
+    }
+
+    fn n(pitch: u8, start: f64) -> Note {
+        Note { pitch, velocity: 100, start, length: 0.5 }
+    }
+
+    fn midi_region(notes: &[Note]) -> (Project, Id) {
+        let mut p = Project::new("t");
+        let t = run(&mut p, Command::AddTrack { kind: TrackKind::Instrument, name: None, patch: None, instrument: None, preset: None, index: None });
+        let tid = t["track_id"].as_u64().unwrap();
+        let r = run(&mut p, Command::CreateMidiRegion { track_id: tid, start: 0.0, length: 8.0, name: None, notes: Some(notes.to_vec()) });
+        (p, r["region_id"].as_u64().unwrap())
+    }
+
+    fn notes_of(p: &Project, rid: Id) -> Vec<Note> {
+        match &p.find_region(rid).unwrap().1.content {
+            RegionContent::Midi(m) => m.notes.clone(),
+            _ => panic!("not a MIDI region"),
+        }
+    }
+
+    #[test]
+    fn quantize_notes_acts_on_given_indices() {
+        let start = [n(60, 0.1), n(62, 0.8), n(64, 0.9), n(65, 0.95)];
+        let (mut p, rid) = midi_region(&start);
+        let v = run(&mut p, Command::QuantizeNotes { region_id: rid, grid: 0.5, strength: None, swing: None, quantize_ends: None, indices: Some(vec![1, 2]) });
+        // 62 and 64 land on beat 1, after 65 at 0.95, so sorting moves them to positions 2 and 3
+        assert_eq!(v["indices"], json!([2, 3]));
+        let after = notes_of(&p, rid);
+        assert_eq!(after[0], start[0]);
+        assert_eq!(after[1], start[3]);
+        for i in [2, 3] {
+            assert!((after[i].start - 1.0).abs() < 1e-9, "note {i} at {}", after[i].start);
+        }
+        let mut moved = vec![after[2].pitch, after[3].pitch];
+        moved.sort();
+        assert_eq!(moved, vec![62, 64]);
+        // duplicates and indices past the end are ignored, as in transpose_notes
+        let (mut q, rid2) = midi_region(&start);
+        let w = run(&mut q, Command::QuantizeNotes { region_id: rid2, grid: 0.5, strength: None, swing: None, quantize_ends: None, indices: Some(vec![2, 1, 1, 99]) });
+        assert_eq!(w["indices"], json!([2, 3]));
+        assert_eq!(notes_of(&q, rid2), after);
+    }
+
+    #[test]
+    fn humanize_notes_acts_on_given_indices() {
+        let start = [n(60, 0.0), n(62, 1.0), n(64, 2.0), n(65, 3.0)];
+        let (mut p, rid) = midi_region(&start);
+        let v = run(&mut p, Command::HumanizeNotes { region_id: rid, timing: Some(0.05), velocity: Some(10), seed: Some(7), indices: Some(vec![0, 2]) });
+        assert_eq!(v["indices"], json!([0, 2]));
+        let after = notes_of(&p, rid);
+        assert_eq!(after[1], start[1]);
+        assert_eq!(after[3], start[3]);
+        // the seed drives only the chosen notes, in index order
+        let mut expect = vec![start[0], start[2]];
+        generate::humanize(&mut expect, 0.05, 10, 7);
+        assert_eq!(vec![after[0], after[2]], expect);
+    }
+
+    #[test]
+    fn snap_notes_to_key_acts_on_given_indices() {
+        // C major: C#, D, D#, F#
+        let (mut p, rid) = midi_region(&[n(61, 0.0), n(62, 1.0), n(63, 2.0), n(66, 3.0)]);
+        let v = run(&mut p, Command::SnapNotesToKey { region_id: rid, indices: Some(vec![0, 1]) });
+        assert_eq!(v["changed"], json!(1));
+        assert_eq!(v["indices"], json!([0, 1]));
+        let pitches: Vec<u8> = notes_of(&p, rid).iter().map(|n| n.pitch).collect();
+        assert_eq!(pitches, vec![60, 62, 63, 66]);
+    }
+
+    #[test]
+    fn note_tools_without_indices_are_unchanged() {
+        let start = [n(60, 0.1), n(62, 0.8), n(64, 0.9), n(65, 0.95)];
+        let (mut p, rid) = midi_region(&start);
+        let v = run(&mut p, Command::QuantizeNotes { region_id: rid, grid: 0.5, strength: Some(0.8), swing: Some(0.3), quantize_ends: Some(true), indices: None });
+        assert_eq!(v, json!({"ok": true}));
+        let mut expect = start.to_vec();
+        generate::quantize(&mut expect, 0.5, 0.8, 0.3, true);
+        sanitize_notes(&mut expect);
+        assert_eq!(notes_of(&p, rid), expect);
+
+        let before = notes_of(&p, rid);
+        let v = run(&mut p, Command::HumanizeNotes { region_id: rid, timing: Some(0.05), velocity: Some(10), seed: Some(3), indices: None });
+        assert_eq!(v, json!({"ok": true}));
+        let mut expect = before;
+        generate::humanize(&mut expect, 0.05, 10, 3);
+        sanitize_notes(&mut expect);
+        assert_eq!(notes_of(&p, rid), expect);
+
+        let (mut q, rid2) = midi_region(&[n(61, 0.0), n(62, 1.0), n(63, 2.0), n(66, 3.0)]);
+        let v = run(&mut q, Command::SnapNotesToKey { region_id: rid2, indices: None });
+        assert_eq!(v, json!({"changed": 3}));
+        let pitches: Vec<u8> = notes_of(&q, rid2).iter().map(|n| n.pitch).collect();
+        assert_eq!(pitches, vec![60, 62, 62, 65]);
+    }
+
+    #[test]
+    fn selected_notes_context_lists_pitch_and_position() {
+        let notes = [
+            Note { pitch: 60, velocity: 100, start: 0.0, length: 1.0 },
+            Note { pitch: 62, velocity: 90, start: 1.0, length: 0.5 },
+            Note { pitch: 64, velocity: 80, start: 1.5, length: 0.25 },
+            Note { pitch: 67, velocity: 70, start: 2.333333, length: 0.5 },
+        ];
+        assert_eq!(
+            selected_notes_context(&notes, &[3, 0, 9], 32),
+            " Selected notes (2 of 4; index:pitch@start+length velocity, beats from the region start): 0:C4@0+1 v100, 3:G4@2.333+0.5 v70."
+        );
+        assert_eq!(selected_notes_context(&notes, &[9], 32), "");
+        let many: Vec<Note> = (0..40).map(|i| Note { pitch: 48 + (i % 24) as u8, velocity: 100, start: i as f64 * 0.25, length: 0.25 }).collect();
+        let all: Vec<usize> = (0..40).collect();
+        let s = selected_notes_context(&many, &all, 32);
+        assert!(s.starts_with(" Selected notes (40 of 40;"), "{s}");
+        assert!(s.contains(" 31:") && !s.contains(" 32:"), "{s}");
+        assert!(s.ends_with(", +8 more."), "{s}");
     }
 }

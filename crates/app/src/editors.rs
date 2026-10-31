@@ -79,12 +79,12 @@ impl AuroraApp {
                 }
             });
             let sel: Option<Vec<usize>> = if self.selected_notes.is_empty() { None } else { Some(self.selected_notes.iter().copied().collect()) };
-            if ui.button("Quantize").on_hover_text("Quantize to the snap grid").clicked() {
+            if ui.button("Quantize").on_hover_text("Quantize the selected notes to the snap grid (all notes when nothing is selected)").clicked() {
                 let g = if self.snap > 0.0 { self.snap.min(1.0) } else { 0.25 };
-                self.cmd(Command::QuantizeNotes { region_id: rid, grid: g, strength: Some(1.0), swing: None, quantize_ends: Some(false) });
+                self.exec_on_selection(Command::QuantizeNotes { region_id: rid, grid: g, strength: Some(1.0), swing: None, quantize_ends: Some(false), indices: sel.clone() });
             }
-            if ui.button("Humanize").clicked() {
-                self.cmd(Command::HumanizeNotes { region_id: rid, timing: Some(0.015), velocity: Some(10), seed: None });
+            if ui.button("Humanize").on_hover_text("Humanize the selected notes (all notes when nothing is selected)").clicked() {
+                self.exec_on_selection(Command::HumanizeNotes { region_id: rid, timing: Some(0.015), velocity: Some(10), seed: None, indices: sel.clone() });
             }
             if ui.button("↑ st").clicked() {
                 self.cmd(Command::TransposeNotes { region_id: rid, semitones: 1, indices: sel.clone() });
@@ -98,8 +98,8 @@ impl AuroraApp {
             if ui.button("↓ oct").clicked() {
                 self.cmd(Command::TransposeNotes { region_id: rid, semitones: -12, indices: sel.clone() });
             }
-            if ui.button("Snap to key").clicked() {
-                self.cmd(Command::SnapNotesToKey { region_id: rid });
+            if ui.button("Snap to key").on_hover_text("Move the selected notes to the nearest pitch in the project key (all notes when nothing is selected)").clicked() {
+                self.exec_on_selection(Command::SnapNotesToKey { region_id: rid, indices: sel.clone() });
             }
             if ui.button("Select all").clicked() {
                 self.selected_notes = (0..m.notes.len()).collect();
@@ -702,6 +702,19 @@ impl AuroraApp {
             }
         }
         ui.allocate_rect(full, Sense::hover());
+    }
+
+    /// Run a note command on the current selection and keep the same notes selected: Quantize and
+    /// Humanize re-sort the region, and the result says where the selected notes went.
+    fn exec_on_selection(&mut self, c: Command) {
+        let had_selection = !self.selected_notes.is_empty();
+        let Some(v) = self.exec(c) else { return };
+        if !had_selection {
+            return;
+        }
+        if let Some(ix) = v.get("indices").and_then(|x| x.as_array()) {
+            self.selected_notes = ix.iter().filter_map(|i| i.as_u64()).map(|i| i as usize).collect();
+        }
     }
 
     fn step_sequencer(

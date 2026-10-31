@@ -348,14 +348,14 @@ Transpose notes (all, or the given indices) by semitones.
 Parameters: `indices, region_id, semitones`
 
 ### `quantize_notes`
-Quantize notes to a grid in beats (0.25 = 1/16). strength 0..1 (default 1), swing 0..1.
+Quantize notes (all, or the given indices) to a grid in beats (0.25 = 1/16). strength 0..1 (default 1), swing 0..1. Notes are re-sorted by time afterwards; with indices, the result's `indices` lists where those notes ended up. Indices past the last note are ignored.
 
-Parameters: `grid, quantize_ends, region_id, strength, swing`
+Parameters: `grid, indices, quantize_ends, region_id, strength, swing`
 
 ### `humanize_notes`
-Humanize: random timing deviation (beats, default 0.01) and velocity deviation (default 8).
+Humanize notes (all, or the given indices): random timing deviation (beats, default 0.01) and velocity deviation (default 8). Notes are re-sorted by time afterwards; with indices, the result's `indices` lists where those notes ended up. Indices past the last note are ignored.
 
-Parameters: `region_id, seed, timing, velocity`
+Parameters: `indices, region_id, seed, timing, velocity`
 
 ### `set_note_velocities`
 Set velocities: fixed value, or scale factor, for all or given notes.
@@ -363,9 +363,9 @@ Set velocities: fixed value, or scale factor, for all or given notes.
 Parameters: `indices, region_id, scale, velocity`
 
 ### `snap_notes_to_key`
-Move every note of a region to the nearest pitch in the project key.
+Move notes of a region (all, or the given indices) to the nearest pitch in the project key. Indices past the last note are ignored.
 
-Parameters: `region_id`
+Parameters: `indices, region_id`
 
 ### `insert_chord`
 Insert a voiced chord (symbol like "Cmaj7", "F#m", "G/B") into a MIDI region.

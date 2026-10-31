@@ -60,7 +60,7 @@ Every row is available both in the GUI and as MCP tools (full list in [`MCP_TOOL
 | Audio and MIDI recording | WASAPI inputs, MIDI ports, Musical Typing | `record` `set_record_arm` `connect_midi_input` `send_live_midi` |
 | Comping | cycle recording creates one take per pass; comp by segments | `list_takes` `comp_takes` |
 | Arrangement | drag/copy/resize/split/join/loop regions, fades, chord track, section markers | `move_region` `split_region` `copy_section` `set_chord_progression` |
-| Piano roll and step sequencer | note editing, box selection, quantize, humanize, velocity lane | `add_notes` `quantize_notes` `set_pattern_row` |
+| Piano roll and step sequencer | note editing, box selection, quantize / humanize / snap to key on the selection, velocity lane | `add_notes` `quantize_notes` `set_pattern_row` |
 | MIDI transform and routing | conditional transforms; split/layer of MIDI input | `transform_notes` `set_midi_routes` |
 | Session players | drums (13 styles), bass, chords, arpeggios, melodies | `generate_drums` `generate_bass` `generate_chords` … |
 | Time and pitch | WSOLA time-stretch, pitch shift, varispeed, key-aware pitch correction, audio→MIDI (YIN) | `time_stretch_region` `pitch_shift_region` `varispeed_region` `pitch_correct_region` `audio_to_midi` |
