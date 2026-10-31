@@ -270,18 +270,36 @@ impl HttpServerHandle {
     }
 }
 
-fn origin_allowed(origin: &str) -> bool {
+/// Only local origins may call the server. `null` is what sandboxed iframes and pages opened from
+/// files send, so it is accepted only when a bearer token still guards the endpoint.
+fn origin_allowed(origin: &str, token_configured: bool) -> bool {
     let o = origin.trim_end_matches('/');
-    let host = o.split("://").nth(1).unwrap_or(o);
-    let host = host.split(':').next().unwrap_or(host);
-    matches!(host, "localhost" | "127.0.0.1" | "[::1]") || origin == "null"
+    if o == "null" {
+        return token_configured;
+    }
+    let authority = o.split("://").nth(1).unwrap_or(o);
+    // An IPv6 host is bracketed and contains ':', so it ends at ']' rather than at the first ':'.
+    let host = if let Some(end) = authority.strip_prefix('[').and_then(|r| r.find(']')) {
+        let (host, rest) = authority.split_at(end + 2);
+        if !rest.is_empty() && !rest.starts_with(':') {
+            return false;
+        }
+        host
+    } else {
+        authority.split(':').next().unwrap_or(authority)
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
 }
 
 /// Start the Streamable HTTP MCP endpoint on 127.0.0.1:`port` in background threads.
 pub fn serve_http(session: SharedSession, port: u16) -> Result<HttpServerHandle, String> {
+    let token = std::env::var("AURORA_MCP_TOKEN").ok().filter(|t| !t.is_empty());
+    serve_http_with_token(session, port, token)
+}
+
+fn serve_http_with_token(session: SharedSession, port: u16, token: Option<String>) -> Result<HttpServerHandle, String> {
     let addr = format!("127.0.0.1:{port}");
     let server = std::sync::Arc::new(tiny_http::Server::http(&addr).map_err(|e| format!("cannot bind {addr}: {e}"))?);
-    let token = std::env::var("AURORA_MCP_TOKEN").ok().filter(|t| !t.is_empty());
     for _ in 0..4 {
         let server = server.clone();
         let session = session.clone();
@@ -293,8 +311,13 @@ pub fn serve_http(session: SharedSession, port: u16) -> Result<HttpServerHandle,
                     let header = |name: &str| req.headers().iter().find(|h| h.field.as_str().as_str().eq_ignore_ascii_case(name)).map(|h| h.value.as_str().to_string());
                     let json_header = tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap();
                     if let Some(o) = header("Origin") {
-                        if !origin_allowed(&o) {
-                            let _ = req.respond(tiny_http::Response::from_string("forbidden origin").with_status_code(403));
+                        if !origin_allowed(&o, token.is_some()) {
+                            let msg = if o.trim_end_matches('/') == "null" {
+                                "forbidden origin: Origin null is accepted only when AURORA_MCP_TOKEN is set"
+                            } else {
+                                "forbidden origin"
+                            };
+                            let _ = req.respond(tiny_http::Response::from_string(msg).with_status_code(403));
                             continue;
                         }
                     }
@@ -381,6 +404,67 @@ mod tests {
         let r = ureq::post(&h.address).set("Content-Type", "application/json").send_string(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string()).unwrap();
         assert_eq!(r.status(), 202);
         assert_eq!(s.lock().project.tracks.len(), 1);
+        h.shutdown();
+    }
+
+    #[test]
+    fn origin_allowed_accepts_null_only_with_token() {
+        assert!(!origin_allowed("null", false));
+        assert!(origin_allowed("null", true));
+        for token in [false, true] {
+            for ok in ["http://localhost:5173", "http://localhost", "http://localhost/", "http://127.0.0.1", "http://127.0.0.1:3917", "http://[::1]", "http://[::1]:8080"] {
+                assert!(origin_allowed(ok, token), "{ok} should be allowed (token: {token})");
+            }
+            for bad in ["http://localhost.evil.com", "http://evil.com", "http://127.0.0.1.evil.com", "http://[::1].evil.com"] {
+                assert!(!origin_allowed(bad, token), "{bad} should be refused (token: {token})");
+            }
+        }
+    }
+
+    fn post_with(address: &str, headers: &[(&str, &str)], body: &Value) -> (u16, String) {
+        let mut req = ureq::post(address).set("Content-Type", "application/json");
+        for (k, v) in headers {
+            req = req.set(k, v);
+        }
+        match req.send_string(&body.to_string()) {
+            Ok(r) => (r.status(), r.into_string().unwrap_or_default()),
+            Err(ureq::Error::Status(code, r)) => (code, r.into_string().unwrap_or_default()),
+            Err(e) => panic!("transport error: {e}"),
+        }
+    }
+
+    fn init_request() -> Value {
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}})
+    }
+
+    #[test]
+    fn http_rejects_null_origin_without_token() {
+        let s = Session::shared(false);
+        let h = serve_http_with_token(s, 39173, None).unwrap();
+        let (status, body) = post_with(&h.address, &[("Origin", "null")], &init_request());
+        assert_eq!(status, 403);
+        assert!(body.contains("AURORA_MCP_TOKEN"), "{body}");
+        let (status, body) = post_with(&h.address, &[], &init_request());
+        assert_eq!(status, 200, "{body}");
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["result"]["protocolVersion"], "2025-06-18");
+        let (status, _) = post_with(&h.address, &[("Origin", "http://localhost:5173")], &init_request());
+        assert_eq!(status, 200);
+        let (status, _) = post_with(&h.address, &[("Origin", "http://localhost.evil.com")], &init_request());
+        assert_eq!(status, 403);
+        h.shutdown();
+    }
+
+    #[test]
+    fn http_accepts_null_origin_with_token() {
+        let s = Session::shared(false);
+        let h = serve_http_with_token(s, 39174, Some("t0ken".into())).unwrap();
+        let (status, body) = post_with(&h.address, &[("Origin", "null"), ("Authorization", "Bearer t0ken")], &init_request());
+        assert_eq!(status, 200, "{body}");
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["result"]["protocolVersion"], "2025-06-18");
+        let (status, _) = post_with(&h.address, &[("Origin", "null")], &init_request());
+        assert_eq!(status, 401);
         h.shutdown();
     }
 }
