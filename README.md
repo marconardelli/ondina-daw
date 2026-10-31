@@ -7,6 +7,8 @@ assistant and a complete MCP API, so that every single operation is available to
 ![Platform: Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4)
 ![Rust](https://img.shields.io/badge/rust-stable-orange)
 ![MCP tools](https://img.shields.io/badge/MCP%20tools-156-8a5cf6)
+[![Sponsor](https://img.shields.io/badge/sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/marconardelli)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-support-ff5e5b?logo=kofi&logoColor=white)](https://ko-fi.com/marconardelli)
 
 Aurora covers the full workflow of a modern DAW — compose, record, arrange, mix, master and export.
 
@@ -29,6 +31,7 @@ Aurora covers the full workflow of a modern DAW — compose, record, arrange, mi
 - [Versioning and releases](#versioning-and-releases)
 - [Roadmap and known limitations](#roadmap-and-known-limitations)
 - [Contributing](#contributing)
+- [Support Aurora](#support-aurora)
 - [Security](#security)
 - [License](#license)
 
@@ -273,6 +276,17 @@ documentation, tests, performance work.
 3. Fork, create a branch, make a focused change with tests, and open a pull request.
 
 By contributing you agree that your contributions are licensed under the MIT License.
+
+## Support Aurora
+
+Aurora is free and open source, developed in spare time. If it is useful to you and you want to help it grow, you can
+support its development:
+
+- [**GitHub Sponsors**](https://github.com/sponsors/marconardelli) — one-time or monthly sponsorship.
+- [**Ko-fi**](https://ko-fi.com/marconardelli) — buy me a coffee, no account needed.
+
+Every contribution goes into development time, test hardware and plug-ins. Starring the repository, reporting bugs and
+telling other musicians about Aurora help just as much.
 
 ## Security
 

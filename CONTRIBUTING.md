@@ -13,6 +13,7 @@ too.
   Comment on the issue before starting so work isn't duplicated.
 - **Improve docs and examples** — README, user guides in `docs/`, example projects, doc comments of commands (they
   become the MCP tool descriptions).
+- **Support development financially** — see [Support Aurora](README.md#support-aurora) in the README.
 
 ## Development setup
 
