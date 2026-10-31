@@ -10,6 +10,7 @@
 mod app;
 mod arrange;
 mod assistant;
+mod doc_guard;
 mod editors;
 mod extra_ui;
 mod inspector;
