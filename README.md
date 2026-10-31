@@ -71,7 +71,7 @@ Every row is available both in the GUI and as MCP tools (full list in [`MCP_TOOL
 | Score | notation view (staff, values, ties, lyrics), MusicXML export | `get_score` `set_lyrics` `export_music_xml` |
 | Surround and spatial audio | 5.1, 7.1, 7.1.4, 3D VBAP panner, automated trajectories, binaural monitoring and bounce | `set_surround_format` `set_surround_pan` `bounce_surround` `bounce_binaural` |
 | Object-based mixing | tracks as audio objects, ADM BWF export (ITU-R BS.2076 + BS.2088): 7.1.2 bed + objects | `set_surround_pan` `export_adm` |
-| Video | linked movie with offset, movie audio, SMPTE timecode, video window, export with soundtrack | `load_movie` `set_frame_rate` `extract_movie_frame` `export_movie` |
+| Video | linked movie (local file) with offset, movie audio, SMPTE timecode, video window, export with soundtrack (.mp4, .mov, .mkv, .m4v) | `load_movie` `set_frame_rate` `extract_movie_frame` `export_movie` |
 | Built-in instruments | Analog Synth, FM Synth, Drum Synth, Sampler, Tonewheel Organ, Plucked String | `set_instrument` `set_plugin_params` |
 | Built-in effects | 16 audio effects (EQ, dynamics, delay, reverb, modulation, distortion, filters, utility) + 4 MIDI effects | `add_effect` `add_midi_effect` |
 | VST3 plug-ins | scan and host third-party VST3 instruments and effects, native editor windows, automatable parameters, state saved in the project | `scan_vst3` `add_vst3` `open_plugin_editor` `set_plugin_param` |

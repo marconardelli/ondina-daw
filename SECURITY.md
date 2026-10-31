@@ -22,6 +22,10 @@ Run Aurora with `--no-mcp` if you don't need external agents, and set `AURORA_MC
 machine could reach the port. A local HTML page opened from a file sends `Origin: null`: to let it call the server, set
 `AURORA_MCP_TOKEN` and send the token as a bearer.
 
+Movie files are read from local drives only: Aurora refuses movie paths that start with `-`, contain a URL scheme or
+point to a network share, passes them to ffmpeg with the `file:` prefix and limits ffmpeg to the `file` protocol.
+Frames are written as `.png`/`.jpg` and movie exports as `.mp4`, `.mov`, `.mkv` or `.m4v`.
+
 ## Known issues being worked on
 
 These were found in an automated review of the first release and are tracked for fixing:
@@ -34,7 +38,5 @@ These were found in an automated review of the first release and are tracked for
 - **File writes through the tool API.** Tools such as `save_project`, `export_midi` and the bounce/export tools write
   to the path they are given. Planned fix: restrict MCP/AI writes to the project and media folders or ask for
   confirmation, and refuse to overwrite unrelated files.
-- **Paths passed to ffmpeg.** Movie paths are passed to ffmpeg as arguments. Planned fix: reject paths starting with
-  `-` or containing a URL scheme, prefix inputs with `file:` and restrict ffmpeg to the `file` protocol.
 
 Until these are fixed, only open projects you trust and only connect MCP clients you trust.
