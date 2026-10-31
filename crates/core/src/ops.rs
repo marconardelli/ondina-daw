@@ -538,12 +538,59 @@ fn channel_brief(c: &Channel) -> Value {
     })
 }
 
-/// The selected notes as one sentence for the assistant's context, so the model knows what the
-/// indices point at without calling get_region first. Indices past the end (a stale selection) are skipped.
-pub fn selected_notes_context(notes: &[Note], indices: &[usize], limit: usize) -> String {
+/// Indices that exist in `notes`, sorted and without repeats.
+fn valid_note_indices(notes: &[Note], indices: &[usize]) -> Vec<usize> {
     let mut ix: Vec<usize> = indices.iter().copied().filter(|&i| i < notes.len()).collect();
     ix.sort_unstable();
     ix.dedup();
+    ix
+}
+
+/// Most notes `get_selection` lists; `selected_note_count` still counts every selected note.
+pub const SELECTION_NOTE_LIMIT: usize = 256;
+
+/// The user's selection as `get_selection` reports it, without the playhead (that lives in the engine).
+/// Ids that no longer exist report null, so a selection the GUI has not refreshed yet never fails.
+pub fn selection_summary(project: &Project, track: Option<Id>, region: Option<Id>, note_indices: &[usize], limit: usize) -> Value {
+    let track_v = track
+        .and_then(|id| project.track(id))
+        .map(|t| json!({"id": t.id, "name": t.name, "kind": t.kind}))
+        .unwrap_or(Value::Null);
+    let mut notes: Vec<Value> = Vec::new();
+    let mut count = 0;
+    let region_v = match region.and_then(|id| project.find_region(id)) {
+        Some((t, r)) => {
+            if let RegionContent::Midi(m) = &r.content {
+                let ix = valid_note_indices(&m.notes, note_indices);
+                count = ix.len();
+                notes = ix
+                    .iter()
+                    .take(limit)
+                    .map(|&i| {
+                        let n = &m.notes[i];
+                        json!({"index": i, "pitch": n.pitch, "name": theory::note_name(n.pitch), "velocity": n.velocity, "start": n.start, "length": n.length})
+                    })
+                    .collect();
+            }
+            let mut v = region_summary(r, project);
+            v["track_id"] = json!(t.id);
+            v
+        }
+        None => Value::Null,
+    };
+    json!({
+        "cycle": {"enabled": project.cycle.enabled, "start": project.cycle.start, "end": project.cycle.end},
+        "track": track_v,
+        "region": region_v,
+        "notes": notes,
+        "selected_note_count": count,
+    })
+}
+
+/// The selected notes as one sentence for the assistant's context, so the model knows what the
+/// indices point at without calling get_region first. Indices past the end (a stale selection) are skipped.
+pub fn selected_notes_context(notes: &[Note], indices: &[usize], limit: usize) -> String {
+    let ix = valid_note_indices(notes, indices);
     if ix.is_empty() {
         return String::new();
     }
@@ -1775,6 +1822,25 @@ mod tests {
         assert!(s.starts_with(" Selected notes (40 of 40;"), "{s}");
         assert!(s.contains(" 31:") && !s.contains(" 32:"), "{s}");
         assert!(s.ends_with(", +8 more."), "{s}");
+    }
+
+    #[test]
+    fn selection_summary_respects_the_limit_and_skips_missing_ids() {
+        let mut p = Project::new("t");
+        let tid = add_track_named(&mut p, TrackKind::Instrument, "Keys");
+        let notes: Vec<Note> = (0..5).map(|i| Note { pitch: 60 + i as u8, velocity: 100, start: i as f64, length: 1.0 }).collect();
+        let rid = run(&mut p, Command::CreateMidiRegion { track_id: tid, start: 0.0, length: 8.0, name: None, notes: Some(notes) })["region_id"].as_u64().unwrap();
+        let v = selection_summary(&p, Some(tid), Some(rid), &[4, 1, 1, 7], 1);
+        assert_eq!(v["track"]["id"], json!(tid), "{v}");
+        assert_eq!(v["region"]["track_id"], json!(tid), "{v}");
+        assert_eq!(v["notes"].as_array().unwrap().len(), 1, "{v}");
+        assert_eq!(v["notes"][0]["index"], json!(1), "{v}");
+        assert_eq!(v["notes"][0]["pitch"], json!(61), "{v}");
+        assert_eq!(v["selected_note_count"], json!(2), "{v}");
+        let v = selection_summary(&p, Some(12345), Some(12345), &[0], 256);
+        assert!(v["track"].is_null() && v["region"].is_null(), "{v}");
+        assert_eq!(v["notes"], json!([]), "{v}");
+        assert_eq!(v["selected_note_count"], json!(0), "{v}");
     }
 
     fn add_track_named(p: &mut Project, kind: TrackKind, name: &str) -> Id {
