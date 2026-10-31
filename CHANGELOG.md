@@ -7,6 +7,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-31
+
+### Changed
+
+- Piano roll: Quantize, Humanize and Snap to key now work on the selected notes only (all notes when nothing is
+  selected), and the same notes stay selected afterwards.
+- The matching MCP tools (`quantize_notes`, `humanize_notes`, `snap_notes_to_key`) accept an optional list of note
+  indices.
+- The AI assistant now knows which notes are selected in the piano roll, so you can ask it to work on just those.
+
+### Fixed
+
+- Undo right after opening a project or starting a new one no longer brings back the previous project.
+- A project that has just been opened is no longer marked as modified.
+
 ## [0.1.0] - 2026-10-31
 
 First public release.
@@ -35,5 +50,6 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/aurora-daw/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/marconardelli/aurora-daw/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/marconardelli/aurora-daw/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/marconardelli/aurora-daw/releases/tag/v0.1.0
