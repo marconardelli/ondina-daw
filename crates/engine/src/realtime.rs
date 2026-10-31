@@ -160,6 +160,11 @@ impl Engine {
         self.send(EngineMsg::Project(p));
     }
 
+    /// The project snapshot most recently handed to the audio thread.
+    pub fn project(&self) -> &Arc<Project> {
+        &self.project
+    }
+
     pub fn set_pool(&mut self, pool: Arc<AudioPool>) {
         self.pool = pool.clone();
         self.send(EngineMsg::Pool(pool));

@@ -103,6 +103,14 @@ impl Session {
         self.update_midi_target();
     }
 
+    /// Forget undo/redo and mark the document as saved: used when the whole project was replaced.
+    fn reset_history(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+        self.coalesce = None;
+        self.dirty = false;
+    }
+
     fn update_midi_target(&self) {
         let armed = self.project.tracks.iter().find(|t| t.record_armed && t.kind == TrackKind::Instrument).map(|t| t.id);
         let sel = self.selected_track.filter(|id| self.project.track(*id).map(|t| t.kind == TrackKind::Instrument).unwrap_or(false));
@@ -121,7 +129,7 @@ impl Session {
         }
     }
 
-    /// Execute a command. Mutating commands create an undo step.
+    /// Execute a command. Mutating commands create an undo step; opening or creating a project starts a fresh history.
     pub fn execute(&mut self, cmd: Command, source: Source) -> Result<Value, String> {
         self.coalesce = None;
         self.execute_inner(cmd, source, true)
@@ -183,19 +191,27 @@ impl Session {
         }
         let name = cmd.name();
         let mutating = cmd.is_mutating();
+        // Open and New replace the whole document. An undo step here would bring the old project back
+        // with the new file path and audio pool, so they start a fresh history instead.
+        let replaces_project = matches!(cmd, Command::OpenProject { .. } | Command::NewProject { .. });
         let before = if mutating { Some(self.project.clone()) } else { None };
         let result = self.dispatch(cmd);
         match &result {
             Ok(v) => {
                 if let Some(b) = before {
-                    if new_undo_step {
-                        self.undo.push((b, name.clone()));
-                        if self.undo.len() > UNDO_LIMIT {
-                            self.undo.remove(0);
+                    if replaces_project {
+                        self.commit();
+                        self.reset_history();
+                    } else {
+                        if new_undo_step {
+                            self.undo.push((b, name.clone()));
+                            if self.undo.len() > UNDO_LIMIT {
+                                self.undo.remove(0);
+                            }
                         }
+                        self.redo.clear();
+                        self.commit();
                     }
-                    self.redo.clear();
-                    self.commit();
                 }
                 if source != Source::Gui || mutating {
                     let msg = summarize(v);
@@ -239,16 +255,16 @@ impl Session {
                 Ok(json!({"redone": name}))
             }
             NewProject { .. } => {
-                let r = ops::apply(&mut self.project, &cmd);
+                let v = match ops::apply(&mut self.project, &cmd)? {
+                    Outcome::Done(v) => v,
+                    Outcome::NotHandled => return Err("internal".into()),
+                };
                 self.path = None;
                 self.pool.clear();
                 self.engine.set_pool(Arc::new(AudioPool::new()));
                 self.selected_track = None;
                 self.selected_region = None;
-                match r? {
-                    Outcome::Done(v) => Ok(v),
-                    Outcome::NotHandled => Err("internal".into()),
-                }
+                Ok(v)
             }
             OpenProject { path } => self.open(Path::new(&path)),
             SaveProject { path } => {
@@ -505,8 +521,6 @@ impl Session {
         self.path = Some(path.to_path_buf());
         self.selected_track = None;
         self.selected_region = None;
-        self.undo.clear();
-        self.redo.clear();
         Ok(json!({"opened": path.display().to_string(), "missing_audio_files": missing, "summary": ops::project_summary(&self.project)}))
     }
 
