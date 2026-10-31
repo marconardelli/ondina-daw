@@ -13,6 +13,7 @@ use aurora_core::ops::{self, Outcome};
 use aurora_core::{load_project_str, midi_io, save_project_string};
 use aurora_dsp::MidiKind;
 use aurora_engine::{load_audio_file, render_offline, write_wav, AudioPool, Engine, OfflineOptions};
+use aurora_engine::offline::{AUTO_TAIL_MAX_SEC, BOUNCE_TAIL_SEC};
 use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -39,6 +40,8 @@ pub struct LogEntry {
 }
 
 const UNDO_LIMIT: usize = 200;
+/// Longest exact tail `bounce` accepts, in seconds.
+const MAX_FIXED_TAIL_SEC: f64 = 60.0;
 
 pub struct Session {
     pub project: Project,
@@ -348,11 +351,21 @@ impl Session {
                 std::fs::write(&path, bytes).map_err(|e| format!("cannot write {path}: {e}"))?;
                 Ok(json!({"path": path}))
             }
-            Bounce { path, start, end, bit_depth, normalize, track_ids } => {
+            Bounce { path, start, end, bit_depth, normalize, track_ids, tail_sec } => {
+                if let Some(t) = tail_sec {
+                    if !(0.0..=MAX_FIXED_TAIL_SEC).contains(&t) {
+                        return Err(format!("tail_sec must be between 0 and {MAX_FIXED_TAIL_SEC} seconds"));
+                    }
+                }
                 let start = start.unwrap_or(0.0);
                 let end = end.unwrap_or_else(|| self.project.content_end()).max(start + 1.0);
                 let sr = self.engine.sample_rate();
-                let mut res = render_offline(&self.project, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start, end, tail_sec: 2.0, solo: track_ids, analyze: true, keep_audio: true });
+                // An exact tail when asked for one (0 cuts at `end`, for loops); otherwise render until the tails fade.
+                let (tail, auto_max) = match tail_sec {
+                    Some(t) => (t, 0.0),
+                    None => (BOUNCE_TAIL_SEC, AUTO_TAIL_MAX_SEC),
+                };
+                let mut res = render_offline(&self.project, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start, end, tail_sec: tail, auto_tail_max_sec: auto_max, solo: track_ids, analyze: true, keep_audio: true });
                 if normalize.unwrap_or(false) {
                     aurora_engine::offline::normalize(&mut res.left, &mut res.right);
                 }
@@ -363,7 +376,10 @@ impl Session {
                 };
                 write_wav(Path::new(&path), &res.left, &res.right, sr, bits)?;
                 let master = res.analysis.as_ref().and_then(|a| a.get(&MASTER_ID)).cloned();
-                Ok(json!({"path": path, "duration_sec": res.left.len() as f64 / sr as f64, "sample_rate": sr, "bit_depth": bits, "master_analysis": master}))
+                let duration = res.left.len() as f64 / sr as f64;
+                let span = self.project.tempo.beat_to_sec(end) - self.project.tempo.beat_to_sec(start);
+                let tail_out = ((duration - span) * 1000.0).round() / 1000.0;
+                Ok(json!({"path": path, "duration_sec": duration, "tail_sec": tail_out, "sample_rate": sr, "bit_depth": bits, "master_analysis": master}))
             }
             BounceInPlace { track_id } => {
                 let t = self.project.track(track_id).ok_or("track not found")?.clone();
@@ -384,7 +400,7 @@ impl Session {
                     tt.channel.output = Output::Master;
                     tt.channel.mute = false;
                 }
-                let res = render_offline(&solo_proj, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start: 0.0, end, tail_sec: 2.0, solo: Some(vec![track_id]), analyze: false, keep_audio: true });
+                let res = render_offline(&solo_proj, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start: 0.0, end, tail_sec: BOUNCE_TAIL_SEC, auto_tail_max_sec: AUTO_TAIL_MAX_SEC, solo: Some(vec![track_id]), analyze: false, keep_audio: true });
                 let file = self.media_dir().join(format!("{} (bounce {}).wav", sanitize(&t.name), self.project.next_id));
                 write_wav(&file, &res.left, &res.right, sr, 32)?;
                 let file_id = self.load_audio(&file)?;
@@ -684,7 +700,7 @@ impl Session {
         if end <= start {
             return Err("project is empty: nothing to analyze".into());
         }
-        let res = render_offline(&self.project, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: 44100, start, end, tail_sec: 1.0, solo: None, analyze: true, keep_audio: false });
+        let res = render_offline(&self.project, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: 44100, start, end, tail_sec: 1.0, auto_tail_max_sec: 0.0, solo: None, analyze: true, keep_audio: false });
         let a = res.analysis.unwrap_or_default();
         let master = a.get(&MASTER_ID).cloned();
         let mut tracks = vec![];
@@ -901,7 +917,7 @@ mod tests {
         assert!(a["master"]["integrated_lufs"].as_f64().unwrap() > -60.0, "{a}");
         let dir = std::env::temp_dir().join("aurora_test");
         let wav = dir.join("mix.wav");
-        let r = s.execute(Command::Bounce { path: wav.display().to_string(), start: None, end: None, bit_depth: Some(16), normalize: Some(true), track_ids: None }, Source::Script).unwrap();
+        let r = s.execute(Command::Bounce { path: wav.display().to_string(), start: None, end: None, bit_depth: Some(16), normalize: Some(true), track_ids: None, tail_sec: None }, Source::Script).unwrap();
         assert!(r["duration_sec"].as_f64().unwrap() > 7.0);
         let m = s.execute(Command::AutoMaster { target_lufs: Some(-14.0), character: None }, Source::Script).unwrap();
         assert!((m["measured_lufs"].as_f64().unwrap() + 14.0).abs() < 2.5, "{m}");

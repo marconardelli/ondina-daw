@@ -636,6 +636,7 @@ impl AuroraApp {
                 bit_depth: Some(self.bounce_bits),
                 normalize: Some(false),
                 track_ids: None,
+                tail_sec: None,
             }) {
                 self.status = format!(
                     "Bounced {:.1}s to {}",

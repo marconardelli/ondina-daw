@@ -27,6 +27,18 @@ Ogni operazione si annulla con Ctrl+Z.
 Anche l'assistente AI vede quali note sono selezionate. Puoi dirgli, per esempio, "quantizza
 queste note" e lui agirà solo sulla selezione.
 
+## Bounce
+
+- **File > Bounce to WAV…** (Ctrl+B) scrive il mix in un file WAV: tutta la canzone, oppure solo
+  l'intervallo del ciclo se il ciclo è attivo.
+- Dopo la fine, Aurora continua finché le code di riverbero e delay non si spengono (sotto circa
+  −90 dBFS): almeno 2 secondi, al massimo 20. Così il finale suona come in riproduzione. Vale anche
+  per Bounce in Place, Bounce Surround e Bounce Binaural.
+- Un suono che non si spegne mai, per esempio una nota tenuta oltre la fine o un plug-in che fa rumore,
+  allunga il file fino al massimo di 20 secondi.
+- Per esportare un loop di lunghezza esatta, senza coda, chiedi all'assistente o usa il tool MCP
+  `bounce` con `tail_sec: 0`.
+
 ## Annulla e ripeti
 
 - Ctrl+Z annulla l'ultima modifica, Ctrl+Y la ripete.

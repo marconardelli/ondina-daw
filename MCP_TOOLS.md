@@ -493,12 +493,12 @@ Insert empty time at a position, pushing later material.
 Parameters: `at_beat, length`
 
 ### `bounce` · read-only
-Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed).
+Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed). After the end the render goes on until reverb and delay tails fade below about -90 dBFS (at least 2 s, at most 20 s: a sound that never fades, like a note held past the end or a noisy plug-in, stops at 20 s). tail_sec sets an exact tail instead: 0 cuts exactly at end, e.g. to export a loop.
 
-Parameters: `bit_depth, end, normalize, path, start, track_ids`
+Parameters: `bit_depth, end, normalize, path, start, tail_sec, track_ids`
 
 ### `bounce_in_place`
-Render a track to audio and place it on a new audio track (bounce in place). The source track is muted.
+Render a track to audio and place it on a new audio track (bounce in place). The source track is muted. Reverb and delay tails are kept: the render goes on until they fade (at least 2 s, at most 20 s after the last region).
 
 Parameters: `track_id`
 
@@ -693,12 +693,12 @@ Position a track in 3D space for surround/binaural mixing (azimuth degrees: 0 fr
 Parameters: `azimuth, elevation, object, spread, track_id`
 
 ### `bounce_surround` · read-only
-Bounce a multichannel surround WAV (channel order L R C LFE Ls Rs, plus Lrs Rrs for 7.1, plus Ltf Rtf Ltr Rtr for 7.1.4).
+Bounce a multichannel surround WAV (channel order L R C LFE Ls Rs, plus Lrs Rrs for 7.1, plus Ltf Rtf Ltr Rtr for 7.1.4). Reverb and delay tails are kept (at least 2 s, at most 20 s after the end).
 
 Parameters: `format, path`
 
 ### `bounce_binaural` · read-only
-Bounce a binaural (headphone spatial audio) stereo WAV from the 3D positions.
+Bounce a binaural (headphone spatial audio) stereo WAV from the 3D positions. Reverb and delay tails are kept (at least 2 s, at most 20 s after the end).
 
 Parameters: `path`
 
