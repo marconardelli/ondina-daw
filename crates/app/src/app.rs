@@ -109,6 +109,21 @@ pub enum Drag {
         orig_len: f64,
         cur_len: f64,
     },
+    /// Moving a chord in the chord lane; only `cur_beat` changes until release.
+    MoveChord {
+        id: Id,
+        grab_beat: f64,
+        orig_beat: f64,
+        cur_beat: f64,
+    },
+    /// Dragging the right edge of a chord; `next_start` is where the next chord begins, if any.
+    ResizeChord {
+        id: Id,
+        start: f64,
+        orig_len: f64,
+        cur_len: f64,
+        next_start: Option<f64>,
+    },
     /// Dragging a track header to reorder tracks; `gap` is where it would drop
     /// (0 = above the first track, the track count = below the last).
     MoveTrack {
@@ -202,6 +217,7 @@ pub struct OndinaApp {
     pub rename_buf: String,
     pub marker_rename: Option<crate::arrange::InPlaceRename>,
     pub track_rename: Option<crate::arrange::InPlaceRename>,
+    pub chord_edit: Option<crate::arrange::ChordEdit>,
     pub vst_filter: String,
     pub api_key_buf: String,
     pub devices_cache: Option<Value>,
@@ -294,6 +310,7 @@ impl OndinaApp {
             rename_buf: String::new(),
             marker_rename: None,
             track_rename: None,
+            chord_edit: None,
             vst_filter: String::new(),
             devices_cache: None,
             midi_inputs_cache: vec![],
