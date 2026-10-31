@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-31
+
+### Changed
+
+- Movies for scoring to picture are read from local drives only: web addresses, network shares and odd paths are
+  refused before ffmpeg runs, and ffmpeg is allowed to open local files only. Frames are saved as PNG or JPEG and
+  movie exports as MP4, MOV, MKV or M4V.
+
+### Fixed
+
+- Arrange marker lane: clicking a marker jumps to it again, and right-click offers cycle, repeat and delete.
+- Markers can be dragged to move them, sections can be resized from their right edge (snapped to the grid), and
+  double-clicking a marker renames it. Each change is a single undo step.
+
 ## [0.2.0] - 2026-10-31
 
 ### Added
@@ -77,7 +91,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/aurora-daw/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/marconardelli/aurora-daw/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/marconardelli/aurora-daw/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/marconardelli/aurora-daw/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/marconardelli/aurora-daw/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/marconardelli/aurora-daw/compare/v0.1.0...v0.1.1
