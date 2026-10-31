@@ -417,3 +417,21 @@ fn note_tools_follow_the_selection() {
         assert!(!req.iter().any(|x| x == "indices"), "{name}: indices must stay optional");
     }
 }
+
+#[test]
+fn resize_region_is_one_undo_step() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
+    let r = ok(&mut s, "create_midi_region", json!({"track_id": t, "start": 2.0, "length": 4.0}))["region_id"].as_u64().unwrap();
+    ok(&mut s, "resize_region", json!({"region_id": r, "length": 6.0}));
+    let g = ok(&mut s, "get_region", json!({"region_id": r}));
+    assert_eq!(g["length"].as_f64(), Some(6.0), "{g}");
+    assert_eq!(g["start"].as_f64(), Some(2.0), "{g}");
+    ok(&mut s, "undo", json!({}));
+    let g = ok(&mut s, "get_region", json!({"region_id": r}));
+    assert_eq!(g["length"].as_f64(), Some(4.0), "one undo restores the previous length: {g}");
+    assert_eq!(g["start"].as_f64(), Some(2.0), "{g}");
+    ok(&mut s, "redo", json!({}));
+    let g = ok(&mut s, "get_region", json!({"region_id": r}));
+    assert_eq!(g["length"].as_f64(), Some(6.0), "{g}");
+}

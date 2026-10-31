@@ -13,6 +13,9 @@ use crate::theme;
 const HEADER_W: f32 = 210.0;
 const RULER_H: f32 = 22.0;
 const LANE_H: f32 = 18.0;
+/// Width of the grab strip on a region's right edge. Narrow regions get a third of their width
+/// instead, so there is always some body left to grab for moving.
+const REGION_EDGE_PX: f32 = 6.0;
 
 impl AuroraApp {
     pub fn beat_to_x(&self, beat: f64, origin: f32) -> f32 {
@@ -569,22 +572,34 @@ impl AuroraApp {
                 if ghost {
                     continue;
                 }
-                // interactions: body = move, right edge = resize
-                let edge = Rect::from_min_max(pos2(rect.right() - 6.0, rect.top()), rect.max);
-                let edge_resp = ui.interact(
-                    edge.intersect(clip),
-                    ui.id().with(("redge", r.id)),
-                    Sense::drag(),
-                );
+                // interactions: body = move, right edge = resize.
+                // Body first, resize edge after so the edge sits on top and gets the drag (egui gives a press to
+                // the last widget registered under the pointer); clicks on the edge still reach the body.
+                let edge_w = region_edge_width(rect.width());
+                let edge = Rect::from_min_max(pos2(rect.right() - edge_w, rect.top()), rect.max);
                 let body_resp = ui.interact(
                     clip,
                     ui.id().with(("region", r.id)),
                     Sense::click_and_drag(),
                 );
-                if edge_resp.hovered() || matches!(self.drag, Some(Drag::ResizeRegion { .. })) {
+                let edge_resp = ui.interact(
+                    edge.intersect(clip),
+                    ui.id().with(("redge", r.id)),
+                    Sense::drag(),
+                );
+                if edge_resp.hovered() && self.drag.is_none() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                 }
-                if edge_resp.drag_started() {
+                // Decide from where the press began, not where the pointer is once egui reports the drag
+                // (that comes a few pixels later), so a drag that starts on the edge never moves the region.
+                let press_zone = ui
+                    .input(|i| i.pointer.press_origin())
+                    .map(|o| region_hit_zone(o.x, rect.left(), rect.right()))
+                    .unwrap_or(RegionZone::Body);
+                let start_resize = edge_resp.drag_started()
+                    || (body_resp.drag_started() && press_zone == RegionZone::Edge);
+                let start_move = body_resp.drag_started() && !start_resize;
+                if start_resize {
                     self.drag = Some(Drag::ResizeRegion {
                         id: r.id,
                         orig_len: r.length,
@@ -592,7 +607,7 @@ impl AuroraApp {
                     });
                     self.selected_region = Some(r.id);
                 }
-                if body_resp.clicked() || body_resp.drag_started() {
+                if body_resp.clicked() || start_move {
                     self.selected_region = Some(r.id);
                     self.selected_track = Some(t.id);
                     if self.bottom == BottomTab::Hidden {
@@ -606,7 +621,7 @@ impl AuroraApp {
                         self.pr_scroll_beat = 0.0;
                     }
                 }
-                if body_resp.drag_started() && !edge_resp.dragged() {
+                if start_move {
                     if let Some(pp) = body_resp.interact_pointer_pos() {
                         self.drag = Some(Drag::MoveRegion {
                             id: r.id,
@@ -701,6 +716,7 @@ impl AuroraApp {
                 }
             }
             Some(Drag::ResizeRegion { id, cur_len, .. }) => {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                 if let (Some(pp), Some((_, r))) = (pointer_pos, p.find_region(*id)) {
                     let b = self.scroll_beat + ((pp.x - timeline_x) / self.px_per_beat) as f64;
                     let mut l = (b - r.start) / r.loop_count.max(1) as f64;
@@ -1006,6 +1022,27 @@ impl AuroraApp {
     }
 }
 
+/// Which part of a region the pointer is on: the body moves it, the right edge resizes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegionZone {
+    Body,
+    Edge,
+}
+
+/// Width of the resize strip for a region drawn `region_w` pixels wide.
+fn region_edge_width(region_w: f32) -> f32 {
+    REGION_EDGE_PX.min(region_w.max(0.0) / 3.0)
+}
+
+/// Zone under screen x for a region spanning `left..right` (x is expected inside that span).
+fn region_hit_zone(x: f32, left: f32, right: f32) -> RegionZone {
+    if x >= right - region_edge_width(right - left) {
+        RegionZone::Edge
+    } else {
+        RegionZone::Body
+    }
+}
+
 pub fn draw_meter(painter: &egui::Painter, r: Rect, m: [f32; 2]) {
     painter.rect_filled(r, Rounding::same(2.0_f32), Color32::from_rgb(20, 22, 26));
     let w = (r.width() - 1.0) / 2.0;
@@ -1028,4 +1065,30 @@ pub fn draw_meter(painter: &egui::Painter, r: Rect, m: [f32; 2]) {
         );
     }
     let _ = Pos2::ZERO;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{region_edge_width, region_hit_zone, RegionZone, REGION_EDGE_PX};
+
+    #[test]
+    fn region_edge_hit_zones() {
+        // 100 px wide region from x = 200 to x = 300
+        assert_eq!(region_hit_zone(298.0, 200.0, 300.0), RegionZone::Edge);
+        assert_eq!(region_hit_zone(300.0 - REGION_EDGE_PX, 200.0, 300.0), RegionZone::Edge);
+        assert_eq!(region_hit_zone(250.0, 200.0, 300.0), RegionZone::Body);
+        assert_eq!(region_hit_zone(200.0, 200.0, 300.0), RegionZone::Body);
+        assert!((region_edge_width(100.0) - REGION_EDGE_PX).abs() < 1e-6);
+    }
+
+    #[test]
+    fn narrow_region_keeps_a_body_to_grab() {
+        let w = region_edge_width(10.0);
+        assert!(w > 0.0 && w < 10.0, "edge strip {w} px on a 10 px region");
+        assert_eq!(region_hit_zone(10.0, 0.0, 10.0), RegionZone::Edge);
+        assert_eq!(region_hit_zone(0.0, 0.0, 10.0), RegionZone::Body);
+        assert_eq!(region_hit_zone(5.0, 0.0, 10.0), RegionZone::Body);
+        // the smallest region drawn is 4 px wide
+        assert!(region_edge_width(4.0) < 4.0);
+    }
 }
