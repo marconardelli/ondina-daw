@@ -114,8 +114,10 @@ extension: Ondina opens both.
 ## Using Ondina
 
 - **Arrange window**: double-click an instrument lane to create a MIDI region; drag to move, Alt+drag to copy, drag
-  the edge to resize; Shift+drag on the ruler to set the cycle. Drag a track header up or down to reorder the
-  tracks (a line shows where it lands, Esc cancels) and double-click a track's name to rename it in place. In the marker lane click a section to jump to it,
+  the edge to resize. The ruler has a cycle strip on top: drag the cycle to move it, drag an edge to resize it, click
+  it to turn cycle on or off and drag on the empty strip to draw a new one (Shift+drag anywhere on the ruler still
+  draws one); click or drag the lower half, with the bar numbers, to move the playhead. Drag a track header up or
+  down to reorder the tracks (a line shows where it lands, Esc cancels) and double-click a track's name to rename it in place. In the marker lane click a section to jump to it,
   right-click it to cycle, repeat or delete it, drag it to move it, drag its right edge to resize it and
   double-click it to rename it; double-click the empty lane to add a 4-bar section. The wheel scrolls the tracks,
   Shift+wheel (or a horizontal wheel) scrolls time, Ctrl+wheel zooms time around the pointer and Ctrl+Shift+wheel
