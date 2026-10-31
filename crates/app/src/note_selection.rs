@@ -213,6 +213,19 @@ fn shift_pairs(old: &[Note], lost: &[usize], new: &[Note], free: &[Vec<usize>], 
     pairs
 }
 
+/// The note selection to copy into the session for `get_selection`, or `None` when the session already has it.
+/// While `same_region` is false the GUI selection still belongs to the previous region (it is cleared later in the
+/// frame), so the session gets an empty selection instead of indices into the wrong region.
+pub fn session_notes_update(current: &[usize], selected: &HashSet<usize>, same_region: bool) -> Option<Vec<usize>> {
+    let wanted = if same_region { selected.len() } else { 0 };
+    if current.len() == wanted && (wanted == 0 || current.iter().all(|i| selected.contains(i))) {
+        return None;
+    }
+    let mut v: Vec<usize> = if same_region { selected.iter().copied().collect() } else { Vec::new() };
+    v.sort_unstable();
+    Some(v)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,6 +238,17 @@ mod tests {
 
     fn set(ix: &[usize]) -> HashSet<usize> {
         ix.iter().copied().collect()
+    }
+
+    #[test]
+    fn session_notes_update_only_when_the_selection_changes() {
+        assert_eq!(session_notes_update(&[], &set(&[]), true), None);
+        assert_eq!(session_notes_update(&[0, 2], &set(&[2, 0]), true), None);
+        assert_eq!(session_notes_update(&[0, 2], &set(&[0, 1, 2]), true), Some(vec![0, 1, 2]));
+        assert_eq!(session_notes_update(&[0, 1, 2], &set(&[5]), true), Some(vec![5]));
+        assert_eq!(session_notes_update(&[0, 2], &set(&[0, 2]), false), Some(vec![]));
+        assert_eq!(session_notes_update(&[], &set(&[0, 2]), false), None);
+        assert_eq!(session_notes_update(&[3], &set(&[]), true), Some(vec![]));
     }
 
     fn sorted(s: &HashSet<usize>) -> Vec<usize> {
