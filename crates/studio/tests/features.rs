@@ -620,6 +620,47 @@ fn add_chord_stores_roman_numerals_as_symbols_and_the_bassist_follows() {
     assert_eq!(s.project.chords.len(), 2);
 }
 
+#[test]
+fn update_chord_edits_symbol_position_and_length_in_one_undo_step() {
+    let mut s = Session::new(false);
+    ok(&mut s, "set_key", json!({"key": "C major"}));
+    let id = ok(&mut s, "add_chord", json!({"beat": 0, "length": 4, "symbol": "C"}))["chord_id"].as_u64().unwrap();
+    ok(&mut s, "add_chord", json!({"beat": 8, "length": 4, "symbol": "G"}));
+    let pos = |s: &Session| s.project.chords.iter().position(|c| c.id == id).unwrap();
+    let g = |s: &Session| s.project.chords.iter().position(|c| c.symbol == "G").unwrap();
+
+    let v = ok(&mut s, "update_chord", json!({"chord_id": id, "symbol": "vi", "beat": 12, "length": 2}));
+    assert_eq!(v["symbol"], "Am");
+    assert_eq!(v["beat"], 12.0);
+    assert_eq!(v["length"], 2.0);
+    assert!(pos(&s) > g(&s), "the chord track stays sorted by beat");
+
+    ok(&mut s, "undo", json!({}));
+    let c = &s.project.chords[pos(&s)];
+    assert_eq!((c.symbol.as_str(), c.beat, c.length), ("C", 0.0, 4.0));
+    assert_eq!(pos(&s), 0);
+
+    ok(&mut s, "update_chord", json!({"chord_id": id, "beat": -2}));
+    assert_eq!(s.project.chords[pos(&s)].beat, 0.0);
+
+    let track = |s: &Session| s.project.chords.iter().map(|c| (c.symbol.clone(), c.beat, c.length)).collect::<Vec<_>>();
+    let before = track(&s);
+    let undo_before = s.can_undo().map(String::from);
+    for args in [
+        json!({"chord_id": id, "symbol": "H9x"}),
+        json!({"chord_id": id, "length": 0}),
+        json!({"chord_id": id, "length": -1}),
+        json!({"chord_id": 999999, "beat": 4}),
+    ] {
+        assert!(call(&mut s, "update_chord", args.clone()).is_err(), "{args} should fail");
+    }
+    assert_eq!(track(&s), before);
+    assert_eq!(s.can_undo().map(String::from), undo_before);
+
+    ok(&mut s, "update_chord", json!({"chord_id": id}));
+    assert_eq!(track(&s), before);
+}
+
 fn midi_session() -> Session {
     let mut s = Session::new(false);
     let t = ok(&mut s, "add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();

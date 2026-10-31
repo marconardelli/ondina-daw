@@ -1414,6 +1414,27 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             project.chords.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
             ok(json!({"chord_id": id, "symbol": symbol}))
         }
+        UpdateChord { chord_id, symbol, beat, length } => {
+            let symbol = symbol.as_deref().map(|s| resolve_chord_symbol(s, project.key)).transpose()?;
+            if let Some(l) = length {
+                if !l.is_finite() || *l <= 0.0 {
+                    return err("length must be greater than 0");
+                }
+            }
+            let c = project.chords.iter_mut().find(|c| c.id == *chord_id).ok_or("chord not found")?;
+            if let Some(s) = symbol {
+                c.symbol = s;
+            }
+            if let Some(b) = beat {
+                c.beat = b.max(0.0);
+            }
+            if let Some(l) = length {
+                c.length = *l;
+            }
+            let out = json!({"chord_id": c.id, "beat": c.beat, "length": c.length, "symbol": c.symbol});
+            project.chords.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
+            ok(out)
+        }
         RemoveChord { chord_id } => {
             project.chords.retain(|c| c.id != *chord_id);
             ok(json!({"ok": true}))
