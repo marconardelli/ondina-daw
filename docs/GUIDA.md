@@ -73,6 +73,19 @@ locale o collegala a una lettera di unità.
 - Per esportare un loop di lunghezza esatta, senza coda, chiedi all'assistente o usa il tool MCP
   `bounce` con `tail_sec: 0`.
 
+## File scritti dall'assistente e dai tool MCP
+
+Quando l'assistente o un client MCP salva il progetto, fa un bounce o esporta un file, Aurora accetta
+solo un file su un disco locale con l'estensione del suo tipo: `.aurora` per il progetto, `.wav` per
+i bounce e l'export ADM, `.mid` o `.midi` per il MIDI, `.musicxml` o `.xml` per la partitura. Se il
+percorso non ha estensione, Aurora la aggiunge.
+
+- I percorsi di rete (`\\server\cartella`) e le altre estensioni vengono rifiutati con un messaggio, e
+  non viene scritto nulla.
+- L'assistente non sovrascrive un file esistente che non sia un progetto Aurora.
+- Dai menu e dalle finestre di salvataggio dell'app puoi continuare a scegliere qualsiasi cartella,
+  anche su un NAS. Un progetto aperto da una cartella di rete si risalva con Ctrl+S, non dall'assistente.
+
 ## Annulla e ripeti
 
 - Ctrl+Z annulla l'ultima modifica, Ctrl+Y la ripete.

@@ -593,3 +593,109 @@ fn marker_update_moves_renames_and_resizes_one_undo_step_each() {
     ok(&mut s, "undo", json!({}));
     assert_eq!(s.project.markers[pos(&s)].length, Some(16.0));
 }
+
+fn midi_session() -> Session {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();
+    ok(&mut s, "create_midi_region", json!({"track_id": t, "start": 0, "length": 4, "notes": [{"pitch": 60, "velocity": 100, "start": 0, "length": 1}]}));
+    s
+}
+
+#[test]
+fn mcp_writes_refuse_network_paths_and_foreign_extensions() {
+    let mut s = midi_session();
+    let bat = tmp("refused_export.bat");
+    let _ = std::fs::remove_file(&bat);
+    let e = call(&mut s, "export_midi", json!({"path": bat.display().to_string()})).unwrap_err();
+    assert!(e.contains("output path refused"), "{e}");
+    assert!(!bat.exists());
+    let e = call(&mut s, "bounce", json!({"path": "\\\\server\\share\\a.wav", "tail_sec": 0})).unwrap_err();
+    assert!(e.contains("output path refused"), "{e}");
+    for (tool, file) in [
+        ("bounce", "refused_bounce.dll"),
+        ("bounce_surround", "refused_surround.exe"),
+        ("bounce_binaural", "refused_binaural.wav.exe"),
+        ("export_adm", "refused_adm.bat"),
+        ("export_music_xml", "refused_score.exe"),
+    ] {
+        let p = tmp(file);
+        let _ = std::fs::remove_file(&p);
+        let e = call(&mut s, tool, json!({"path": p.display().to_string()})).unwrap_err();
+        assert!(e.contains("output path refused"), "{tool}: {e}");
+        assert!(!p.exists(), "{tool} wrote {}", p.display());
+    }
+    let ai = tmp("refused_ai.bat");
+    let _ = std::fs::remove_file(&ai);
+    let e = s.execute(Command::ExportMidi { path: ai.display().to_string(), track_ids: None }, Source::Ai).unwrap_err();
+    assert!(e.contains("output path refused"), "{e}");
+    assert!(!ai.exists());
+}
+
+#[test]
+fn mcp_writes_to_local_files_still_work() {
+    let mut s = midi_session();
+    let wav = tmp("mcp_local.wav");
+    let _ = std::fs::remove_file(&wav);
+    ok(&mut s, "bounce", json!({"path": wav.display().to_string(), "tail_sec": 0}));
+    assert!(wav.exists());
+    let noext = tmp("mcp_noext.wav");
+    let _ = std::fs::remove_file(&noext);
+    let v = ok(&mut s, "bounce", json!({"path": tmp("mcp_noext").display().to_string(), "tail_sec": 0}));
+    assert!(v["path"].as_str().unwrap().ends_with("mcp_noext.wav"), "{v}");
+    assert!(noext.exists());
+    let mid = tmp("mcp_local.mid");
+    let _ = std::fs::remove_file(&mid);
+    ok(&mut s, "export_midi", json!({"path": mid.display().to_string()}));
+    assert!(mid.exists());
+    let score = tmp("mcp_noext_score.musicxml");
+    let _ = std::fs::remove_file(&score);
+    ok(&mut s, "export_music_xml", json!({"path": tmp("mcp_noext_score").display().to_string()}));
+    assert!(score.exists());
+    let proj = tmp("mcp_local.aurora");
+    let _ = std::fs::remove_file(&proj);
+    ok(&mut s, "save_project", json!({"path": proj.display().to_string()}));
+    let mut s2 = Session::new(false);
+    ok(&mut s2, "open_project", json!({"path": proj.display().to_string()}));
+    assert_eq!(s2.project.tracks.len(), 1);
+}
+
+#[test]
+fn mcp_save_project_does_not_overwrite_other_files() {
+    let mut s = midi_session();
+    let fake = tmp("not_a_project.aurora");
+    std::fs::write(&fake, "my notes, not a project").unwrap();
+    let e = call(&mut s, "save_project", json!({"path": fake.display().to_string()})).unwrap_err();
+    assert!(e.contains("not an Aurora project"), "{e}");
+    assert_eq!(std::fs::read_to_string(&fake).unwrap(), "my notes, not a project");
+    let notes = tmp("notes.txt");
+    std::fs::write(&notes, "keep me").unwrap();
+    let e = call(&mut s, "save_project", json!({"path": notes.display().to_string()})).unwrap_err();
+    assert!(e.contains("output path refused"), "{e}");
+    assert_eq!(std::fs::read_to_string(&notes).unwrap(), "keep me");
+    let real = tmp("overwrite_real.aurora");
+    let _ = std::fs::remove_file(&real);
+    ok(&mut s, "save_project", json!({"path": real.display().to_string()}));
+    ok(&mut s, "add_track", json!({"kind": "instrument"}));
+    ok(&mut s, "save_project", json!({"path": real.display().to_string()}));
+    ok(&mut s, "save_project", json!({}));
+    let mut s2 = Session::new(false);
+    ok(&mut s2, "open_project", json!({"path": real.display().to_string()}));
+    assert_eq!(s2.project.tracks.len(), 2);
+}
+
+#[test]
+fn gui_and_script_writes_are_not_restricted() {
+    let mut s = midi_session();
+    let txt = tmp("gui_any_name.txt");
+    let _ = std::fs::remove_file(&txt);
+    s.execute(Command::SaveProject { path: Some(txt.display().to_string()) }, Source::Gui).unwrap();
+    assert!(txt.exists());
+    let over = tmp("gui_overwrite.aurora");
+    std::fs::write(&over, "plain text").unwrap();
+    s.execute(Command::SaveProject { path: Some(over.display().to_string()) }, Source::Gui).unwrap();
+    assert!(aurora_studio::session_ext::is_aurora_project_file(&over).unwrap());
+    let bin = tmp("script_any.bin");
+    let _ = std::fs::remove_file(&bin);
+    s.execute(Command::ExportMidi { path: bin.display().to_string(), track_ids: None }, Source::Script).unwrap();
+    assert!(bin.exists());
+}

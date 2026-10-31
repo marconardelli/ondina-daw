@@ -13,7 +13,7 @@ use aurora_engine::{load_audio_file, render_offline, render_surround, write_mult
 use aurora_engine::offline::{AUTO_TAIL_MAX_SEC, BOUNCE_TAIL_SEC};
 use serde_json::{json, Value};
 
-use crate::session::Session;
+use crate::session::{Session, Source};
 
 fn ops2_musicxml(p: &Project, ids: Option<&[Id]>) -> Result<String, String> {
     aurora_core::ops2::musicxml(p, ids)
@@ -50,6 +50,14 @@ fn run_ffmpeg(args: &[&str]) -> Result<(), String> {
 pub const FRAME_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg"];
 /// Extensions ffmpeg may write when it exports the movie with the mix.
 pub const MOVIE_EXTENSIONS: &[&str] = &["mp4", "mov", "mkv", "m4v"];
+/// Extensions `save_project` may write when the command comes from MCP or the assistant.
+pub const PROJECT_EXTENSIONS: &[&str] = &["aurora"];
+/// Extensions `export_midi` may write.
+pub const MIDI_EXTENSIONS: &[&str] = &["mid", "midi"];
+/// Extensions the bounce tools and `export_adm` may write.
+pub const WAV_EXTENSIONS: &[&str] = &["wav"];
+/// Extensions `export_music_xml` may write.
+pub const MUSICXML_EXTENSIONS: &[&str] = &["musicxml", "xml"];
 
 /// Check that `path` names a file on a local drive and return it as an absolute path.
 /// Movie paths come from MCP clients and from project files made by someone else, and they
@@ -93,12 +101,65 @@ pub fn ffmpeg_input(path: &str) -> Result<String, String> {
 /// the `file:` prefix so that ffmpeg can never read it as an option.
 pub fn ffmpeg_output(path: &str, allowed: &[&str]) -> Result<String, String> {
     let p = local_media_path(path)?;
-    let ext = p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).unwrap_or_default();
-    if !allowed.contains(&ext.as_str()) {
-        let list = allowed.iter().map(|e| format!(".{e}")).collect::<Vec<_>>().join(", ");
-        return Err(format!("{path} must end in {list}"));
-    }
+    check_extension(&p, path, allowed)?;
     Ok(format!("file:{}", p.display()))
+}
+
+/// Check that `p` (the checked form of the caller's `path`) has one of the `allowed`
+/// extensions, compared without regard to case.
+fn check_extension(p: &Path, path: &str, allowed: &[&str]) -> Result<(), String> {
+    let ext = p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).unwrap_or_default();
+    if allowed.contains(&ext.as_str()) {
+        return Ok(());
+    }
+    let list = allowed.iter().map(|e| format!(".{e}")).collect::<Vec<_>>().join(", ");
+    Err(format!("{path} must end in {list}"))
+}
+
+/// Check a path that a tool called from MCP or the assistant is about to write, and return it as
+/// an absolute path. The same rules as movie paths apply (a local drive only: no network shares,
+/// device paths, URLs or NTFS streams), plus a fixed set of extensions per tool, so that a
+/// prompt or a project cannot turn a bounce into a .bat or a .dll. `default_ext` is added when
+/// the file name has no extension, as `save` does for projects.
+pub fn output_path(path: &str, allowed: &[&str], default_ext: &str) -> Result<PathBuf, String> {
+    if path.ends_with('\\') || path.ends_with('/') {
+        return Err(format!("{path} is a folder: give a file name"));
+    }
+    // Windows drops trailing dots and spaces from file names, so the name on disk would not be
+    // the one that was checked
+    if path.ends_with('.') || path.ends_with(' ') {
+        return Err(format!("{path} must end with a file name and an extension"));
+    }
+    let mut p = local_media_path(path)?;
+    if p.file_name().is_none() {
+        return Err(format!("{path} must end with a file name and an extension"));
+    }
+    if p.extension().is_none() {
+        p.set_extension(default_ext);
+    }
+    check_extension(&p, path, allowed)?;
+    Ok(p)
+}
+
+/// The path a write command uses. Commands from MCP and the assistant go through
+/// `output_path`; the app's own menus and dialogs (and scripts started by the user) keep full
+/// freedom, for example to save on a NAS.
+pub(crate) fn checked_output_path(source: Source, path: &str, allowed: &[&str], default_ext: &str) -> Result<PathBuf, String> {
+    match source {
+        Source::Mcp | Source::Ai => output_path(path, allowed, default_ext).map_err(|e| format!("output path refused: {e}")),
+        Source::Gui | Source::Script => Ok(PathBuf::from(path)),
+    }
+}
+
+/// Whether the file at `path` is an Aurora project, judged from its first 4 KiB: project files
+/// start with `{"format": "aurora-project", ...}` (see `aurora_core::save_project_string`).
+pub fn is_aurora_project_file(path: &Path) -> Result<bool, String> {
+    use std::io::Read;
+    let f = std::fs::File::open(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let mut head = Vec::with_capacity(4096);
+    f.take(4096).read_to_end(&mut head).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let compact: String = String::from_utf8_lossy(&head).chars().filter(|c| !c.is_whitespace()).collect();
+    Ok(compact.starts_with('{') && compact.contains("\"format\":\"aurora-project\""))
 }
 
 /// The project's movie as an ffmpeg input, with an error that tells the user what to do.
@@ -137,7 +198,7 @@ pub fn movie_frame_rgb(path: &str, t: f64, w: usize, h: usize) -> Result<Vec<u8>
 
 impl Session {
     /// Returns `Some(result)` when the command is handled here.
-    pub(crate) fn dispatch_ext(&mut self, cmd: &Command) -> Option<Result<Value, String>> {
+    pub(crate) fn dispatch_ext(&mut self, cmd: &Command, source: Source) -> Option<Result<Value, String>> {
         use Command::*;
         Some(match cmd {
             SendLiveMidi { track_id, events } => self.send_live_midi(*track_id, events),
@@ -182,13 +243,19 @@ impl Session {
             DetectTempo { region_id, apply } => self.detect_tempo(*region_id, apply.unwrap_or(false)),
             NormalizeRegion { region_id, target_db } => self.normalize_region(*region_id, target_db.unwrap_or(-1.0)),
             SplitStems { region_id, engine } => self.split_stems(*region_id, engine.as_deref()),
-            ExportMusicXml { path, track_ids } => match ops2_musicxml(&self.project, track_ids.as_deref()) {
-                Ok(xml) => match std::fs::write(path, xml) {
-                    Ok(()) => Ok(json!({"path": path})),
-                    Err(e) => Err(format!("cannot write {path}: {e}")),
-                },
-                Err(e) => Err(e),
-            },
+            ExportMusicXml { path, track_ids } => {
+                let p = match checked_output_path(source, path, MUSICXML_EXTENSIONS, "musicxml") {
+                    Ok(p) => p,
+                    Err(e) => return Some(Err(e)),
+                };
+                match ops2_musicxml(&self.project, track_ids.as_deref()) {
+                    Ok(xml) => match std::fs::write(&p, xml) {
+                        Ok(()) => Ok(json!({"path": p.display().to_string()})),
+                        Err(e) => Err(format!("cannot write {}: {e}", p.display())),
+                    },
+                    Err(e) => Err(e),
+                }
+            }
             GetLiveLoops {} => {
                 let ls = self.engine.shared.live_state.lock().clone();
                 let cells: Vec<Value> = self
@@ -227,6 +294,10 @@ impl Session {
             }
             CommitLivePerformance {} => self.commit_live(),
             BounceSurround { path, format } => {
+                let p = match checked_output_path(source, path, WAV_EXTENSIONS, "wav") {
+                    Ok(p) => p,
+                    Err(e) => return Some(Err(e)),
+                };
                 let fmt = format.unwrap_or(self.project.surround);
                 let name = match fmt {
                     SurroundFormat::Surround71 => "7.1",
@@ -239,13 +310,17 @@ impl Session {
                 }
                 let sr = self.engine.sample_rate();
                 let (names, chans) = render_surround(&self.project, Arc::new(self.pool.clone()), sr, 0.0, end, name, AUTO_TAIL_MAX_SEC);
-                if let Err(e) = write_multichannel_wav(Path::new(path), &chans, sr) {
+                if let Err(e) = write_multichannel_wav(&p, &chans, sr) {
                     return Some(Err(e));
                 }
                 let peaks: Vec<Value> = names.iter().zip(&chans).map(|(n, c)| json!({"channel": n, "peak_db": (aurora_dsp::util::gain_to_db(c.iter().fold(0.0f32, |a, b| a.max(b.abs()))) * 10.0).round() / 10.0})).collect();
-                Ok(json!({"path": path, "format": name, "channels": names, "duration_sec": chans[0].len() as f64 / sr as f64, "channel_peaks": peaks}))
+                Ok(json!({"path": p.display().to_string(), "format": name, "channels": names, "duration_sec": chans[0].len() as f64 / sr as f64, "channel_peaks": peaks}))
             }
             BounceBinaural { path } => {
+                let out = match checked_output_path(source, path, WAV_EXTENSIONS, "wav") {
+                    Ok(p) => p,
+                    Err(e) => return Some(Err(e)),
+                };
                 let end = self.project.content_end();
                 if end <= 0.0 {
                     return Some(Err("project is empty".into()));
@@ -254,12 +329,15 @@ impl Session {
                 p.surround = SurroundFormat::Binaural;
                 let sr = self.engine.sample_rate();
                 let res = render_offline(&p, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start: 0.0, end, tail_sec: BOUNCE_TAIL_SEC, auto_tail_max_sec: AUTO_TAIL_MAX_SEC, solo: None, analyze: false, keep_audio: true });
-                match write_wav(Path::new(path), &res.left, &res.right, sr, 24) {
-                    Ok(()) => Ok(json!({"path": path, "duration_sec": res.left.len() as f64 / sr as f64})),
+                match write_wav(&out, &res.left, &res.right, sr, 24) {
+                    Ok(()) => Ok(json!({"path": out.display().to_string(), "duration_sec": res.left.len() as f64 / sr as f64})),
                     Err(e) => Err(e),
                 }
             }
-            ExportAdm { path, start, end } => self.export_adm(path, *start, *end),
+            ExportAdm { path, start, end } => match checked_output_path(source, path, WAV_EXTENSIONS, "wav") {
+                Ok(p) => self.export_adm(&p, *start, *end),
+                Err(e) => Err(e),
+            },
             LoadMovie { path, offset_sec, import_audio } => self.load_movie(path, offset_sec.unwrap_or(0.0), import_audio.unwrap_or(true)),
             ExtractMovieFrame { path, beat } => {
                 let Some(m) = self.project.movie.clone() else { return Some(Err("no movie loaded".into())) };
@@ -555,7 +633,7 @@ impl Session {
         Ok(json!({"created_regions": created}))
     }
 
-    fn export_adm(&mut self, path: &str, start: Option<f64>, end: Option<f64>) -> Result<Value, String> {
+    fn export_adm(&mut self, path: &Path, start: Option<f64>, end: Option<f64>) -> Result<Value, String> {
         let start = start.unwrap_or(0.0);
         let end = end.unwrap_or_else(|| self.project.content_end());
         if end <= start {
@@ -591,8 +669,8 @@ impl Session {
             }
             objects.push(aurora_engine::adm::AdmObject { name: t.name.clone(), audio, blocks });
         }
-        aurora_engine::adm::write_adm_bwf(Path::new(path), &self.project.name, sr, &bed, &objects)?;
-        Ok(json!({"path": path, "sample_rate": sr, "bit_depth": 24, "bed": "7.1.2", "bed_channels": bed.len(), "objects": objects.iter().map(|o| json!({"name": o.name, "position_blocks": o.blocks.len()})).collect::<Vec<_>>(), "duration_sec": duration, "standard": "ITU-R BS.2076 (ADM) + BS.2088 chna in RIFF/WAVE"}))
+        aurora_engine::adm::write_adm_bwf(path, &self.project.name, sr, &bed, &objects)?;
+        Ok(json!({"path": path.display().to_string(), "sample_rate": sr, "bit_depth": 24, "bed": "7.1.2", "bed_channels": bed.len(), "objects": objects.iter().map(|o| json!({"name": o.name, "position_blocks": o.blocks.len()})).collect::<Vec<_>>(), "duration_sec": duration, "standard": "ITU-R BS.2076 (ADM) + BS.2088 chna in RIFF/WAVE"}))
     }
 
     fn load_movie(&mut self, path: &str, offset_sec: f64, import_audio: bool) -> Result<Value, String> {
@@ -703,6 +781,67 @@ mod tests {
         assert!(ffmpeg_output("C:\\out\\f.bmp", FRAME_EXTENSIONS).is_err());
         assert_eq!(ffmpeg_output("C:\\out\\m.MP4", MOVIE_EXTENSIONS).unwrap(), "file:C:\\out\\m.MP4");
         assert_eq!(ffmpeg_output("C:\\out\\f.jpg", FRAME_EXTENSIONS).unwrap(), "file:C:\\out\\f.jpg");
+    }
+
+    #[test]
+    fn output_path_refuses_network_urls_streams_and_other_extensions() {
+        for bad in [
+            "", "  ", "-x.wav", "\\\\server\\share\\a.wav", "//server/share/a.wav", "\\\\?\\C:\\out\\a.wav",
+            "http://h/a.wav", "file:C:\\out\\a.wav", "C:\\out\\a.wav:evil.exe", "C:\\out\\a.bat", "C:\\out\\a.dll",
+            "C:\\out\\a.wav.exe", "C:\\out\\a.bat.", "C:\\out\\a.wav ", "C:\\out\\", "C:/out/",
+        ] {
+            assert!(output_path(bad, WAV_EXTENSIONS, "wav").is_err(), "{bad:?} was accepted");
+        }
+        let e = output_path("C:\\out\\a.bat", WAV_EXTENSIONS, "wav").unwrap_err();
+        assert!(e.contains(".wav"), "the message must name the expected extension: {e}");
+        assert!(output_path("C:\\out\\song.wav", PROJECT_EXTENSIONS, "aurora").is_err());
+        assert!(output_path("C:\\out\\s.txt", MUSICXML_EXTENSIONS, "musicxml").is_err());
+    }
+
+    #[test]
+    fn output_path_adds_the_default_extension() {
+        assert_eq!(output_path("C:\\out\\mix", WAV_EXTENSIONS, "wav").unwrap(), PathBuf::from("C:\\out\\mix.wav"));
+        assert_eq!(output_path("C:\\out\\song", PROJECT_EXTENSIONS, "aurora").unwrap(), PathBuf::from("C:\\out\\song.aurora"));
+        assert_eq!(output_path("C:/out/take.mid", MIDI_EXTENSIONS, "mid").unwrap(), PathBuf::from("C:\\out\\take.mid"));
+        assert_eq!(output_path("C:\\out\\take.MIDI", MIDI_EXTENSIONS, "mid").unwrap(), PathBuf::from("C:\\out\\take.MIDI"));
+        assert_eq!(output_path("C:\\out\\A.WAV", WAV_EXTENSIONS, "wav").unwrap(), PathBuf::from("C:\\out\\A.WAV"));
+        assert_eq!(output_path("C:\\out\\s.xml", MUSICXML_EXTENSIONS, "musicxml").unwrap(), PathBuf::from("C:\\out\\s.xml"));
+        assert_eq!(output_path("C:\\out\\score", MUSICXML_EXTENSIONS, "musicxml").unwrap(), PathBuf::from("C:\\out\\score.musicxml"));
+    }
+
+    #[test]
+    fn output_path_makes_relative_paths_absolute() {
+        assert_eq!(output_path("mix", WAV_EXTENSIONS, "wav").unwrap(), std::env::current_dir().unwrap().join("mix.wav"));
+    }
+
+    #[test]
+    fn checked_output_path_only_restricts_mcp_and_ai() {
+        let unc = "\\\\nas\\music\\mix.wav";
+        assert_eq!(checked_output_path(Source::Gui, unc, WAV_EXTENSIONS, "wav").unwrap(), PathBuf::from(unc));
+        assert_eq!(checked_output_path(Source::Script, "C:\\out\\x.bin", WAV_EXTENSIONS, "wav").unwrap(), PathBuf::from("C:\\out\\x.bin"));
+        for src in [Source::Mcp, Source::Ai] {
+            let e = checked_output_path(src, unc, WAV_EXTENSIONS, "wav").unwrap_err();
+            assert!(e.starts_with("output path refused"), "{e}");
+        }
+    }
+
+    #[test]
+    fn aurora_project_file_is_recognised_from_its_header() {
+        let dir = std::env::temp_dir().join("aurora_unit_output");
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("real.aurora");
+        std::fs::write(&real, aurora_core::save_project_string(&Project::default()).unwrap()).unwrap();
+        assert!(is_aurora_project_file(&real).unwrap());
+        let text = dir.join("text.aurora");
+        std::fs::write(&text, "my notes, not a project").unwrap();
+        assert!(!is_aurora_project_file(&text).unwrap());
+        let empty = dir.join("empty.aurora");
+        std::fs::write(&empty, "").unwrap();
+        assert!(!is_aurora_project_file(&empty).unwrap());
+        let other = dir.join("other.json");
+        std::fs::write(&other, "{\"format\": \"something-else\"}").unwrap();
+        assert!(!is_aurora_project_file(&other).unwrap());
+        assert!(is_aurora_project_file(&dir.join("missing.aurora")).is_err());
     }
 
     #[test]

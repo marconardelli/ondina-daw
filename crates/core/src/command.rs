@@ -36,7 +36,7 @@ pub enum Command {
     },
     /// Open a project file (.aurora JSON).
     OpenProject { path: String },
-    /// Save the project. Without a path saves to the current file (or fails if never saved).
+    /// Save the project. Without a path saves to the current file (or fails if never saved). The path must be a .aurora file on a local drive (no network shares); .aurora is added when the path has no extension. An existing file is overwritten only if it is an Aurora project.
     SaveProject { path: Option<String> },
     /// Rename the project.
     SetProjectName { name: String },
@@ -286,7 +286,7 @@ pub enum Command {
     InsertTime { at_beat: f64, length: f64 },
 
     // ------------------------------------------------------------------ import / export
-    /// Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed). After the end the render goes on until reverb and delay tails fade below about -90 dBFS (at least 2 s, at most 20 s: a sound that never fades, like a note held past the end or a noisy plug-in, stops at 20 s). tail_sec sets an exact tail instead: 0 cuts exactly at end, e.g. to export a loop.
+    /// Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed). After the end the render goes on until reverb and delay tails fade below about -90 dBFS (at least 2 s, at most 20 s: a sound that never fades, like a note held past the end or a noisy plug-in, stops at 20 s). tail_sec sets an exact tail instead: 0 cuts exactly at end, e.g. to export a loop. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
     Bounce {
         path: String,
         start: Option<f64>,
@@ -299,7 +299,7 @@ pub enum Command {
     },
     /// Render a track to audio and place it on a new audio track (bounce in place). The source track is muted. Reverb and delay tails are kept: the render goes on until they fade (at least 2 s, at most 20 s after the last region).
     BounceInPlace { track_id: Id },
-    /// Export MIDI regions to a Standard MIDI File.
+    /// Export MIDI regions to a Standard MIDI File. The path must be a .mid or .midi file on a local drive (no network shares); .mid is added when the path has no extension.
     ExportMidi { path: String, track_ids: Option<Vec<Id>> },
     /// Import a Standard MIDI File, creating instrument tracks (channel 10 becomes a drum track).
     ImportMidi { path: String, at_beat: Option<f64> },
@@ -353,7 +353,7 @@ pub enum Command {
     // ------------------------------------------------------------------ score
     /// Get a region as music notation: measures with notes (pitch names, note values, dots, ties, rests) and lyrics.
     GetScore { region_id: Id },
-    /// Export the score of instrument tracks as MusicXML (opens in MuseScore, Sibelius, Finale, Dorico).
+    /// Export the score of instrument tracks as MusicXML (opens in MuseScore, Sibelius, Finale, Dorico). The path must be a .musicxml or .xml file on a local drive (no network shares); .musicxml is added when the path has no extension.
     ExportMusicXml { path: String, track_ids: Option<Vec<Id>> },
     /// Attach lyrics to a MIDI region: syllables in `text` (split by spaces; use a hyphen inside words like sun-shine) are assigned to the melody notes in order. Or give explicit `lyrics`.
     SetLyrics { region_id: Id, text: Option<String>, lyrics: Option<Vec<LyricEvent>> },
@@ -389,11 +389,11 @@ pub enum Command {
     SetSurroundFormat { format: SurroundFormat },
     /// Position a track in 3D space for surround/binaural mixing (azimuth degrees: 0 front, 90 right, -90 left, 180 rear). object=true makes it an audio object (object-based mixing, exported as an ADM object) instead of part of the bed. Animate positions with automation targets "surround:azimuth", "surround:elevation", "surround:spread".
     SetSurroundPan { track_id: Id, azimuth: f32, elevation: Option<f32>, spread: Option<f32>, object: Option<bool> },
-    /// Bounce a multichannel surround WAV (channel order L R C LFE Ls Rs, plus Lrs Rrs for 7.1, plus Ltf Rtf Ltr Rtr for 7.1.4). Reverb and delay tails are kept (at least 2 s, at most 20 s after the end).
+    /// Bounce a multichannel surround WAV (channel order L R C LFE Ls Rs, plus Lrs Rrs for 7.1, plus Ltf Rtf Ltr Rtr for 7.1.4). Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
     BounceSurround { path: String, format: Option<SurroundFormat> },
-    /// Bounce a binaural (headphone spatial audio) stereo WAV from the 3D positions. Reverb and delay tails are kept (at least 2 s, at most 20 s after the end).
+    /// Bounce a binaural (headphone spatial audio) stereo WAV from the 3D positions. Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
     BounceBinaural { path: String },
-    /// Export an ADM BWF master (ITU-R BS.2076 metadata in a BW64 file, 48 kHz / 24-bit), the interchange format used for Dolby Atmos deliveries: a 7.1.2 channel bed plus one audio object per object track, with time-varying positions from the surround automation.
+    /// Export an ADM BWF master (ITU-R BS.2076 metadata in a BW64 file, 48 kHz / 24-bit), the interchange format used for Dolby Atmos deliveries: a 7.1.2 channel bed plus one audio object per object track, with time-varying positions from the surround automation. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
     ExportAdm { path: String, start: Option<f64>, end: Option<f64> },
 
     // ------------------------------------------------------------------ video
