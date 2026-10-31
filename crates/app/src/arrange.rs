@@ -18,6 +18,10 @@ const LANE_H: f32 = 18.0;
 /// Width of the grab strip on a region's right edge. Narrow regions get a third of their width
 /// instead, so there is always some body left to grab for moving.
 const REGION_EDGE_PX: f32 = 6.0;
+/// Below this track height the M/S/R buttons move onto the name row and the volume slider is hidden
+/// (the mixer still has it).
+const HEADER_FULL_H: f32 = 46.0;
+const HEADER_BUTTON_H: f32 = 16.0;
 
 /// A marker or track name being edited in place.
 pub struct InPlaceRename {
@@ -1153,10 +1157,19 @@ impl OndinaApp {
             self.selected_track = Some(t.id);
             self.drag = Some(Drag::MoveTrack { id: t.id, gap: index });
         }
+        // On short tracks the buttons sit at the right end of the name row, so the name stops before them.
+        let compact = rect.height() < HEADER_FULL_H;
+        let n_buttons = if t.kind == TrackKind::Bus { 2 } else { 3 };
+        let first_button_x = if compact {
+            rect.right() - 30.0 - n_buttons as f32 * 23.0
+        } else {
+            rect.left() + 10.0
+        };
+        let name_right = if compact { first_button_x - 4.0 } else { rect.right() - 28.0 };
         // the top row (icon and name) opens the rename; the rest of the header only selects
         let name_row = Rect::from_min_max(
             pos2(rect.left() + 6.0, rect.top()),
-            pos2(rect.right() - 26.0, rect.top() + 22.0),
+            pos2(if compact { name_right } else { rect.right() - 26.0 }, rect.top() + 22.0),
         );
         if resp.double_clicked() && resp.interact_pointer_pos().is_some_and(|pp| name_row.contains(pp)) {
             self.track_rename = Some(InPlaceRename {
@@ -1188,12 +1201,13 @@ impl OndinaApp {
             let ir = painter.text(name_pos, Align2::LEFT_CENTER, icon, FontId::proportional(12.5), Color32::WHITE);
             let r = Rect::from_min_max(
                 pos2(ir.right() + 4.0, rect.top() + 3.0),
-                pos2(rect.right() - 28.0, rect.top() + 21.0),
+                pos2(name_right, rect.top() + 21.0),
             );
             // half-hidden under the lanes or the window edge: drop the edit rather than draw over them
             field = painter.clip_rect().contains_rect(r).then_some(r);
         } else {
-            painter.text(
+            let name_clip = Rect::from_min_max(rect.min, pos2(name_right, rect.bottom())).intersect(painter.clip_rect());
+            painter.with_clip_rect(name_clip).text(
                 name_pos,
                 Align2::LEFT_CENTER,
                 format!("{icon} {}", t.name),
@@ -1217,11 +1231,11 @@ impl OndinaApp {
             }
         });
         // buttons
-        let by = rect.top() + 26.0;
-        let mut x = rect.left() + 10.0;
+        let by = rect.top() + button_row_top(rect.height());
+        let mut x = first_button_x;
         let mut button =
             |ui: &mut egui::Ui, label: &str, on: bool, color: Color32, tip: &str| -> bool {
-                let r = Rect::from_min_size(pos2(x, by), vec2(20.0, 16.0));
+                let r = Rect::from_min_size(pos2(x, by), vec2(20.0, HEADER_BUTTON_H));
                 x += 23.0;
                 let resp = ui
                     .interact(r, ui.id().with((label, tid)), Sense::click())
@@ -1263,7 +1277,7 @@ impl OndinaApp {
             pos2(x + 4.0, by + 2.0),
             pos2(rect.right() - 30.0, by + 14.0),
         );
-        if sr.width() > 20.0 {
+        if !compact && sr.width() > 20.0 {
             let mut child = ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(sr)
@@ -1306,6 +1320,15 @@ impl OndinaApp {
 enum RegionZone {
     Body,
     Edge,
+}
+
+/// Distance of the M/S/R buttons from the top of a track header `height` points tall.
+fn button_row_top(height: f32) -> f32 {
+    if height < HEADER_FULL_H {
+        3.0
+    } else {
+        26.0
+    }
 }
 
 /// Width of the resize strip for a region drawn `region_w` pixels wide.
@@ -1466,10 +1489,11 @@ pub fn draw_meter(painter: &egui::Painter, r: Rect, m: [f32; 2]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        dragged_marker_beat, edge_scroll_speed, region_edge_width, region_hit_zone, rename_commit,
-        resized_marker_length, track_drop_index, track_move_target, RegionZone, MIN_MARKER_LEN,
-        REGION_EDGE_PX, TRACK_DRAG_SCROLL_PX_S,
+        button_row_top, dragged_marker_beat, edge_scroll_speed, region_edge_width, region_hit_zone, rename_commit,
+        resized_marker_length, track_drop_index, track_move_target, RegionZone, HEADER_BUTTON_H, HEADER_FULL_H,
+        MIN_MARKER_LEN, REGION_EDGE_PX, TRACK_DRAG_SCROLL_PX_S,
     };
+    use crate::arrange_view::{TRACK_H_MAX, TRACK_H_MIN};
     use ondina_core::command::Command;
     use ondina_studio::{Session, Source};
     use serde_json::{json, Value};
@@ -1628,5 +1652,15 @@ mod tests {
         assert_eq!(track_names(&s), ["Bass"]);
         assert_eq!(rename_commit("Bass", " Bass "), None);
         assert_eq!(rename_commit("Bass", ""), None);
+    }
+
+    #[test]
+    fn header_buttons_fit_at_every_track_height() {
+        for h in [TRACK_H_MIN, 40.0, HEADER_FULL_H - 0.5, HEADER_FULL_H, 58.0, TRACK_H_MAX] {
+            assert!(button_row_top(h) + HEADER_BUTTON_H <= h - 2.0, "height {h}");
+        }
+        // the default height keeps the full layout
+        assert_eq!(button_row_top(58.0), 26.0);
+        const { assert!(TRACK_H_MIN < HEADER_FULL_H) };
     }
 }
