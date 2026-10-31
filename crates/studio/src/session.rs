@@ -45,11 +45,28 @@ const UNDO_LIMIT: usize = 200;
 /// Longest exact tail `bounce` accepts, in seconds.
 const MAX_FIXED_TAIL_SEC: f64 = 60.0;
 
+/// One entry of the undo or redo history.
+struct UndoStep {
+    project: Project,
+    label: String,
+    /// Made by the built-in assistant ("Undo AI edit" only acts on these).
+    assistant: bool,
+}
+
+/// The assistant request whose edits currently share one undo step.
+struct AssistantGroup {
+    label: String,
+    /// The shared step exists and is still on top of the undo history. Invariant: true only while the
+    /// top of `undo` is the group's step; every other step pushed or popped sets it back to false.
+    has_step: bool,
+}
+
 pub struct Session {
     pub project: Project,
     pub path: Option<PathBuf>,
-    undo: Vec<(Project, String)>,
-    redo: Vec<(Project, String)>,
+    undo: Vec<UndoStep>,
+    redo: Vec<UndoStep>,
+    assistant_group: Option<AssistantGroup>,
     pub engine: Engine,
     pub pool: AudioPool,
     pub dirty: bool,
@@ -80,6 +97,7 @@ impl Session {
             path: None,
             undo: vec![],
             redo: vec![],
+            assistant_group: None,
             engine,
             pool,
             dirty: false,
@@ -117,6 +135,35 @@ impl Session {
         self.redo.clear();
         self.coalesce = None;
         self.dirty = false;
+        self.break_undo_group();
+    }
+
+    /// Records the undo step of a successful edit. While an assistant group is open, the assistant's edits
+    /// share one step; any other step ends the sharing, so a user edit is never folded into the assistant's.
+    fn record_undo(&mut self, before: Project, name: String, assistant: bool) {
+        let label = match self.assistant_group.as_mut() {
+            Some(g) if assistant && g.has_step => return,
+            Some(g) if assistant => {
+                g.has_step = true;
+                g.label.clone()
+            }
+            Some(g) => {
+                g.has_step = false;
+                name
+            }
+            None => name,
+        };
+        self.undo.push(UndoStep { project: before, label, assistant });
+        if self.undo.len() > UNDO_LIMIT {
+            self.undo.remove(0);
+        }
+    }
+
+    /// The next assistant edit starts a new step (the group itself stays open until `end_undo_group`).
+    fn break_undo_group(&mut self) {
+        if let Some(g) = self.assistant_group.as_mut() {
+            g.has_step = false;
+        }
     }
 
     fn update_midi_target(&self) {
@@ -176,7 +223,7 @@ impl Session {
         if n > 0 {
             let merge = matches!(&self.coalesce, Some((k, t)) if k == "plugin-editor" && t.elapsed().as_millis() < 1500);
             if !merge {
-                self.undo.push((before, "plug-in editor".into()));
+                self.record_undo(before, "plug-in editor".into(), false);
             }
             self.coalesce = Some(("plugin-editor".into(), Instant::now()));
             self.redo.clear();
@@ -212,10 +259,7 @@ impl Session {
                         self.reset_history();
                     } else {
                         if new_undo_step {
-                            self.undo.push((b, name.clone()));
-                            if self.undo.len() > UNDO_LIMIT {
-                                self.undo.remove(0);
-                            }
+                            self.record_undo(b, name.clone(), source == Source::Ai);
                         }
                         self.redo.clear();
                         self.commit();
@@ -238,29 +282,54 @@ impl Session {
     }
 
     pub fn can_undo(&self) -> Option<&str> {
-        self.undo.last().map(|x| x.1.as_str())
+        self.undo.last().map(|s| s.label.as_str())
     }
 
     pub fn can_redo(&self) -> Option<&str> {
-        self.redo.last().map(|x| x.1.as_str())
+        self.redo.last().map(|s| s.label.as_str())
+    }
+
+    /// Whether the step `undo` would revert was made by the built-in assistant.
+    pub fn last_undo_is_ai(&self) -> bool {
+        self.undo.last().is_some_and(|s| s.assistant)
+    }
+
+    /// Starts grouping the built-in assistant's edits for one request: until `end_undo_group`, successful
+    /// mutating commands from `Source::Ai` share one undo step labelled `label`. A step from anyone else
+    /// (GUI, MCP, script, plug-in editor, recording), an undo, a redo or Open/New ends the shared step; the
+    /// next assistant edit then starts a new one with the same label. Calling it again replaces the group.
+    pub fn begin_undo_group(&mut self, label: impl Into<String>) {
+        self.assistant_group = Some(AssistantGroup { label: label.into(), has_step: false });
+    }
+
+    /// Ends the group opened by `begin_undo_group` (no-op if none is open).
+    pub fn end_undo_group(&mut self) {
+        self.assistant_group = None;
+    }
+
+    /// Label of the open assistant group, if any.
+    pub fn undo_group(&self) -> Option<&str> {
+        self.assistant_group.as_ref().map(|g| g.label.as_str())
     }
 
     fn dispatch(&mut self, cmd: Command, source: Source) -> Result<Value, String> {
         use Command::*;
         match cmd {
             Undo {} => {
-                let (p, name) = self.undo.pop().ok_or("nothing to undo")?;
-                let cur = std::mem::replace(&mut self.project, p);
-                self.redo.push((cur, name.clone()));
+                let step = self.undo.pop().ok_or("nothing to undo")?;
+                self.break_undo_group();
+                let cur = std::mem::replace(&mut self.project, step.project);
+                self.redo.push(UndoStep { project: cur, label: step.label.clone(), assistant: step.assistant });
                 self.commit();
-                Ok(json!({"undone": name}))
+                Ok(json!({"undone": step.label}))
             }
             Redo {} => {
-                let (p, name) = self.redo.pop().ok_or("nothing to redo")?;
-                let cur = std::mem::replace(&mut self.project, p);
-                self.undo.push((cur, name.clone()));
+                let step = self.redo.pop().ok_or("nothing to redo")?;
+                self.break_undo_group();
+                let cur = std::mem::replace(&mut self.project, step.project);
+                self.undo.push(UndoStep { project: cur, label: step.label.clone(), assistant: step.assistant });
                 self.commit();
-                Ok(json!({"redone": name}))
+                Ok(json!({"redone": step.label}))
             }
             NewProject { .. } => {
                 let v = match ops::apply(&mut self.project, &cmd)? {
@@ -709,7 +778,7 @@ impl Session {
             }
         }
         if !created.is_empty() {
-            self.undo.push((before, "record".into()));
+            self.record_undo(before, "record".into(), false);
             self.redo.clear();
             self.commit();
         }
@@ -888,6 +957,25 @@ impl Session {
         self.midi_input_name = Some(pname.clone());
         self.update_midi_target();
         Ok(json!({"connected": pname}))
+    }
+}
+
+/// Keeps an assistant undo group open for one request and closes it when dropped, so the group ends
+/// on a normal finish, on Stop, on a network error and during a panic alike.
+pub struct AssistantUndoGroup<'a> {
+    session: &'a SharedSession,
+}
+
+impl<'a> AssistantUndoGroup<'a> {
+    pub fn open(session: &'a SharedSession, label: impl Into<String>) -> Self {
+        session.lock().begin_undo_group(label);
+        AssistantUndoGroup { session }
+    }
+}
+
+impl Drop for AssistantUndoGroup<'_> {
+    fn drop(&mut self) {
+        self.session.lock().end_undo_group();
     }
 }
 

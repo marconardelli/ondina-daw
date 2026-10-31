@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 use crate::ai::AiEvent;
 use crate::mcp;
-use crate::session::{SharedSession, Source};
+use crate::session::{AssistantUndoGroup, SharedSession, Source};
 use crate::settings::Settings;
 
 /// Tools offered to small local models (the full set exceeds their context and abilities).
@@ -26,7 +26,7 @@ pub const LOCAL_TOOLS: &[&str] = &[
     "add_marker", "copy_section", "play", "stop", "set_playhead", "analyze_mix", "auto_master", "undo", "bounce",
 ];
 
-const SYSTEM: &str = "You are the assistant inside Ondina DAW. You control the DAW only by calling the provided tools. Positions are in beats (quarter notes); bar N starts at beat (N-1)*4 in 4/4. MIDI pitch 60 = C4. Call get_project to learn track ids before editing existing tracks; add_track returns the new track_id. Prefer library patches (e.g. \"Pop Drum Kit\", \"Deep Sub Bass\", \"Lush Pad\", \"Stage Electric Piano\") and the generate_* tools. After finishing, answer briefly in the user's language.";
+const SYSTEM: &str = "You are the assistant inside Ondina DAW. You control the DAW only by calling the provided tools. Positions are in beats (quarter notes); bar N starts at beat (N-1)*4 in 4/4. MIDI pitch 60 = C4. Call get_project to learn track ids before editing existing tracks; add_track returns the new track_id. Prefer library patches (e.g. \"Pop Drum Kit\", \"Deep Sub Bass\", \"Lush Pad\", \"Stage Electric Piano\") and the generate_* tools. After finishing, answer briefly in the user's language. All your edits for one request are one undo step: undo reverts everything you did in this request, so fix a single mistake directly.";
 
 /// Context size the bundled server is started with; the history budget is derived from it.
 const CONTEXT_TOKENS: usize = 16384;
@@ -282,6 +282,7 @@ impl LocalAssistant {
             json!({"tempo": p["tempo_bpm"], "key": p["key"], "tracks": p["tracks"].as_array().map(|ts| ts.iter().map(|t| json!({"id": t["id"], "name": t["name"], "regions": t["regions"].as_array().map(|r| r.len()).unwrap_or(0)})).collect::<Vec<_>>())})
         };
         self.messages.push(json!({"role": "user", "content": format!("{user_text}\n\n[Ondina context] {gui_context} Project: {summary}")}));
+        let undo_group = AssistantUndoGroup::open(session, crate::ai::undo_label(user_text));
         let tools = local_tools();
         let budget = history_budget(tools.to_string().len());
         let url = format!("{}/chat/completions", base_url(settings));
@@ -348,6 +349,8 @@ impl LocalAssistant {
             }
         }
         close_dangling_turn(&mut self.messages);
+        // closed before Done, so the GUI already sees the finished step
+        drop(undo_group);
         let _ = events.send(AiEvent::Done);
     }
 }
@@ -552,6 +555,79 @@ mod tests {
         let last = a.messages.last().unwrap();
         assert_eq!(last["role"], "assistant");
         assert_eq!(last["content"], "Done.");
+    }
+
+    #[test]
+    fn local_turn_is_one_undo_step() {
+        let port = mock_server(Duration::ZERO, vec![
+            json!({"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "set_tempo", "arguments": "{\"bpm\":90}"}},
+                {"id": "c2", "type": "function", "function": {"name": "add_track", "arguments": "{\"kind\":\"instrument\"}"}}
+            ]}}]}),
+            json!({"choices": [{"message": {"role": "assistant", "content": "Done."}}]}),
+        ]);
+        let session = Session::shared(false);
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let mut a = LocalAssistant::default();
+        a.run_turn(&session, &local_settings(port), "make a beat", "", &tx, &Arc::new(AtomicBool::new(false)));
+        let mut s = session.lock();
+        assert_eq!(s.undo_group(), None);
+        assert_eq!(s.can_undo(), Some("assistant: make a beat"));
+        assert!(s.last_undo_is_ai());
+        s.execute(Command::Undo {}, Source::Gui).unwrap();
+        assert_eq!(s.project.tempo.initial_bpm(), 120.0);
+        assert!(s.project.tracks.is_empty());
+        assert_eq!(s.can_undo(), None);
+    }
+
+    #[test]
+    fn local_turn_error_closes_the_undo_group() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        std::thread::spawn(move || {
+            let mut chats = 0;
+            for mut req in server.incoming_requests() {
+                if req.url().ends_with("/health") {
+                    let _ = req.respond(tiny_http::Response::from_string(json!({"status": "ok"}).to_string()));
+                    continue;
+                }
+                let mut body = String::new();
+                let _ = req.as_reader().read_to_string(&mut body);
+                chats += 1;
+                if chats == 1 {
+                    let reply = json!({"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "set_tempo", "arguments": "{\"bpm\":90}"}}]}}]});
+                    let _ = req.respond(tiny_http::Response::from_string(reply.to_string()));
+                } else {
+                    let _ = req.respond(tiny_http::Response::from_string("boom").with_status_code(500));
+                }
+            }
+        });
+        let session = Session::shared(false);
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut a = LocalAssistant::default();
+        a.run_turn(&session, &local_settings(port), "set the tempo", "", &tx, &Arc::new(AtomicBool::new(false)));
+        let events: Vec<AiEvent> = rx.try_iter().collect();
+        assert!(events.iter().any(|e| matches!(e, AiEvent::Error(_))), "{events:?}");
+        assert!(matches!(events.last(), Some(AiEvent::Done)));
+        let s = session.lock();
+        assert_eq!(s.undo_group(), None);
+        assert_eq!(s.can_undo(), Some("assistant: set the tempo"));
+        assert!(s.last_undo_is_ai());
+        assert_eq!(s.project.tempo.initial_bpm(), 90.0);
+    }
+
+    #[test]
+    fn stopped_local_turn_closes_the_undo_group() {
+        let port = mock_server(Duration::ZERO, vec![json!({"choices": [{"message": {"role": "assistant", "content": "unused"}}]})]);
+        let session = Session::shared(false);
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut a = LocalAssistant::default();
+        a.run_turn(&session, &local_settings(port), "hello", "", &tx, &Arc::new(AtomicBool::new(true)));
+        let events: Vec<AiEvent> = rx.try_iter().collect();
+        assert!(events.iter().any(|e| matches!(e, AiEvent::Status(s) if s == "Stopped.")), "{events:?}");
+        let s = session.lock();
+        assert_eq!(s.undo_group(), None);
+        assert_eq!(s.can_undo(), None);
     }
 
     #[test]

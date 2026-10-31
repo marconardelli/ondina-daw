@@ -144,7 +144,9 @@ Musical Typing: `A W S E D F T G Y H U J K` play notes, `Z` / `X` change octave.
 
 ## AI: three ways in
 
-All three use the same command API, and every AI edit is undoable.
+All three use the same command API, and every AI edit is undoable: everything the built-in assistant does for one
+request is a single undo step, and **↶ Undo AI edit** reverts it only when the last change came from the assistant
+(MCP clients get one undo step per tool call).
 
 1. **MCP (no key needed)** — any MCP-capable agent (Claude Code, Claude Desktop, other clients) drives Ondina with
    all 157 tools. See below.

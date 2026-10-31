@@ -11,7 +11,7 @@ use crossbeam_channel::Sender;
 use serde_json::{json, Value};
 
 use crate::mcp;
-use crate::session::{SharedSession, Source};
+use crate::session::{AssistantUndoGroup, SharedSession, Source};
 use crate::settings::Settings;
 
 pub const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -42,6 +42,7 @@ How to work:
 - To judge a mix, call analyze_mix (your ears): it reports LUFS, peaks, spectral balance, stereo correlation and advice. Use auto_master for mastering.
 - Batch independent tool calls in parallel when possible.
 - Ask before destructive operations the user did not clearly request (new_project, remove_track, delete_section on existing material).
+- Everything you change for one user request is a single undo step for the user. Calling undo reverts all your edits so far in this request, so fix a single mistake with a targeted edit (remove_notes, delete_region, set_volume...) instead.
 - Keep replies short: say what you did and what the user can try next. Reply in the user's language."#;
 
 pub struct Assistant {
@@ -80,6 +81,7 @@ impl Assistant {
         };
         let text = format!("{user_text}\n\n<ondina_context>\n{gui_context}\nProject state: {}\n</ondina_context>", serde_json::to_string(&summary).unwrap_or_default());
         self.messages.push(json!({"role": "user", "content": [{"type": "text", "text": text}]}));
+        let undo_group = AssistantUndoGroup::open(session, undo_label(user_text));
 
         for _step in 0..MAX_STEPS {
             if cancel.load(Ordering::Relaxed) {
@@ -170,8 +172,24 @@ impl Assistant {
         if self.messages.last().map(|m| m["role"] == "user").unwrap_or(false) {
             self.messages.push(json!({"role": "assistant", "content": [{"type": "text", "text": "(stopped)"}]}));
         }
+        // closed before Done, so the GUI already sees the finished step
+        drop(undo_group);
         let _ = events.send(AiEvent::Done);
     }
+}
+
+/// Longest part of the request shown in the undo label.
+const UNDO_LABEL_CHARS: usize = 40;
+
+/// Undo label of one assistant request: "assistant: " and the start of its first non-empty line.
+pub fn undo_label(request: &str) -> String {
+    let line = request.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    if line.is_empty() {
+        return "assistant".into();
+    }
+    let head: String = line.chars().take(UNDO_LABEL_CHARS).collect();
+    let more = if line.chars().count() > UNDO_LABEL_CHARS { "…" } else { "" };
+    format!("assistant: {}{more}", head.trim_end())
 }
 
 fn short(s: &str, n: usize) -> String {
@@ -250,6 +268,18 @@ mod tests {
     use super::*;
     use crate::session::Session;
 
+    #[test]
+    fn undo_label_takes_the_start_of_the_first_line() {
+        assert_eq!(undo_label("Add drums"), "assistant: Add drums");
+        assert_eq!(undo_label("  \n  make it louder \nand brighter"), "assistant: make it louder");
+        assert_eq!(undo_label(""), "assistant");
+        assert_eq!(undo_label("   \n "), "assistant");
+        let long = undo_label(&"è".repeat(100));
+        assert!(long.ends_with('…'), "{long}");
+        assert_eq!(long.chars().count(), "assistant: ".len() + 40 + 1);
+        let exact = "a".repeat(40);
+        assert_eq!(undo_label(&exact), format!("assistant: {exact}"));
+    }
 
     /// Runs the agent loop against a local mock of the Messages API.
     #[test]
@@ -306,6 +336,10 @@ mod tests {
         let s = session.lock();
         assert_eq!(s.project.tracks.len(), 1);
         assert_eq!(s.project.tempo.initial_bpm(), 90.0);
+        // the whole request is one undo step, and the group is closed when the turn ends
+        assert_eq!(s.undo_group(), None);
+        assert_eq!(s.can_undo(), Some("assistant: add drums"));
+        assert!(s.last_undo_is_ai());
         drop(s);
         let events: Vec<AiEvent> = rx.try_iter().collect();
         assert!(events.iter().any(|e| matches!(e, AiEvent::ToolCall { name, ok: true, .. } if name == "add_track")));

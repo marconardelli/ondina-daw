@@ -147,9 +147,19 @@ impl OndinaApp {
                 let t = std::mem::take(&mut self.ai.input);
                 self.ask_ai(t.trim().to_string());
             }
+            // only offered when the last step is a whole assistant request, never a user edit
+            let can_undo_turn = self.view.undo_ai && !self.ai.busy;
+            let request = self.view.undo.as_deref().unwrap_or("");
+            let hover = format!("Undo everything the assistant did for: {}", request.strip_prefix("assistant: ").unwrap_or(request));
+            let why_not = if self.ai.busy {
+                "Stop the assistant first"
+            } else {
+                "The last edit was not made by the assistant: use Ctrl+Z to undo it"
+            };
             if ui
-                .small_button("↶ Undo AI edit")
-                .on_hover_text("Undo the last edit")
+                .add_enabled(can_undo_turn, egui::Button::new("↶ Undo AI edit").small())
+                .on_hover_text(hover)
+                .on_disabled_hover_text(why_not)
                 .clicked()
             {
                 self.cmd(ondina_core::Command::Undo {});
