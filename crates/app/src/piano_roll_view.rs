@@ -280,7 +280,7 @@ mod tests {
             [36, 38, 41, 43, 45, 48].iter().enumerate().map(|(i, &p)| n(p, i as f64)).collect();
         for rows in [13, 20, 40] {
             let (top, _) = initial_view(&notes, rows);
-            assert!(top >= 48 && top - rows + 1 <= 36, "rows {rows}: top {top}");
+            assert!(top >= 48 && top - rows < 36, "rows {rows}: top {top}");
         }
         let notes = vec![n(40, 9.0), n(36, 8.25), n(48, 12.0)];
         assert_eq!(initial_view(&notes, 20).1, 8.0);
@@ -290,7 +290,7 @@ mod tests {
     fn framing_empty_region_shows_c4() {
         for rows in [1, 13, 20, 40] {
             let (top, scroll) = initial_view(&[], rows);
-            assert!(top >= 60 && top - rows + 1 <= 60, "rows {rows}: top {top}");
+            assert!(top >= 60 && top - rows < 60, "rows {rows}: top {top}");
             assert_eq!(scroll, 0.0);
         }
     }
