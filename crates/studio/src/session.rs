@@ -58,6 +58,8 @@ pub struct Session {
     pub log: VecDeque<LogEntry>,
     pub selected_track: Option<Id>,
     pub selected_region: Option<Id>,
+    /// Note indices the user selected in `selected_region`, copied by the GUI for `get_selection`. Window state, not part of the project.
+    pub selected_notes: Vec<usize>,
     midi_target: Arc<AtomicU64>,
     midi_conn: Option<midir::MidiInputConnection<()>>,
     pub midi_input_name: Option<String>,
@@ -85,6 +87,7 @@ impl Session {
             log: VecDeque::new(),
             selected_track: None,
             selected_region: None,
+            selected_notes: vec![],
             midi_target: Arc::new(AtomicU64::new(0)),
             midi_conn: None,
             midi_input_name: None,
@@ -269,6 +272,7 @@ impl Session {
                 self.engine.set_pool(Arc::new(AudioPool::new()));
                 self.selected_track = None;
                 self.selected_region = None;
+                self.selected_notes.clear();
                 Ok(v)
             }
             OpenProject { path } => self.open(Path::new(&path)),
@@ -312,6 +316,7 @@ impl Session {
                 Ok(json!({"beat": b, "position": self.project.bar_beat_string(b)}))
             }
             GetTransport {} => Ok(self.transport_json()),
+            GetSelection {} => Ok(self.selection_json()),
             Panic {} => {
                 self.engine.panic();
                 Ok(json!({"ok": true}))
@@ -474,6 +479,14 @@ impl Session {
         self.engine.sender()
     }
 
+    /// What `get_selection` returns: the selection the GUI copied here, plus the playhead.
+    pub fn selection_json(&self) -> Value {
+        let b = self.engine.position();
+        let mut v = ops::selection_summary(&self.project, self.selected_track, self.selected_region, &self.selected_notes, ops::SELECTION_NOTE_LIMIT);
+        v["playhead"] = json!({"beat": (b * 1000.0).round() / 1000.0, "position": self.project.bar_beat_string(b)});
+        v
+    }
+
     pub fn transport_json(&self) -> Value {
         let b = self.engine.position();
         json!({
@@ -545,6 +558,7 @@ impl Session {
         self.path = Some(path.to_path_buf());
         self.selected_track = None;
         self.selected_region = None;
+        self.selected_notes.clear();
         Ok(json!({"opened": path.display().to_string(), "missing_audio_files": missing, "summary": ops::project_summary(&self.project)}))
     }
 

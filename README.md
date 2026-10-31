@@ -6,7 +6,7 @@ assistant and a complete MCP API, so that every single operation is available to
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Platform: Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4)
 ![Rust](https://img.shields.io/badge/rust-stable-orange)
-![MCP tools](https://img.shields.io/badge/MCP%20tools-156-8a5cf6)
+![MCP tools](https://img.shields.io/badge/MCP%20tools-157-8a5cf6)
 [![Sponsor](https://img.shields.io/badge/sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/marconardelli)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-support-ff5e5b?logo=kofi&logoColor=white)](https://ko-fi.com/marconardelli)
 
@@ -146,7 +146,7 @@ Musical Typing: `A W S E D F T G Y H U J K` play notes, `Z` / `X` change octave.
 All three use the same command API, and every AI edit is undoable.
 
 1. **MCP (no key needed)** — any MCP-capable agent (Claude Code, Claude Desktop, other clients) drives Ondina with
-   all 156 tools. See below.
+   all 157 tools. See below.
 2. **Offline assistant** — the ✨ AI Assistant panel uses a **local language model** through an OpenAI-compatible
    server (llama.cpp, Ollama, LM Studio…). Ondina starts the bundled llama.cpp server automatically when it finds a
    `.gguf` model in `tools\llm` and stops it when Ondina closes. No account, nothing leaves your machine; small
@@ -156,7 +156,8 @@ All three use the same command API, and every AI edit is undoable.
 
 Choose the provider in **Settings ⚙ → Provider** (*Auto* uses Claude when a key is configured, the local model
 otherwise). The assistant receives the current selection (track, region, notes, playhead) as context, offers quick
-actions, and can "listen" to the mix through `analyze_mix`. Contextual AI buttons live in the piano roll, step
+actions, and can "listen" to the mix through `analyze_mix`. MCP clients read the same selection with
+`get_selection`. Contextual AI buttons live in the piano roll, step
 sequencer, plug-in editors and region menus.
 
 ## Controlling Ondina over MCP
@@ -175,7 +176,7 @@ Example `claude_desktop_config.json`:
 { "mcpServers": { "ondina": { "command": "C:\\path\\to\\ondina-mcp.exe" } } }
 ```
 
-The server exposes **tools** (156, annotated read-only/destructive), **resources** (`ondina://guide`,
+The server exposes **tools** (157, annotated read-only/destructive), **resources** (`ondina://guide`,
 `ondina://project`, `ondina://project/document`, `ondina://plugins`, `ondina://patches`) and **prompts**
 (`compose_song`, `mix_review`, `arrange_sections`). It listens on `127.0.0.1` only, rejects non-local `Origin`
 headers (DNS-rebinding protection), including `Origin: null` unless a token is set, and requires a bearer token when

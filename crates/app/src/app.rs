@@ -379,6 +379,9 @@ impl OndinaApp {
             note_selection::follow(&mut self.selected_notes, self.selected_region, &self.view.project, &fresh.project);
             self.view = fresh;
         }
+        if let Some(v) = note_selection::session_notes_update(&s.selected_notes, &self.selected_notes, self.notes_region == self.selected_region) {
+            s.selected_notes = v;
+        }
         // waveform peaks for new audio files
         let missing: Vec<Id> = self
             .view

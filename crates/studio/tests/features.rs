@@ -832,3 +832,126 @@ fn duplicate_patch_and_instrument_keep_automation_consistent_in_one_undo_step() 
     ok(&mut s, "undo", json!({}));
     assert_eq!(ok(&mut s, "get_project_json", json!({})), before, "one undo after set_instrument");
 }
+
+fn selection_session() -> (Session, u64, u64) {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
+    let r = ok(&mut s, "create_midi_region", json!({"track_id": t, "start": 4, "length": 4, "notes": [
+        {"pitch": 60, "velocity": 100, "start": 0, "length": 1},
+        {"pitch": 64, "velocity": 90, "start": 1, "length": 1},
+        {"pitch": 67, "velocity": 80, "start": 2, "length": 0.5}]}))["region_id"].as_u64().unwrap();
+    (s, t, r)
+}
+
+#[test]
+fn get_selection_reports_track_region_and_selected_notes() {
+    let (mut s, t, r) = selection_session();
+    s.selected_track = Some(t);
+    s.selected_region = Some(r);
+    s.selected_notes = vec![2, 0];
+    let v = ok(&mut s, "get_selection", json!({}));
+    assert_eq!(v["track"]["id"], json!(t), "{v}");
+    assert_eq!(v["track"]["kind"], json!("instrument"), "{v}");
+    assert_eq!(v["region"]["id"], json!(r), "{v}");
+    assert_eq!(v["region"]["track_id"], json!(t), "{v}");
+    assert_eq!(v["region"]["start"].as_f64(), Some(4.0), "{v}");
+    assert_eq!(
+        v["notes"],
+        json!([
+            {"index": 0, "pitch": 60, "name": "C4", "start": 0.0, "length": 1.0, "velocity": 100},
+            {"index": 2, "pitch": 67, "name": "G4", "start": 2.0, "length": 0.5, "velocity": 80}
+        ]),
+        "{v}"
+    );
+    assert_eq!(v["selected_note_count"], json!(2), "{v}");
+    assert!(v["playhead"]["beat"].is_number(), "{v}");
+    assert!(v["playhead"]["position"].is_string(), "{v}");
+    assert!(v["cycle"]["enabled"].is_boolean(), "{v}");
+}
+
+#[test]
+fn get_selection_is_read_only() {
+    assert!(!Command::GetSelection {}.is_mutating());
+    assert!(tool_specs().iter().any(|t| t.name == "get_selection" && t.read_only));
+    let mut s = Session::new(false);
+    let (undo, rev) = (s.can_undo().map(String::from), s.revision);
+    ok(&mut s, "get_selection", json!({}));
+    assert_eq!(s.can_undo().map(String::from), undo);
+    assert_eq!(s.revision, rev);
+    assert!(!s.dirty);
+
+    // With a saved project and a real selection: still nothing to undo, still clean.
+    let (mut s, t, r) = selection_session();
+    let path = tmp("selection_ro.ondina");
+    ok(&mut s, "save_project", json!({"path": path.display().to_string()}));
+    assert!(!s.dirty);
+    s.selected_track = Some(t);
+    s.selected_region = Some(r);
+    s.selected_notes = vec![0, 1];
+    let (undo, rev) = (s.can_undo().map(String::from), s.revision);
+    ok(&mut s, "get_selection", json!({}));
+    assert_eq!(s.can_undo().map(String::from), undo);
+    assert_eq!(s.revision, rev);
+    assert!(!s.dirty);
+}
+
+#[test]
+fn get_selection_without_selection_is_empty() {
+    let mut s = Session::new(false);
+    let v = ok(&mut s, "get_selection", json!({}));
+    assert!(v["track"].is_null(), "{v}");
+    assert!(v["region"].is_null(), "{v}");
+    assert_eq!(v["notes"], json!([]), "{v}");
+    assert_eq!(v["selected_note_count"], json!(0), "{v}");
+
+    // A stale index past the end is skipped, as in the assistant's context.
+    let (mut s, t, r) = selection_session();
+    s.selected_track = Some(t);
+    s.selected_region = Some(r);
+    s.selected_notes = vec![1, 99];
+    let v = ok(&mut s, "get_selection", json!({}));
+    assert_eq!(v["notes"].as_array().map(|a| a.len()), Some(1), "{v}");
+    assert_eq!(v["notes"][0]["index"], json!(1), "{v}");
+    assert_eq!(v["selected_note_count"], json!(1), "{v}");
+
+    // A region that no longer exists reports null.
+    s.selected_region = Some(999_999);
+    let v = ok(&mut s, "get_selection", json!({}));
+    assert!(v["region"].is_null(), "{v}");
+    assert_eq!(v["notes"], json!([]), "{v}");
+    assert_eq!(v["selected_note_count"], json!(0), "{v}");
+
+    // Pattern regions have no notes to select.
+    let p = ok(&mut s, "create_pattern_region", json!({"track_id": t, "start": 12}))["region_id"].as_u64().unwrap();
+    s.selected_region = Some(p);
+    s.selected_notes = vec![0];
+    let v = ok(&mut s, "get_selection", json!({}));
+    assert_eq!(v["region"]["id"], json!(p), "{v}");
+    assert_eq!(v["region"]["type"], json!("pattern"), "{v}");
+    assert_eq!(v["notes"], json!([]), "{v}");
+    assert_eq!(v["selected_note_count"], json!(0), "{v}");
+
+    // A new project clears the selection.
+    ok(&mut s, "new_project", json!({}));
+    assert!(s.selected_notes.is_empty());
+    assert_eq!(s.selected_region, None);
+    let v = ok(&mut s, "get_selection", json!({}));
+    assert!(v["track"].is_null() && v["region"].is_null(), "{v}");
+}
+
+#[test]
+fn get_selection_lists_at_most_256_notes() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();
+    let notes: Vec<Value> = (0..300).map(|i| json!({"pitch": 48 + i % 24, "velocity": 100, "start": i as f64 * 0.25, "length": 0.25})).collect();
+    let r = ok(&mut s, "create_midi_region", json!({"track_id": t, "start": 0, "length": 80, "notes": notes}))["region_id"].as_u64().unwrap();
+    s.selected_track = Some(t);
+    s.selected_region = Some(r);
+    s.selected_notes = (0..300).collect();
+    let v = ok(&mut s, "get_selection", json!({}));
+    let listed = v["notes"].as_array().unwrap();
+    assert_eq!(listed.len(), 256);
+    assert_eq!(listed[0]["index"], json!(0));
+    assert_eq!(listed[255]["index"], json!(255));
+    assert_eq!(v["selected_note_count"], json!(300));
+}
