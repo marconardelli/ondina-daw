@@ -24,6 +24,10 @@ Dopo il comando le stesse note restano selezionate, anche se sono cambiate di po
 correggere solo due battute, selezionale e premi il pulsante: il resto non si muove.
 Ogni operazione si annulla con Ctrl+Z.
 
+La selezione resta sulle stesse note anche dopo Annulla e Ripeti (Ctrl+Z, Ctrl+Y) e quando
+l'assistente o un client MCP modificano la regione: le note che non esistono più escono dalla
+selezione. Se selezioni un'altra regione, la selezione delle note si svuota.
+
 Anche l'assistente AI vede quali note sono selezionate. Puoi dirgli, per esempio, "quantizza
 queste note" e lui agirà solo sulla selezione.
 
