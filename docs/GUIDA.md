@@ -100,6 +100,36 @@ lunghezza, in blu) e i marker semplici (un punto, in marrone).
 Spostare un marker non sposta le regioni che ci stanno sotto. Per copiare o ripetere il materiale
 di una sezione usa il menu del clic destro.
 
+## Corsia accordi
+
+La corsia accordi sta sotto la corsia marker, sopra le tracce. Mostra gli accordi della canzone e,
+nell'etichetta a sinistra, la tonalità del progetto.
+
+- Doppio clic sulla corsia vuota: apre un campo di testo sul posto. L'accordo comincia sulla linea
+  di griglia a sinistra del puntatore (snap della barra degli strumenti; con lo snap spento, nel
+  punto esatto) e dura una battuta, meno se l'accordo seguente comincia prima: un contorno grigio
+  mostra la lunghezza che avrà. Scrivi un simbolo (`Am7`, `F#m`, `G/B`) o un grado nella tonalità
+  del progetto (`I`, `vi`, `IV`, `V7`) e premi Invio. Un grado diventa il simbolo dell'accordo
+  nella tonalità attuale: `IV` in Do maggiore è `F`. Esc o un testo vuoto annullano.
+- Testo non valido: con Invio il campo resta aperto con un contorno rosso e il testo selezionato,
+  così lo riscrivi subito, e la barra di stato mostra il messaggio. Un clic altrove chiude il campo
+  senza creare nulla.
+- Doppio clic su un accordo, oppure clic destro e **Edit chord**: apre lo stesso campo con il
+  simbolo attuale. Invio o un clic fuori confermano, Esc annulla. Lo stesso accordo scritto come
+  grado (`V` su un `G` in Do maggiore) non cambia nulla.
+- Clic su un accordo: sposta il playhead all'inizio dell'accordo.
+- Trascinamento di un accordo: lo sposta seguendo lo snap. L'accordo non va prima dell'inizio della
+  canzone e gli altri accordi restano dove sono: un accordo lasciato sopra un altro si sovrappone.
+- Trascinamento del bordo destro: cambia la lunghezza dell'accordo. La fine si aggancia alla
+  griglia, l'accordo dura almeno un sedicesimo e non va oltre l'inizio dell'accordo seguente.
+- Clic destro e **Remove chord**: elimina l'accordo.
+- Mentre scrivi, le scorciatoie da tastiera sono spente.
+- Ogni creazione, modifica, spostamento o allungamento si annulla con un solo Ctrl+Z.
+
+I session player (Bassist, Keys, Arpeggio, Melody) seguono la corsia accordi quando non ricevono
+una progressione propria. Un grado salvato sulla corsia da una versione precedente viene letto
+nella tonalità attuale del progetto.
+
 ## Filmato
 
 Puoi collegare un filmato al progetto per scrivere la musica a tempo con l'immagine. Il filmato deve

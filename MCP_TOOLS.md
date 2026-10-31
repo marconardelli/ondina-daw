@@ -438,9 +438,14 @@ Write a chord progression to the chord track. Accepts symbols ("Am7", "F", "G/B"
 Parameters: `beats_per_chord, chords, replace, start`
 
 ### `add_chord`
-Add one chord to the chord track.
+Add one chord to the chord track. symbol is a chord symbol ("Am7", "G/B") or a roman numeral in the project key ("IV", "vi"), stored as a chord symbol. Returns chord_id and the stored symbol.
 
 Parameters: `beat, length, symbol`
+
+### `update_chord`
+Change a chord on the chord track: symbol (chord symbol or roman numeral in the project key, stored as a chord symbol), beat (start) or length in beats. Omitted fields stay as they are.
+
+Parameters: `beat, chord_id, length, symbol`
 
 ### `remove_chord`
 Remove a chord from the chord track.
