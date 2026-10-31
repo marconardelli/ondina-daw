@@ -564,3 +564,32 @@ fn movie_frame_preview_uses_local_files_only() {
     let px = aurora_studio::session_ext::movie_frame_rgb(&mp4.display().to_string(), 1.0, 320, 180).unwrap();
     assert_eq!(px.len(), 320 * 180 * 3);
 }
+
+#[test]
+fn marker_update_moves_renames_and_resizes_one_undo_step_each() {
+    let mut s = Session::new(false);
+    let id = ok(&mut s, "add_marker", json!({"beat": 0, "name": "Verse", "length": 16}))["marker_id"].as_u64().unwrap();
+    ok(&mut s, "add_marker", json!({"beat": 32, "name": "Chorus", "length": 16}));
+    let pos = |s: &Session| s.project.markers.iter().position(|m| m.id == id).unwrap();
+    let chorus = |s: &Session| s.project.markers.iter().position(|m| m.name == "Chorus").unwrap();
+
+    ok(&mut s, "update_marker", json!({"marker_id": id, "beat": 48}));
+    assert_eq!(s.project.markers[pos(&s)].beat, 48.0);
+    assert!(pos(&s) > chorus(&s), "markers stay sorted by beat");
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(s.project.markers[pos(&s)].beat, 0.0);
+    assert_eq!(pos(&s), 0);
+
+    ok(&mut s, "update_marker", json!({"marker_id": id, "beat": -3}));
+    assert_eq!(s.project.markers[pos(&s)].beat, 0.0);
+
+    ok(&mut s, "update_marker", json!({"marker_id": id, "name": "Intro"}));
+    assert_eq!(s.project.markers[pos(&s)].name, "Intro");
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(s.project.markers[pos(&s)].name, "Verse");
+
+    ok(&mut s, "update_marker", json!({"marker_id": id, "length": 4}));
+    assert_eq!(s.project.markers[pos(&s)].length, Some(4.0));
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(s.project.markers[pos(&s)].length, Some(16.0));
+}

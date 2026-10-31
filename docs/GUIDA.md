@@ -27,6 +27,26 @@ Ogni operazione si annulla con Ctrl+Z.
 Anche l'assistente AI vede quali note sono selezionate. Puoi dirgli, per esempio, "quantizza
 queste note" e lui agirà solo sulla selezione.
 
+## Corsia marker
+
+La corsia marker sta sotto il righello dell'arrangiamento e contiene le sezioni (marker con una
+lunghezza, in blu) e i marker semplici (un punto, in marrone).
+
+- Clic su un marker: sposta il playhead all'inizio del marker.
+- Clic destro su una sezione: **Set cycle to section** imposta il ciclo sulla sezione,
+  **Repeat section after itself** ripete la sezione subito dopo, **Delete marker** elimina il marker.
+- Trascinamento di un marker: lo sposta seguendo lo snap della barra degli strumenti. Il marker non
+  va prima dell'inizio della canzone.
+- Trascinamento del bordo destro di una sezione: ne cambia la lunghezza. La fine si aggancia alla
+  griglia e la sezione dura almeno un battito. I marker semplici non hanno bordo da trascinare.
+- Doppio clic su un marker: apre un campo di testo per rinominarlo. Invio o un clic fuori
+  confermano, Esc annulla. Mentre scrivi, le scorciatoie da tastiera sono spente.
+- Doppio clic sulla corsia vuota: crea una sezione di 4 battute.
+- Ogni spostamento, ridimensionamento o rinomina si annulla con un solo Ctrl+Z.
+
+Spostare un marker non sposta le regioni che ci stanno sotto. Per copiare o ripetere il materiale
+di una sezione usa il menu del clic destro.
+
 ## Bounce
 
 - **File > Bounce to WAV…** (Ctrl+B) scrive il mix in un file WAV: tutta la canzone, oppure solo

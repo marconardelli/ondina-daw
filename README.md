@@ -113,7 +113,9 @@ and rendered audio.
 ## Using Aurora
 
 - **Arrange window**: double-click an instrument lane to create a MIDI region; drag to move, Alt+drag to copy, drag
-  the edge to resize; Shift+drag on the ruler to set the cycle.
+  the edge to resize; Shift+drag on the ruler to set the cycle. In the marker lane click a section to jump to it,
+  right-click it to cycle, repeat or delete it, drag it to move it, drag its right edge to resize it and
+  double-click it to rename it; double-click the empty lane to add a 4-bar section.
 - **Piano roll**: click on empty space to add a note (length from the toolbar); click a note to select it,
   Ctrl/Shift+click to add to the selection; drag on empty space to box-select (stacked notes included); drag a note
   to move it, drag its right edge to resize; Delete/Backspace removes the selection; double-click or right-click
