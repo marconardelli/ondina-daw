@@ -19,6 +19,7 @@ mod mixer;
 mod note_clipboard;
 mod note_selection;
 mod piano_roll_view;
+mod region_edit;
 mod theme;
 
 use ondina_studio::{Session, Settings, Source};

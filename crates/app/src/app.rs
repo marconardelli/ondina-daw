@@ -233,6 +233,9 @@ pub struct OndinaApp {
     pub rename_buf: String,
     pub marker_rename: Option<crate::arrange::InPlaceRename>,
     pub track_rename: Option<crate::arrange::InPlaceRename>,
+    pub region_rename: Option<crate::arrange::InPlaceRename>,
+    /// The selected region's name as typed in the inspector, with the region it was typed for.
+    pub region_name_edit: Option<(Id, String)>,
     pub chord_edit: Option<crate::arrange::ChordEdit>,
     pub vst_filter: String,
     pub api_key_buf: String,
@@ -327,6 +330,8 @@ impl OndinaApp {
             rename_buf: String::new(),
             marker_rename: None,
             track_rename: None,
+            region_rename: None,
+            region_name_edit: None,
             chord_edit: None,
             vst_filter: String::new(),
             devices_cache: None,
