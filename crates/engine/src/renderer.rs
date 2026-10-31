@@ -949,4 +949,69 @@ mod tests {
         assert!(energy > 1.0, "no audio rendered");
         assert!(r.beat < 4.0 + 0.1, "cycle did not wrap: {}", r.beat);
     }
+
+    fn add_track(p: &mut Project, kind: TrackKind) -> Id {
+        run(p, Command::AddTrack { kind, name: None, patch: None, instrument: None, preset: None, index: None })["track_id"].as_u64().unwrap()
+    }
+
+    /// Left-channel energy of about one second rendered from the start by a fresh renderer.
+    fn energy(p: &Project) -> f32 {
+        let mut r = Renderer::new(48000.0, Arc::new(p.clone()), Arc::new(AudioPool::new()));
+        r.play();
+        let mut l = vec![0.0; 512];
+        let mut rr = vec![0.0; 512];
+        let mut e = 0.0;
+        for _ in 0..(48000 / 512) {
+            r.render(&mut l, &mut rr);
+            assert!(l.iter().chain(&rr).all(|x| x.is_finite()));
+            e += l.iter().map(|x| x * x).sum::<f32>();
+        }
+        e
+    }
+
+    #[test]
+    fn send_automation_follows_its_bus_after_another_bus_is_removed() {
+        let mut p = Project::new("t");
+        let src = add_track(&mut p, TrackKind::Instrument);
+        let held = Note { pitch: 60, velocity: 100, start: 0.0, length: 8.0 };
+        run(&mut p, Command::CreateMidiRegion { track_id: src, start: 0.0, length: 8.0, name: None, notes: Some(vec![held]) });
+        // the direct path is silent: only the pre-fader sends reach the master
+        run(&mut p, Command::SetVolume { track_id: src, db: -96.0 });
+        let buses = [add_track(&mut p, TrackKind::Bus), add_track(&mut p, TrackKind::Bus), add_track(&mut p, TrackKind::Bus)];
+        for bus in buses {
+            run(&mut p, Command::AddSend { track_id: src, bus_id: bus, level_db: Some(-96.0), pre_fader: Some(true) });
+        }
+        run(&mut p, Command::SetMute { track_id: buses[0], mute: true });
+        for (i, db) in [0.0, -96.0, 0.0].into_iter().enumerate() {
+            run(&mut p, Command::SetAutomation { track_id: src, target: format!("send:{i}"), points: vec![AutomationPoint { beat: 0.0, value: db }] });
+        }
+        let e_before = energy(&p);
+        assert!(e_before > 1e-3, "nothing reached the master through bus C: {e_before}");
+        run(&mut p, Command::RemoveTrack { track_id: buses[1] });
+        let e_after = energy(&p);
+        assert!(e_after > 0.5 * e_before, "bus C lost its send automation: before {e_before}, after {e_after}");
+    }
+
+    #[test]
+    fn removing_a_track_stops_its_playing_live_cell() {
+        let mut p = Project::new("t");
+        let t = add_track(&mut p, TrackKind::Instrument);
+        add_track(&mut p, TrackKind::Instrument);
+        let note = Note { pitch: 60, velocity: 100, start: 0.0, length: 1.0 };
+        let cell = run(&mut p, Command::CreateLiveCell { track_id: t, scene: 0, length: Some(4.0), notes: Some(vec![note]), from_region_id: None, name: None })["cell_id"].as_u64().unwrap();
+        let mut r = Renderer::new(48000.0, Arc::new(p.clone()), Arc::new(AudioPool::new()));
+        r.launch_cell(cell);
+        let mut l = vec![0.0; 512];
+        let mut rr = vec![0.0; 512];
+        r.render(&mut l, &mut rr);
+        assert!(r.live_state().0.iter().any(|x| x.1 == cell));
+        run(&mut p, Command::RemoveTrack { track_id: t });
+        r.set_project(Arc::new(p));
+        assert!(r.live_state().0.is_empty());
+        for _ in 0..20 {
+            r.render(&mut l, &mut rr);
+            assert!(l.iter().chain(&rr).all(|x| x.is_finite()));
+        }
+        assert!(r.live_state().0.is_empty());
+    }
 }
