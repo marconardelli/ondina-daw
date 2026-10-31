@@ -26,17 +26,24 @@ Movie files are read from local drives only: Aurora refuses movie paths that sta
 point to a network share, passes them to ffmpeg with the `file:` prefix and limits ffmpeg to the `file` protocol.
 Frames are written as `.png`/`.jpg` and movie exports as `.mp4`, `.mov`, `.mkv` or `.m4v`.
 
+Files written by MCP clients and the assistant are checked too. `save_project`, `export_midi`, `export_music_xml`,
+`bounce`, `bounce_surround`, `bounce_binaural` and `export_adm` write only to a local drive and only with the
+extension of their file type: `.aurora`; `.mid` or `.midi`; `.musicxml` or `.xml`; `.wav`. When the path has no
+extension, Aurora adds it. Network shares, `\\?\` device paths, URLs, NTFS streams and any other extension are
+refused before anything is written. `save_project` never overwrites an existing file that is not an Aurora project,
+and it refuses to save over a project that was opened from a network share (save it from the app instead). Two limits
+remain: a drive letter mapped to a network share counts as a local drive, and a tool can still overwrite an existing
+file of its own type (for example a `.wav`). The app's own menus and dialogs are not restricted, so you can still save
+or bounce to a NAS from the Save dialog.
+
 ## Known issues being worked on
 
-These were found in an automated review of the first release and are tracked for fixing:
+This was found in an automated review of the first release and is tracked for fixing:
 
 - **Native plug-in loading from any path.** `add_vst3` (and projects that reference VST3 plug-ins) can load a plug-in
   from an arbitrary path, including network paths. A VST3 plug-in is native code, so a malicious project file or an
   untrusted MCP client could run code. Planned fix: only load plug-ins found by the scanner in standard or
   user-configured folders, reject UNC/network paths, and ask the user before loading a plug-in requested by MCP/AI or
   referenced by an opened project.
-- **File writes through the tool API.** Tools such as `save_project`, `export_midi` and the bounce/export tools write
-  to the path they are given. Planned fix: restrict MCP/AI writes to the project and media folders or ask for
-  confirmation, and refuse to overwrite unrelated files.
 
 Until these are fixed, only open projects you trust and only connect MCP clients you trust.
