@@ -111,6 +111,22 @@ percorso non ha estensione, Ondina la aggiunge.
 - Dai menu e dalle finestre di salvataggio dell'app puoi continuare a scegliere qualsiasi cartella,
   anche su un NAS. Un progetto aperto da una cartella di rete si risalva con Ctrl+S, non dall'assistente.
 
+## Assistente con modello locale
+
+Senza chiave Anthropic l'assistente usa un modello che gira sul computer, attraverso un server
+compatibile OpenAI all'indirizzo scelto in **Settings ⚙** (di default `http://127.0.0.1:8080/v1`).
+
+- Se nessun server risponde, Ondina avvia il server llama.cpp incluso in `tools\llm` e lo chiude
+  quando chiudi Ondina. Un server già acceso prima (Ollama, LM Studio, un `llama-server` avviato a
+  mano) viene usato così com'è e resta acceso.
+- La conversazione tiene le richieste più recenti entro il contesto del modello. Quando si allunga,
+  le richieste più vecchie vengono dimenticate; **New chat** ricomincia da capo.
+- **⏹ Stop** interrompe subito l'attesa. Le modifiche già fatte restano e si annullano con Ctrl+Z.
+  Il modello può finire di scrivere la risposta interrotta in sottofondo: la richiesta successiva
+  può partire con qualche secondo di ritardo.
+- Se Ondina si chiude in modo anomalo, `llama-server.exe` può restare acceso. Al riavvio Ondina lo
+  riusa ma non lo chiude: chiudilo dal Task Manager.
+
 ## Annulla e ripeti
 
 - Ctrl+Z annulla l'ultima modifica, Ctrl+Y la ripete.
