@@ -164,27 +164,53 @@ fn remap(old: &[Note], selected: &HashSet<usize>, new: &[Note], tolerant: bool) 
             None => still_lost.push(i),
         }
     }
-    // Moved in pitch at the same position.
-    for i in still_lost {
-        let o = &old[i];
-        let p = i32::from(o.pitch.min(127));
-        let lo = (p - MAX_PITCH_SHIFT).max(0);
-        let hi = (p + MAX_PITCH_SHIFT).min(127);
-        let mut best: Option<(i32, usize, usize)> = None;
-        for q in lo..=hi {
-            let dp = (q - p).abs();
-            for &j in &free[q as usize] {
-                if same_place(o, &new[j]) && best.is_none_or(|(bdp, _, bj)| (dp, j) < (bdp, bj)) {
-                    best = Some((dp, q as usize, j));
-                }
+    // Moved in pitch at the same position. A transpose moves every selected note by the same interval,
+    // so the shift that explains the most lost notes wins (then the smallest one), and the rest are
+    // looked for again with what is left.
+    let mut lost = still_lost;
+    while !lost.is_empty() {
+        // Most notes explained first, then the smallest shift, then the lowest lost index.
+        let mut best_key = None;
+        let mut best = Vec::new();
+        for d in -MAX_PITCH_SHIFT..=MAX_PITCH_SHIFT {
+            let pairs = shift_pairs(old, &lost, new, &free, d);
+            let Some(&(first, _)) = pairs.first() else { continue };
+            let key = (std::cmp::Reverse(pairs.len()), d.abs(), first);
+            if best_key.is_none_or(|k| key < k) {
+                best_key = Some(key);
+                best = pairs;
             }
         }
-        if let Some((_, q, j)) = best {
-            free[q].retain(|&x| x != j);
+        if best.is_empty() {
+            break;
+        }
+        for (i, j) in best {
+            free[bucket(&new[j])].retain(|&x| x != j);
+            lost.retain(|&x| x != i);
             out.insert(j);
         }
     }
     out
+}
+
+/// Pairs each lost note of `old` with a free note of `new` at the same position, `d` semitones away,
+/// without using a note of `new` twice. Lost notes are taken in order, each with its lowest free index.
+fn shift_pairs(old: &[Note], lost: &[usize], new: &[Note], free: &[Vec<usize>], d: i32) -> Vec<(usize, usize)> {
+    let mut used = HashSet::new();
+    let mut pairs = Vec::new();
+    for &i in lost {
+        let o = &old[i];
+        let q = i32::from(o.pitch.min(127)) + d;
+        if !(0..=127).contains(&q) {
+            continue;
+        }
+        let found = free[q as usize].iter().copied().filter(|j| !used.contains(j) && same_place(o, &new[*j])).min();
+        if let Some(j) = found {
+            used.insert(j);
+            pairs.push((i, j));
+        }
+    }
+    pairs
 }
 
 #[cfg(test)]
@@ -268,6 +294,18 @@ mod tests {
         let up = [n(72, 1.0, 1.0)];
         let down = [n(60, 1.0, 1.0)];
         assert_eq!(remap_selection(&up, &set(&[0]), &down), set(&[0]));
+    }
+
+    #[test]
+    fn octave_transpose_of_a_chord_keeps_every_note() {
+        let chord = [n(60, 0.0, 1.0), n(64, 0.0, 1.0)];
+        let down = [n(48, 0.0, 1.0), n(52, 0.0, 1.0)];
+        assert_eq!(remap_selection(&chord, &set(&[0, 1]), &down), set(&[0, 1]));
+        let up = [n(72, 0.0, 1.0), n(76, 0.0, 1.0)];
+        assert_eq!(remap_selection(&up, &set(&[0, 1]), &chord), set(&[0, 1]));
+        let triad = [n(60, 0.0, 1.0), n(64, 0.0, 1.0), n(67, 0.0, 1.0)];
+        let low = [n(48, 0.0, 1.0), n(52, 0.0, 1.0), n(55, 0.0, 1.0)];
+        assert_eq!(remap_selection(&triad, &set(&[0, 1, 2]), &low), set(&[0, 1, 2]));
     }
 
     #[test]
