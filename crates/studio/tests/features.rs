@@ -955,3 +955,182 @@ fn get_selection_lists_at_most_256_notes() {
     assert_eq!(listed[255]["index"], json!(255));
     assert_eq!(v["selected_note_count"], json!(300));
 }
+
+fn run(s: &mut Session, name: &str, args: Value, source: Source) -> Value {
+    let cmd = Command::from_tool_call(name, &args).unwrap_or_else(|e| panic!("{name}: {e}"));
+    s.execute(cmd, source).unwrap_or_else(|e| panic!("{name} {args} failed: {e}"))
+}
+
+fn bpm(s: &Session) -> f64 {
+    s.project.tempo.initial_bpm()
+}
+
+#[test]
+fn assistant_turn_is_one_undo_step() {
+    let mut s = Session::new(false);
+    s.begin_undo_group("assistant: make a beat");
+    run(&mut s, "add_track", json!({"kind": "instrument"}), Source::Ai);
+    run(&mut s, "set_tempo", json!({"bpm": 90}), Source::Ai);
+    run(&mut s, "set_volume", json!({"track_id": 0, "db": -6}), Source::Ai);
+    s.end_undo_group();
+    assert_eq!(s.undo_group(), None);
+    assert_eq!(s.can_undo(), Some("assistant: make a beat"));
+    assert!(s.last_undo_is_ai());
+
+    run(&mut s, "undo", json!({}), Source::Gui);
+    assert!(s.project.tracks.is_empty());
+    assert_eq!(bpm(&s), 120.0);
+    assert_eq!(s.project.master.volume_db, 0.0);
+    assert_eq!(s.can_undo(), None);
+
+    run(&mut s, "redo", json!({}), Source::Gui);
+    assert_eq!(s.project.tracks.len(), 1);
+    assert_eq!(bpm(&s), 90.0);
+    assert_eq!(s.project.master.volume_db, -6.0);
+    assert_eq!(s.can_redo(), None);
+    assert!(s.last_undo_is_ai());
+}
+
+#[test]
+fn user_edit_during_an_assistant_turn_stays_its_own_step() {
+    let mut s = Session::new(false);
+    s.begin_undo_group("assistant: x");
+    run(&mut s, "add_track", json!({"kind": "instrument"}), Source::Ai);
+    run(&mut s, "set_tempo", json!({"bpm": 100}), Source::Gui);
+    run(&mut s, "add_track", json!({"kind": "instrument"}), Source::Ai);
+    run(&mut s, "set_volume", json!({"track_id": 0, "db": -3}), Source::Mcp);
+    run(&mut s, "add_track", json!({"kind": "instrument"}), Source::Ai);
+    s.end_undo_group();
+
+    assert_eq!(s.can_undo(), Some("assistant: x"));
+    assert!(s.last_undo_is_ai());
+    run(&mut s, "undo", json!({}), Source::Gui);
+    assert_eq!(s.project.tracks.len(), 2);
+
+    assert_eq!(s.can_undo(), Some("set_volume"));
+    assert!(!s.last_undo_is_ai());
+    run(&mut s, "undo", json!({}), Source::Gui);
+    assert_eq!(s.project.master.volume_db, 0.0);
+
+    assert_eq!(s.can_undo(), Some("assistant: x"));
+    run(&mut s, "undo", json!({}), Source::Gui);
+    assert_eq!(s.project.tracks.len(), 1);
+
+    assert_eq!(s.can_undo(), Some("set_tempo"));
+    assert!(!s.last_undo_is_ai());
+    run(&mut s, "undo", json!({}), Source::Gui);
+    assert_eq!(bpm(&s), 120.0);
+
+    assert_eq!(s.can_undo(), Some("assistant: x"));
+    run(&mut s, "undo", json!({}), Source::Gui);
+    assert!(s.project.tracks.is_empty());
+    assert_eq!(s.can_undo(), None);
+}
+
+#[test]
+fn assistant_undo_inside_a_turn_reverts_the_turn_so_far() {
+    let mut s = Session::new(false);
+    run(&mut s, "set_volume", json!({"track_id": 0, "db": -1}), Source::Gui);
+    s.begin_undo_group("assistant: y");
+    run(&mut s, "add_track", json!({"kind": "instrument"}), Source::Ai);
+    run(&mut s, "set_tempo", json!({"bpm": 90}), Source::Ai);
+    let v = run(&mut s, "undo", json!({}), Source::Ai);
+    assert_eq!(v, json!({"undone": "assistant: y"}));
+    assert!(s.project.tracks.is_empty());
+    assert_eq!(bpm(&s), 120.0);
+    assert_eq!(s.project.master.volume_db, -1.0);
+    assert_eq!(s.can_redo(), Some("assistant: y"));
+
+    run(&mut s, "set_tempo", json!({"bpm": 100}), Source::Ai);
+    assert_eq!(s.can_redo(), None);
+    assert_eq!(s.can_undo(), Some("assistant: y"));
+    s.end_undo_group();
+
+    run(&mut s, "undo", json!({}), Source::Gui);
+    assert_eq!(bpm(&s), 120.0);
+    assert_eq!(s.can_undo(), Some("set_volume"));
+}
+
+#[test]
+fn new_project_inside_a_turn_starts_a_new_step() {
+    let mut s = Session::new(false);
+    s.begin_undo_group("assistant: z");
+    run(&mut s, "add_track", json!({"kind": "instrument"}), Source::Ai);
+    run(&mut s, "new_project", json!({"name": "Fresh"}), Source::Ai);
+    assert_eq!(s.can_undo(), None);
+    run(&mut s, "add_track", json!({"kind": "instrument"}), Source::Ai);
+    assert_eq!(s.can_undo(), Some("assistant: z"));
+    s.end_undo_group();
+
+    run(&mut s, "undo", json!({}), Source::Gui);
+    assert!(s.project.tracks.is_empty());
+    assert_eq!(s.can_undo(), None);
+}
+
+#[test]
+fn ai_commands_outside_a_group_keep_one_step_each() {
+    let mut s = Session::new(false);
+    run(&mut s, "set_tempo", json!({"bpm": 90}), Source::Ai);
+    run(&mut s, "set_tempo", json!({"bpm": 100}), Source::Ai);
+    run(&mut s, "undo", json!({}), Source::Gui);
+    assert_eq!(bpm(&s), 90.0);
+    assert_eq!(s.can_undo(), Some("set_tempo"));
+    assert!(s.last_undo_is_ai());
+
+    run(&mut s, "set_volume", json!({"track_id": 0, "db": -2}), Source::Gui);
+    assert!(!s.last_undo_is_ai());
+}
+
+#[test]
+fn fader_coalescing_still_merges_around_an_assistant_turn() {
+    let mut s = Session::new(false);
+    s.execute_coalesced(Command::SetVolume { track_id: 0, db: -3.0 }, "vol0").unwrap();
+    s.execute_coalesced(Command::SetVolume { track_id: 0, db: -6.0 }, "vol0").unwrap();
+    run(&mut s, "undo", json!({}), Source::Gui);
+    assert_eq!(s.project.master.volume_db, 0.0);
+    assert_eq!(s.can_undo(), None);
+    run(&mut s, "redo", json!({}), Source::Gui);
+    assert_eq!(s.project.master.volume_db, -6.0);
+
+    s.begin_undo_group("assistant: pan");
+    run(&mut s, "set_pan", json!({"track_id": 0, "pan": 0.5}), Source::Ai);
+    s.execute_coalesced(Command::SetVolume { track_id: 0, db: -9.0 }, "vol0").unwrap();
+    assert_eq!(s.can_undo(), Some("set_volume"));
+    assert!(!s.last_undo_is_ai());
+    run(&mut s, "set_pan", json!({"track_id": 0, "pan": 0.25}), Source::Ai);
+    assert_eq!(s.can_undo(), Some("assistant: pan"));
+    s.end_undo_group();
+
+    run(&mut s, "undo", json!({}), Source::Gui);
+    assert_eq!(s.project.master.pan, 0.5);
+    run(&mut s, "undo", json!({}), Source::Gui);
+    assert_eq!(s.project.master.volume_db, -6.0);
+    run(&mut s, "undo", json!({}), Source::Gui);
+    assert_eq!(s.project.master.pan, 0.0);
+    run(&mut s, "undo", json!({}), Source::Gui);
+    assert_eq!(s.project.master.volume_db, 0.0);
+    assert_eq!(s.can_undo(), None);
+}
+
+#[test]
+fn assistant_undo_group_closes_when_the_guard_drops() {
+    use ondina_studio::session::AssistantUndoGroup;
+    let shared = Session::shared(false);
+    {
+        let _g = AssistantUndoGroup::open(&shared, "assistant: a");
+        assert_eq!(shared.lock().undo_group(), Some("assistant: a"));
+    }
+    assert_eq!(shared.lock().undo_group(), None);
+
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _g = AssistantUndoGroup::open(&shared, "assistant: b");
+        shared.lock().execute(Command::SetTempo { bpm: 95.0 }, Source::Ai).unwrap();
+        panic!("boom");
+    }));
+    assert!(r.is_err());
+    let mut s = shared.lock();
+    assert_eq!(s.undo_group(), None);
+    assert_eq!(s.can_undo(), Some("assistant: b"));
+    s.execute(Command::SetTempo { bpm: 100.0 }, Source::Ai).unwrap();
+    assert_eq!(s.can_undo(), Some("set_tempo"));
+}
