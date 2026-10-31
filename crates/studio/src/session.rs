@@ -255,16 +255,16 @@ impl Session {
                 Ok(json!({"redone": name}))
             }
             NewProject { .. } => {
-                let r = ops::apply(&mut self.project, &cmd);
+                let v = match ops::apply(&mut self.project, &cmd)? {
+                    Outcome::Done(v) => v,
+                    Outcome::NotHandled => return Err("internal".into()),
+                };
                 self.path = None;
                 self.pool.clear();
                 self.engine.set_pool(Arc::new(AudioPool::new()));
                 self.selected_track = None;
                 self.selected_region = None;
-                match r? {
-                    Outcome::Done(v) => Ok(v),
-                    Outcome::NotHandled => Err("internal".into()),
-                }
+                Ok(v)
             }
             OpenProject { path } => self.open(Path::new(&path)),
             SaveProject { path } => {

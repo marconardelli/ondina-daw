@@ -145,6 +145,25 @@ fn new_project_starts_a_fresh_history() {
 }
 
 #[test]
+fn failed_new_project_keeps_the_current_project() {
+    let wav = tmp("fresh_history_keep.wav");
+    write_wav(&wav, &[vec![0.1f32; 4410]], 44100);
+    let mut s = Session::new(false);
+    ok(&mut s, "import_audio", json!({"path": wav.display().to_string(), "start": 0}));
+    let path = tmp("fresh_history_keep.aurora");
+    ok(&mut s, "save_project", json!({"path": path.display().to_string()}));
+    assert_eq!(s.pool.len(), 1);
+
+    let e = call(&mut s, "new_project", json!({"time_signature": "4-4"})).unwrap_err();
+    assert!(e.contains("time signature"), "{e}");
+    assert_eq!(s.path.as_deref(), Some(path.as_path()), "a failed new_project must keep the file path");
+    assert_eq!(s.pool.len(), 1, "a failed new_project must keep the audio");
+    assert_eq!(s.project.tracks.len(), 1);
+    assert_eq!(s.can_undo(), Some("import_audio"));
+    assert!(!s.dirty);
+}
+
+#[test]
 fn flex_stems_tempo_transcription() {
     let wav = song_wav();
     let mut s = Session::new(false);
