@@ -128,7 +128,7 @@ Delete a track and everything on it. Sends to it from other tracks are removed w
 Parameters: `track_id`
 
 ### `duplicate_track`
-Duplicate a track with its plug-ins and regions.
+Duplicate a track with its plug-ins, regions and automation. In the copy, plugin:<id>:<param> lanes point at the copy's own plug-ins; volume, pan, send and surround lanes are copied as they are. Returns the new track id.
 
 Parameters: `track_id`
 
@@ -198,7 +198,7 @@ Get full details of a track: channel strip, instrument and plug-ins with all par
 Parameters: `track_id`
 
 ### `apply_patch`
-Replace a track's instrument and insert effects with a library patch.
+Replace a track's instrument and insert effects with a library patch. Automation lanes that targeted the replaced plug-ins (plugin:<id>:<param>, on any track) are removed; volume, pan, send and MIDI effect lanes stay. Returns the track details and removed_automation_lanes.
 
 Parameters: `patch, track_id`
 
@@ -218,7 +218,7 @@ List library patches (complete channel strip setups: instrument + effect chain) 
 Parameters: none
 
 ### `set_instrument`
-Set (or replace) the instrument of an instrument track.
+Set (or replace) the instrument of an instrument track. Automation lanes that targeted the old instrument are removed. Returns the new plugin_id and removed_automation_lanes.
 
 Parameters: `kind, preset, track_id`
 
