@@ -47,6 +47,20 @@ lunghezza, in blu) e i marker semplici (un punto, in marrone).
 Spostare un marker non sposta le regioni che ci stanno sotto. Per copiare o ripetere il materiale
 di una sezione usa il menu del clic destro.
 
+## Filmato
+
+Puoi collegare un filmato al progetto per scrivere la musica a tempo con l'immagine. Il filmato deve
+essere un file su un disco locale: percorsi di rete (`\\server\cartella`), indirizzi web e percorsi
+che cominciano con `-` vengono rifiutati. Se il file sta su una condivisione di rete, copialo in
+locale o collegala a una lettera di unità.
+
+- Se un progetto aperto contiene un percorso del filmato non valido, la finestra Movie mostra una
+  riga rossa al posto dell'immagine. Ricarica il filmato da un file locale.
+- **Export Movie** scrive un file con estensione `.mp4`, `.mov`, `.mkv` o `.m4v`. Con un'altra
+  estensione (per esempio `.avi`) o senza estensione, la barra di stato mostra un errore e non viene
+  scritto nulla.
+- I fotogrammi e l'export richiedono ffmpeg.
+
 ## Bounce
 
 - **File > Bounce to WAV…** (Ctrl+B) scrive il mix in un file WAV: tutta la canzone, oppure solo
