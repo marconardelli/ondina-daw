@@ -66,6 +66,20 @@ R (registrazione), lo slider del volume e il meter.
 - Se cambi lo strumento o applichi una patch dall'inspector, Ondina toglie le automazioni dei parametri dei
   plug-in sostituiti. Volume, pan e mandate restano. Un solo Ctrl+Z rimette tutto com'era.
 
+### Zoom, scorrimento e altezza delle tracce
+
+- Rotella: scorre le tracce su e giù.
+- Maiusc+rotella, o la rotella orizzontale: scorre il tempo.
+- Ctrl+rotella: zoom orizzontale attorno al punto sotto il puntatore.
+- Ctrl+Maiusc+rotella: tracce più alte o più basse (da 32 a 160 punti) attorno alla traccia sotto il
+  puntatore.
+- Menu View: **Zoom In** e **Zoom Out** ingrandiscono o rimpiccioliscono attorno al cursore di
+  riproduzione (o al centro, se il cursore non si vede); **Zoom to Fit** mostra tutto il brano nella
+  larghezza visibile; **Taller Tracks** e **Shorter Tracks** cambiano l'altezza delle tracce. Una voce è
+  grigia quando il suo limite è raggiunto.
+- Con tracce basse i pulsanti M, S e R stanno accanto al nome e il volume si regola dal mixer.
+- Zoom e altezza delle tracce non si salvano nel progetto e non entrano in Annulla.
+
 ## Corsia marker
 
 La corsia marker sta sotto il righello dell'arrangiamento e contiene le sezioni (marker con una
@@ -186,6 +200,6 @@ take resta nel progetto.
 | Ctrl+S / O / N | salva / apri / nuovo |
 | Ctrl+D | duplica la regione |
 | Ctrl+B | bounce |
-| Ctrl+rotella | zoom |
+| Ctrl+rotella | zoom orizzontale attorno al puntatore |
 | Maiusc+rotella | scorrimento orizzontale |
-| Ctrl+Maiusc+rotella | zoom verticale del piano roll |
+| Ctrl+Maiusc+rotella | altezza delle tracce (nel piano roll: altezza dei tasti) |

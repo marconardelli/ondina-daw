@@ -9,6 +9,7 @@
 
 mod app;
 mod arrange;
+mod arrange_view;
 mod assistant;
 mod doc_guard;
 mod editors;

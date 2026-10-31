@@ -117,7 +117,11 @@ extension: Ondina opens both.
   the edge to resize; Shift+drag on the ruler to set the cycle. Drag a track header up or down to reorder the
   tracks (a line shows where it lands, Esc cancels) and double-click a track's name to rename it in place. In the marker lane click a section to jump to it,
   right-click it to cycle, repeat or delete it, drag it to move it, drag its right edge to resize it and
-  double-click it to rename it; double-click the empty lane to add a 4-bar section.
+  double-click it to rename it; double-click the empty lane to add a 4-bar section. The wheel scrolls the tracks,
+  Shift+wheel (or a horizontal wheel) scrolls time, Ctrl+wheel zooms time around the pointer and Ctrl+Shift+wheel
+  makes the tracks taller or shorter around the one under the pointer; View > Zoom In, Zoom Out, Zoom to Fit, Taller
+  Tracks and Shorter Tracks do the same from the menu. On short tracks the M/S/R buttons move next to the name and
+  the volume slider is left to the mixer.
 - **Piano roll**: click on empty space to add a note (length from the toolbar); click a note to select it,
   Ctrl/Shift+click to add to the selection; drag on empty space to box-select (stacked notes included); drag a note
   to move it, drag its right edge to resize; Delete/Backspace removes the selection; double-click or right-click
@@ -137,8 +141,8 @@ extension: Ondina opens both.
 | C | toggle cycle | Ctrl+D | duplicate region |
 | K | metronome | Ctrl+S / O / N | save / open / new |
 | Home | go to start | Ctrl+B | bounce |
-| Ctrl+wheel | zoom | Shift+wheel | scroll horizontally |
-| Ctrl+Shift+wheel | piano roll vertical zoom | | |
+| Ctrl+wheel | zoom time around the pointer | Shift+wheel | scroll time |
+| Ctrl+Shift+wheel | track height (piano roll: key height) | | |
 
 Musical Typing: `A W S E D F T G Y H U J K` play notes, `Z` / `X` change octave.
 

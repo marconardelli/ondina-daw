@@ -8,6 +8,8 @@ use eframe::egui::{
 };
 
 use crate::app::{OndinaApp, BottomTab, Drag};
+use crate::arrange_view::{self, apply_step, max_scroll_y, zoom_track_height, ArrangeView, ViewArea};
+use crate::piano_roll_view::{wheel_zoom, zoom_factor};
 use crate::theme;
 
 const HEADER_W: f32 = 210.0;
@@ -16,6 +18,10 @@ const LANE_H: f32 = 18.0;
 /// Width of the grab strip on a region's right edge. Narrow regions get a third of their width
 /// instead, so there is always some body left to grab for moving.
 const REGION_EDGE_PX: f32 = 6.0;
+/// Below this track height the M/S/R buttons move onto the name row and the volume slider is hidden
+/// (the mixer still has it).
+const HEADER_FULL_H: f32 = 46.0;
+const HEADER_BUTTON_H: f32 = 16.0;
 
 /// A marker or track name being edited in place.
 pub struct InPlaceRename {
@@ -34,6 +40,23 @@ impl OndinaApp {
         self.scroll_beat + ((x - origin) / self.px_per_beat) as f64
     }
 
+    /// The arrangement's scroll and zoom, as the View menu and its geometry functions see them.
+    pub fn arrange_view(&self) -> ArrangeView {
+        ArrangeView {
+            scroll_beat: self.scroll_beat,
+            px_per_beat: self.px_per_beat,
+            scroll_y: self.scroll_y,
+            track_height: self.track_height,
+        }
+    }
+
+    fn set_arrange_view(&mut self, v: ArrangeView) {
+        self.scroll_beat = v.scroll_beat;
+        self.px_per_beat = v.px_per_beat;
+        self.scroll_y = v.scroll_y;
+        self.track_height = v.track_height;
+    }
+
     pub fn arrange_ui(&mut self, ui: &mut egui::Ui) {
         let p = self.project();
         let full = ui.available_rect_before_wrap();
@@ -43,35 +66,53 @@ impl OndinaApp {
         let tracks_top = top + RULER_H + LANE_H * 2.0;
         let painter = ui.painter_at(full);
 
+        let view_w = (full.right() - timeline_x).max(1.0);
+        let view_h = (full.bottom() - tracks_top).max(1.0);
         // zoom / scroll input
         if ui.rect_contains_pointer(full) {
-            let (scroll, zoom_mod, shift, hover) = ui.input(|i| {
+            let line_px = ui.ctx().options(|o| o.line_scroll_speed);
+            let (scroll, hover, zoom) = ui.input(|i| {
                 (
                     i.smooth_scroll_delta,
-                    i.modifiers.command,
-                    i.modifiers.shift,
                     i.pointer.hover_pos(),
+                    wheel_zoom(&i.events, line_px, i.screen_rect().height()),
                 )
             });
-            if zoom_mod && scroll.y != 0.0 {
-                let anchor = hover
-                    .map(|h| self.x_to_beat(h.x, timeline_x))
-                    .unwrap_or(self.scroll_beat);
-                let factor = (1.0 + scroll.y * 0.002).clamp(0.5, 2.0);
-                self.px_per_beat = (self.px_per_beat * factor).clamp(2.0, 400.0);
-                if let Some(h) = hover {
-                    self.scroll_beat =
-                        (anchor - ((h.x - timeline_x) / self.px_per_beat) as f64).max(0.0);
-                }
-            } else if shift || scroll.x != 0.0 {
-                let dx = if shift { scroll.y } else { scroll.x };
-                self.scroll_beat = (self.scroll_beat - (dx / self.px_per_beat) as f64).max(0.0);
-            } else if scroll.y != 0.0 {
-                let content_h = p.tracks.len() as f32 * self.track_height + 80.0;
-                self.scroll_y = (self.scroll_y - scroll.y)
-                    .clamp(0.0, (content_h - (full.bottom() - tracks_top)).max(0.0));
+            let hover = hover.unwrap_or(full.center());
+            let dx = (hover.x - timeline_x).clamp(0.0, view_w);
+            let dy = (hover.y - tracks_top).clamp(0.0, view_h);
+            // egui 0.29 gives Ctrl+wheel only to its zoom factor: read the wheel events instead.
+            if zoom.time != 0.0 {
+                (self.scroll_beat, self.px_per_beat) =
+                    arrange_view::zoom_time(self.scroll_beat, self.px_per_beat, dx, zoom_factor(zoom.time));
+            }
+            // Ctrl+Shift+wheel: the piano roll's vertical zoom is the track height here.
+            if zoom.pitch != 0.0 {
+                (self.scroll_y, self.track_height) = zoom_track_height(
+                    self.scroll_y, self.track_height, dy, zoom_factor(zoom.pitch), p.tracks.len(), view_h,
+                );
+            }
+            // egui already turns Shift+wheel into horizontal scrolling.
+            if scroll.x != 0.0 {
+                self.scroll_beat = (self.scroll_beat - (scroll.x / self.px_per_beat) as f64).max(0.0);
+            }
+            if scroll.y != 0.0 {
+                self.scroll_y -= scroll.y;
             }
         }
+        if let Some(step) = self.arrange_step.take() {
+            let area = ViewArea {
+                width: view_w,
+                height: view_h,
+                tracks: p.tracks.len(),
+                content_end: p.content_end(),
+                beats_per_bar: bpb,
+                playhead: self.position(),
+            };
+            self.set_arrange_view(apply_step(step, self.arrange_view(), &area));
+        }
+        // Also after tracks were deleted or made shorter elsewhere: never leave the view below the content.
+        self.scroll_y = self.scroll_y.clamp(0.0, max_scroll_y(p.tracks.len(), self.track_height, view_h));
         // follow playhead
         let pos = self.position();
         let jumped = (pos - self.last_playhead).abs() > 0.5 && !self.playing();
@@ -877,8 +918,8 @@ impl OndinaApp {
                     let v = edge_scroll_speed(pp.y, tracks_top, full.bottom());
                     if v != 0.0 {
                         let dt = ui.input(|i| i.stable_dt).min(0.1);
-                        // same limit as the mouse wheel above
-                        let max = (n as f32 * th + 80.0 - (full.bottom() - tracks_top)).max(0.0);
+                        // same limit as the mouse wheel
+                        let max = max_scroll_y(n, th, full.bottom() - tracks_top);
                         self.scroll_y = (self.scroll_y + v * dt).clamp(0.0, max);
                         // keep scrolling while the pointer rests in the band
                         ui.ctx().request_repaint();
@@ -1116,10 +1157,19 @@ impl OndinaApp {
             self.selected_track = Some(t.id);
             self.drag = Some(Drag::MoveTrack { id: t.id, gap: index });
         }
+        // On short tracks the buttons sit at the right end of the name row, so the name stops before them.
+        let compact = rect.height() < HEADER_FULL_H;
+        let n_buttons = if t.kind == TrackKind::Bus { 2 } else { 3 };
+        let first_button_x = if compact {
+            rect.right() - 30.0 - n_buttons as f32 * 23.0
+        } else {
+            rect.left() + 10.0
+        };
+        let name_right = if compact { first_button_x - 4.0 } else { rect.right() - 28.0 };
         // the top row (icon and name) opens the rename; the rest of the header only selects
         let name_row = Rect::from_min_max(
             pos2(rect.left() + 6.0, rect.top()),
-            pos2(rect.right() - 26.0, rect.top() + 22.0),
+            pos2(if compact { name_right } else { rect.right() - 26.0 }, rect.top() + 22.0),
         );
         if resp.double_clicked() && resp.interact_pointer_pos().is_some_and(|pp| name_row.contains(pp)) {
             self.track_rename = Some(InPlaceRename {
@@ -1151,12 +1201,13 @@ impl OndinaApp {
             let ir = painter.text(name_pos, Align2::LEFT_CENTER, icon, FontId::proportional(12.5), Color32::WHITE);
             let r = Rect::from_min_max(
                 pos2(ir.right() + 4.0, rect.top() + 3.0),
-                pos2(rect.right() - 28.0, rect.top() + 21.0),
+                pos2(name_right, rect.top() + 21.0),
             );
             // half-hidden under the lanes or the window edge: drop the edit rather than draw over them
             field = painter.clip_rect().contains_rect(r).then_some(r);
         } else {
-            painter.text(
+            let name_clip = Rect::from_min_max(rect.min, pos2(name_right, rect.bottom())).intersect(painter.clip_rect());
+            painter.with_clip_rect(name_clip).text(
                 name_pos,
                 Align2::LEFT_CENTER,
                 format!("{icon} {}", t.name),
@@ -1180,11 +1231,11 @@ impl OndinaApp {
             }
         });
         // buttons
-        let by = rect.top() + 26.0;
-        let mut x = rect.left() + 10.0;
+        let by = rect.top() + button_row_top(rect.height());
+        let mut x = first_button_x;
         let mut button =
             |ui: &mut egui::Ui, label: &str, on: bool, color: Color32, tip: &str| -> bool {
-                let r = Rect::from_min_size(pos2(x, by), vec2(20.0, 16.0));
+                let r = Rect::from_min_size(pos2(x, by), vec2(20.0, HEADER_BUTTON_H));
                 x += 23.0;
                 let resp = ui
                     .interact(r, ui.id().with((label, tid)), Sense::click())
@@ -1226,7 +1277,7 @@ impl OndinaApp {
             pos2(x + 4.0, by + 2.0),
             pos2(rect.right() - 30.0, by + 14.0),
         );
-        if sr.width() > 20.0 {
+        if !compact && sr.width() > 20.0 {
             let mut child = ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(sr)
@@ -1269,6 +1320,15 @@ impl OndinaApp {
 enum RegionZone {
     Body,
     Edge,
+}
+
+/// Distance of the M/S/R buttons from the top of a track header `height` points tall.
+fn button_row_top(height: f32) -> f32 {
+    if height < HEADER_FULL_H {
+        3.0
+    } else {
+        26.0
+    }
 }
 
 /// Width of the resize strip for a region drawn `region_w` pixels wide.
@@ -1429,10 +1489,11 @@ pub fn draw_meter(painter: &egui::Painter, r: Rect, m: [f32; 2]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        dragged_marker_beat, edge_scroll_speed, region_edge_width, region_hit_zone, rename_commit,
-        resized_marker_length, track_drop_index, track_move_target, RegionZone, MIN_MARKER_LEN,
-        REGION_EDGE_PX, TRACK_DRAG_SCROLL_PX_S,
+        button_row_top, dragged_marker_beat, edge_scroll_speed, region_edge_width, region_hit_zone, rename_commit,
+        resized_marker_length, track_drop_index, track_move_target, RegionZone, HEADER_BUTTON_H, HEADER_FULL_H,
+        MIN_MARKER_LEN, REGION_EDGE_PX, TRACK_DRAG_SCROLL_PX_S,
     };
+    use crate::arrange_view::{TRACK_H_MAX, TRACK_H_MIN};
     use ondina_core::command::Command;
     use ondina_studio::{Session, Source};
     use serde_json::{json, Value};
@@ -1591,5 +1652,15 @@ mod tests {
         assert_eq!(track_names(&s), ["Bass"]);
         assert_eq!(rename_commit("Bass", " Bass "), None);
         assert_eq!(rename_commit("Bass", ""), None);
+    }
+
+    #[test]
+    fn header_buttons_fit_at_every_track_height() {
+        for h in [TRACK_H_MIN, 40.0, HEADER_FULL_H - 0.5, HEADER_FULL_H, 58.0, TRACK_H_MAX] {
+            assert!(button_row_top(h) + HEADER_BUTTON_H <= h - 2.0, "height {h}");
+        }
+        // the default height keeps the full layout
+        assert_eq!(button_row_top(58.0), 26.0);
+        const { assert!(TRACK_H_MIN < HEADER_FULL_H) };
     }
 }

@@ -162,6 +162,8 @@ pub struct OndinaApp {
     pub scroll_beat: f64,
     pub scroll_y: f32,
     pub track_height: f32,
+    /// A View-menu step for the arrangement, applied by `arrange_ui` where the view's size is known.
+    pub arrange_step: Option<crate::arrange_view::ViewStep>,
     pub snap: f64,
     pub selected_track: Option<Id>,
     pub selected_region: Option<Id>,
@@ -249,6 +251,7 @@ impl OndinaApp {
             scroll_beat: 0.0,
             scroll_y: 0.0,
             track_height: 58.0,
+            arrange_step: None,
             snap: 1.0,
             selected_track: None,
             selected_region: None,
@@ -1294,6 +1297,26 @@ impl OndinaApp {
                 ui.checkbox(&mut self.extra.show_video, "Movie window");
                 ui.checkbox(&mut self.extra.show_score, "Score view in editor");
                 ui.checkbox(&mut self.follow_playhead, "Follow playhead");
+                ui.separator();
+                use crate::arrange_view::{can_step, ViewStep};
+                let wheel_zoom = "Ctrl+wheel over the tracks zooms around the pointer";
+                let wheel_height = "Ctrl+Shift+wheel over the tracks";
+                for (step, label, tip) in [
+                    (ViewStep::ZoomIn, "Zoom In", wheel_zoom),
+                    (ViewStep::ZoomOut, "Zoom Out", wheel_zoom),
+                    (ViewStep::Fit, "Zoom to Fit", "Show the whole song in the visible width"),
+                    (ViewStep::Taller, "Taller Tracks", wheel_height),
+                    (ViewStep::Shorter, "Shorter Tracks", wheel_height),
+                ] {
+                    if ui
+                        .add_enabled(can_step(step, self.arrange_view()), egui::Button::new(label))
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        self.arrange_step = Some(step);
+                        ui.close_menu();
+                    }
+                }
                 ui.checkbox(
                     &mut self.musical_typing,
                     "Musical Typing (A–K keys play notes)",
@@ -1782,7 +1805,10 @@ impl OndinaApp {
                     ("Ctrl+B", "Bounce"),
                     ("Double-click track lane", "New MIDI region"),
                     ("Alt+drag region", "Copy region"),
-                    ("Ctrl+wheel", "Zoom"),
+                    ("Wheel", "Scroll tracks (piano roll: pitch)"),
+                    ("Shift+wheel", "Scroll time"),
+                    ("Ctrl+wheel", "Zoom time around the pointer"),
+                    ("Ctrl+Shift+wheel", "Track height (piano roll: key height)"),
                     ("Shift+drag ruler", "Set cycle range"),
                     ("Musical Typing: A W S E D F T G Y H U J K", "Play notes, Z/X octave"),
                 ] {
