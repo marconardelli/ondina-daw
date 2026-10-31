@@ -123,7 +123,7 @@ Add a track. For instrument tracks give a `patch` (see list_patches) or an `inst
 Parameters: `index, instrument, kind, name, patch, preset`
 
 ### `remove_track`
-Delete a track and everything on it.
+Delete a track and everything on it. Sends to it from other tracks are removed with their send automation (later send:<i> lanes are renumbered so they stay on the same sends), automation lanes elsewhere that target its plug-ins are removed, and its Live Loops cells and the MIDI input routes to it are deleted, not moved to another track. Returns how many lanes, cells and routes were removed.
 
 Parameters: `track_id`
 
@@ -188,7 +188,7 @@ Change the level of an existing send.
 Parameters: `level_db, send_index, track_id`
 
 ### `remove_send`
-Remove a send.
+Remove a send. Its send:<index> automation lane is removed too, and the lanes of the later sends are renumbered so they keep automating the same sends.
 
 Parameters: `send_index, track_id`
 
@@ -233,7 +233,7 @@ Insert a MIDI effect (arpeggiator, transposer, chord_trigger, velocity_processor
 Parameters: `kind, preset, track_id`
 
 ### `remove_plugin`
-Remove a plug-in by id.
+Remove a plug-in by id, together with every plugin:<id>:<param> automation lane that targets it.
 
 Parameters: `plugin_id`
 

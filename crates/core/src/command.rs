@@ -91,7 +91,7 @@ pub enum Command {
         /// Insert position (0-based). Default: end.
         index: Option<usize>,
     },
-    /// Delete a track and everything on it.
+    /// Delete a track and everything on it. Sends to it from other tracks are removed with their send automation (later send:<i> lanes are renumbered so they stay on the same sends), automation lanes elsewhere that target its plug-ins are removed, and its Live Loops cells and the MIDI input routes to it are deleted, not moved to another track. Returns how many lanes, cells and routes were removed.
     RemoveTrack { track_id: Id },
     /// Duplicate a track with its plug-ins and regions.
     DuplicateTrack { track_id: Id },
@@ -117,7 +117,7 @@ pub enum Command {
     AddSend { track_id: Id, bus_id: Id, level_db: Option<f32>, pre_fader: Option<bool> },
     /// Change the level of an existing send.
     SetSendLevel { track_id: Id, send_index: usize, level_db: f32 },
-    /// Remove a send.
+    /// Remove a send. Its send:<index> automation lane is removed too, and the lanes of the later sends are renumbered so they keep automating the same sends.
     RemoveSend { track_id: Id, send_index: usize },
     /// Get full details of a track: channel strip, instrument and plug-ins with all parameter values, sends, regions, automation.
     GetTrack { track_id: Id },
@@ -137,7 +137,7 @@ pub enum Command {
     AddEffect { track_id: Id, kind: String, preset: Option<String>, index: Option<usize> },
     /// Insert a MIDI effect (arpeggiator, transposer, chord_trigger, velocity_processor) before the instrument.
     AddMidiEffect { track_id: Id, kind: String, preset: Option<String> },
-    /// Remove a plug-in by id.
+    /// Remove a plug-in by id, together with every plugin:<id>:<param> automation lane that targets it.
     RemovePlugin { plugin_id: Id },
     /// Move an insert plug-in to another slot index within its chain.
     MovePlugin { plugin_id: Id, index: usize },
