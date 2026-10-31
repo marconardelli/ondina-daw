@@ -35,8 +35,13 @@ pub fn scroll_pitch(top: i32, carry: f32, delta_px: f32, key_h: f32) -> (i32, f3
 /// Scales beats per pixel around the pointer: the beat under `pointer_dx` (pixels from the grid's
 /// left edge) stays under the pointer unless the view would scroll before beat 0.
 pub fn zoom_time(scroll: f64, px_per_beat: f32, pointer_dx: f32, factor: f32) -> (f64, f32) {
+    zoom_time_between(scroll, px_per_beat, pointer_dx, factor, PX_PER_BEAT_MIN, PX_PER_BEAT_MAX)
+}
+
+/// Same as `zoom_time` with explicit limits, for views with a different zoom range (the arrangement).
+pub fn zoom_time_between(scroll: f64, px_per_beat: f32, pointer_dx: f32, factor: f32, min: f32, max: f32) -> (f64, f32) {
     let anchor = scroll + (pointer_dx / px_per_beat) as f64;
-    let ppb = (px_per_beat * factor).clamp(PX_PER_BEAT_MIN, PX_PER_BEAT_MAX);
+    let ppb = (px_per_beat * factor).clamp(min, max);
     ((anchor - (pointer_dx / ppb) as f64).max(0.0), ppb)
 }
 
@@ -60,7 +65,7 @@ pub fn zoom_factor(points: f32) -> f32 {
 pub struct WheelZoom {
     /// Ctrl+wheel: horizontal (time) zoom.
     pub time: f32,
-    /// Ctrl+Shift+wheel: vertical (pitch) zoom.
+    /// Ctrl+Shift+wheel: the vertical zoom (pitch rows in the piano roll, track height in the arrangement).
     pub pitch: f32,
 }
 
@@ -195,6 +200,16 @@ mod tests {
     }
 
     #[test]
+    fn time_zoom_between_uses_the_given_limits() {
+        assert_eq!(zoom_time_between(8.0, 300.0, 200.0, 2.0, 2.0, 400.0).1, 400.0);
+        assert_eq!(zoom_time_between(8.0, 3.0, 200.0, 0.5, 2.0, 400.0).1, 2.0);
+        let (scroll, ppb, dx) = (8.0_f64, 80.0_f32, 300.0_f32);
+        let anchor = scroll + (dx / ppb) as f64;
+        let (s, p) = zoom_time_between(scroll, ppb, dx, 2.0, 2.0, 400.0);
+        assert!(((anchor - s) as f32 * p - dx).abs() <= 1.0, "s {s} p {p}");
+    }
+
+    #[test]
     fn time_zoom_in_then_out_returns() {
         let (s1, p1) = zoom_time(8.0, 80.0, 300.0, zoom_factor(40.0));
         let (s2, p2) = zoom_time(s1, p1, 300.0, zoom_factor(-40.0));
@@ -260,7 +275,7 @@ mod tests {
 
     #[test]
     fn egui_routes_modified_wheel_as_expected() {
-        // Fixes the egui 0.29 behaviour the piano roll input relies on.
+        // Fixes the egui 0.29 behaviour the piano roll input and the arrangement rely on.
         assert_eq!(frame(Modifiers::NONE), (vec2(0.0, 3.0), WheelZoom::default()));
         assert_eq!(frame(Modifiers::SHIFT), (vec2(3.0, 0.0), WheelZoom::default()));
         assert_eq!(frame(Modifiers::CTRL), (egui::Vec2::ZERO, WheelZoom { time: 3.0, pitch: 0.0 }));
