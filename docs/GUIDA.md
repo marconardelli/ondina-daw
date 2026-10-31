@@ -47,6 +47,10 @@ R (registrazione), lo slider del volume e il meter.
   confermano, Esc annulla. Un nome vuoto o uguale a prima non cambia niente. Mentre scrivi, le
   scorciatoie da tastiera sono spente.
 - Ogni spostamento o rinomina si annulla con un solo Ctrl+Z.
+- Cancellando una traccia, una mandata o un plug-in, Ondina toglie anche ciò che puntava a loro: le
+  automazioni delle mandate e dei parametri del plug-in, le celle di Live Loops della traccia e le route
+  MIDI verso di lei. Le automazioni delle mandate rimaste restano sulle mandate giuste. Un solo Ctrl+Z
+  rimette tutto a posto (una cella che stava suonando va rilanciata).
 
 ## Corsia marker
 
