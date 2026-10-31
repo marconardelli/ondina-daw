@@ -3,6 +3,7 @@
 //! on the machine. Ondina can start a bundled llama.cpp server automatically.
 
 use std::path::PathBuf;
+use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -153,34 +154,102 @@ fn healthy(base: &str) -> bool {
     ureq::get(&format!("{root}/health")).timeout(Duration::from_secs(2)).call().map(|r| r.status() == 200).unwrap_or(false)
 }
 
+/// The llama-server process this Ondina started, if any. A server that was already answering when
+/// Ondina needed it (Ollama, LM Studio, a server started by hand) is never stored here and never stopped.
+static SERVER: parking_lot::Mutex<Option<Child>> = parking_lot::const_mutex(None);
+/// Set by `shutdown_server`: after it, the bundled server is never started again in this process.
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// Clears `slot` when its process has exited. Returns whether a live process is still there.
+fn take_if_exited(slot: &mut Option<Child>) -> bool {
+    match slot.as_mut().map(|c| c.try_wait()) {
+        Some(Ok(None)) => true,
+        Some(_) => {
+            *slot = None;
+            false
+        }
+        None => false,
+    }
+}
+
+/// Kills `child` and waits briefly for it to go. Returns whether it has exited.
+fn stop_child(child: &mut Child) -> bool {
+    let _ = child.kill();
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_secs(1) {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
+/// Stops the llama-server process Ondina started, if it is still running. Called when the app exits;
+/// a server that was already running before Ondina needed it is left alone. Never blocks for more than
+/// about a second.
+pub fn shutdown_server() {
+    SHUTTING_DOWN.store(true, Ordering::SeqCst);
+    let child = SERVER.lock().take();
+    if let Some(mut c) = child {
+        stop_child(&mut c);
+    }
+}
+
 /// Make sure a local server answers; start the bundled llama.cpp server if needed.
-pub fn ensure_server(settings: &Settings, events: Option<&Sender<AiEvent>>) -> Result<(), String> {
+/// `cancel` (Stop) ends the wait for the model to load; the server keeps loading for the next request.
+pub fn ensure_server(settings: &Settings, events: Option<&Sender<AiEvent>>, cancel: &AtomicBool) -> Result<(), String> {
     let base = base_url(settings);
     if healthy(&base) {
         return Ok(());
     }
-    let (server, model) = bundled_llm().ok_or("no local AI server is running and no bundled model was found (tools/llm)")?;
-    if let Some(e) = events {
-        let _ = e.send(AiEvent::Status("Starting local AI model…".into()));
+    let status = |s: &str| {
+        if let Some(e) = events {
+            let _ = e.send(AiEvent::Status(s.into()));
+        }
+    };
+    let alive = take_if_exited(&mut SERVER.lock());
+    if alive {
+        // our server is still loading the model for an earlier request: a second one on the same port would fail
+        status("Waiting for the local AI model…");
+    } else {
+        let (server, model) = bundled_llm().ok_or("no local AI server is running and no bundled model was found (tools/llm)")?;
+        status("Starting local AI model…");
+        let port = base.rsplit(':').next().and_then(|p| p.split('/').next()).and_then(|p| p.parse::<u16>().ok()).unwrap_or(8080);
+        let threads = std::thread::available_parallelism().map(|n| n.get().max(2) - 1).unwrap_or(4).to_string();
+        let mut cmd = std::process::Command::new(server);
+        cmd.args(["-m", &model.display().to_string(), "--jinja", "-c", &CONTEXT_TOKENS.to_string(), "--port", &port.to_string(), "--host", "127.0.0.1", "-t", &threads])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        // spawned under the lock after checking the flag, so no server can start after the app has exited
+        let mut slot = SERVER.lock();
+        if SHUTTING_DOWN.load(Ordering::SeqCst) {
+            return Err("Ondina is closing".into());
+        }
+        *slot = Some(cmd.spawn().map_err(|e| format!("cannot start llama-server: {e}"))?);
     }
-    let port = base.rsplit(':').next().and_then(|p| p.split('/').next()).and_then(|p| p.parse::<u16>().ok()).unwrap_or(8080);
-    let threads = std::thread::available_parallelism().map(|n| n.get().max(2) - 1).unwrap_or(4).to_string();
-    let mut cmd = std::process::Command::new(server);
-    cmd.args(["-m", &model.display().to_string(), "--jinja", "-c", &CONTEXT_TOKENS.to_string(), "--port", &port.to_string(), "--host", "127.0.0.1", "-t", &threads])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    cmd.spawn().map_err(|e| format!("cannot start llama-server: {e}"))?;
     let t0 = Instant::now();
     while t0.elapsed() < Duration::from_secs(120) {
         if healthy(&base) {
             return Ok(());
         }
+        if cancel.load(Ordering::Relaxed) {
+            return Err("stopped".into());
+        }
+        if !take_if_exited(&mut SERVER.lock()) {
+            return Err("the local AI server stopped while loading the model".into());
+        }
         std::thread::sleep(Duration::from_millis(500));
+    }
+    // a server that never became ready does not stay in memory
+    let child = SERVER.lock().take();
+    if let Some(mut c) = child {
+        stop_child(&mut c);
     }
     Err("the local AI server did not become ready".into())
 }
@@ -201,8 +270,8 @@ impl LocalAssistant {
     }
 
     pub fn run_turn(&mut self, session: &SharedSession, settings: &Settings, user_text: &str, gui_context: &str, events: &Sender<AiEvent>, cancel: &Arc<AtomicBool>) {
-        if let Err(e) = ensure_server(settings, Some(events)) {
-            let _ = events.send(AiEvent::Error(e));
+        if let Err(e) = ensure_server(settings, Some(events), cancel) {
+            let _ = events.send(if cancel.load(Ordering::Relaxed) { AiEvent::Status("Stopped.".into()) } else { AiEvent::Error(e) });
             let _ = events.send(AiEvent::Done);
             return;
         }
@@ -287,6 +356,7 @@ impl LocalAssistant {
 mod tests {
     use super::*;
     use crate::session::Session;
+    use std::process::Stdio;
 
     /// One user request, `steps` tool-calling steps with `payload` characters of tool output each, a final answer.
     fn turn(tag: &str, steps: usize, payload: usize) -> Vec<Value> {
@@ -509,5 +579,39 @@ mod tests {
         assert_eq!(a.messages[0]["role"], "system");
         assert_eq!(a.messages[1]["role"], "user");
         assert_eq!(a.messages[2], json!({"role": "assistant", "content": "(stopped)"}));
+    }
+
+    #[test]
+    fn shutdown_server_without_a_started_process_does_nothing() {
+        shutdown_server();
+        shutdown_server();
+        assert!(SERVER.lock().is_none());
+    }
+
+    fn ping(count: &str) -> Child {
+        std::process::Command::new("ping").args(if cfg!(windows) { ["-n", count, "127.0.0.1"] } else { ["-c", count, "127.0.0.1"] }).stdout(Stdio::null()).spawn().unwrap()
+    }
+
+    #[test]
+    fn stop_child_terminates_a_running_process() {
+        let mut c = ping("30");
+        assert!(matches!(c.try_wait(), Ok(None)));
+        assert!(stop_child(&mut c));
+        assert!(matches!(c.try_wait(), Ok(Some(_))));
+    }
+
+    #[test]
+    fn take_if_exited_clears_a_dead_process_and_keeps_a_live_one() {
+        let mut slot: Option<Child> = None;
+        assert!(!take_if_exited(&mut slot));
+        let mut slot = Some(ping("30"));
+        assert!(take_if_exited(&mut slot));
+        assert!(slot.is_some());
+        assert!(stop_child(slot.as_mut().unwrap()));
+        let mut done = ping("1");
+        done.wait().unwrap();
+        let mut slot = Some(done);
+        assert!(!take_if_exited(&mut slot));
+        assert!(slot.is_none());
     }
 }
