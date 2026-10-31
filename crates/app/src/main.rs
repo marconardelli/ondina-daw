@@ -11,6 +11,7 @@ mod app;
 mod arrange;
 mod arrange_view;
 mod assistant;
+mod cc_lane;
 mod doc_guard;
 mod editors;
 mod extra_ui;

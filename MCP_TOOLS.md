@@ -382,6 +382,11 @@ Add MIDI controller events (64 sustain, 1 mod wheel, 7 volume...) to a region.
 
 Parameters: `events, region_id`
 
+### `replace_cc`
+Replace the events of one MIDI controller in a MIDI region: removes that controller's events with from_beat <= beat < to_beat (from the region start and to its end when omitted, so with neither the whole controller is cleared) and inserts `events`, keeping the events of every other controller. Beats are relative to the region start, values 0..127. Controller numbers as in add_cc: 64 sustain (0 = up, 127 = down), 1 mod wheel, 11 expression, 7 volume, 10 pan, 128 pitch bend (64 = centre). An empty `events` erases the range. Returns `removed` and `added`.
+
+Parameters: `controller, events, from_beat, region_id, to_beat`
+
 ### `set_pattern_step`
 Set one step of a pattern region: velocity 0 = off.
 

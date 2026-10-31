@@ -31,6 +31,28 @@ Questa guida spiega come usare gli editor di Ondina con mouse, tastiera e menu.
 - In riproduzione la linea del playhead segue le ripetizioni di una regione in loop e, con **Follow playhead**
   attivo, la vista la segue.
 
+### Corsia dei controller
+
+Sotto la corsia delle velocity c'è la corsia dei controller: mostra un controller MIDI della regione alla volta.
+
+- Il selettore a sinistra sceglie il controller: Sustain (64), Mod wheel (1), Expression (11), Volume (7),
+  Pan (10), Pitch bend e ogni altro controller già presente nella regione. Accanto al nome vedi quanti eventi ha.
+- Il pedale del sustain si vede come barre dove è premuto. Gli altri controller sono una linea a gradini con un
+  punto per ogni evento; Pan e Pitch bend hanno una linea al centro.
+- Trascina con il tasto sinistro per disegnare: scrive un evento per ogni passo di snap (1/32 con lo snap
+  spento). In alto il valore è 127, in basso 0; per il sustain la metà alta è pedale giù, la metà bassa pedale su.
+  Mentre trascini vedi il risultato e il valore in alto a destra.
+- Trascina con il tasto destro per cancellare: il tratto si colora di rosso e al rilascio gli eventi del
+  controller in quel tratto spariscono.
+- Un clic disegna un solo passo, un clic destro lo cancella.
+- Dopo il tratto il controller torna al valore che aveva, quindi il resto della curva non cambia.
+- Ogni tratto si annulla con un solo Ctrl+Z e si rifà con Ctrl+Y.
+- Il pulsante **CC** chiude la corsia e lascia più spazio alle note; un altro clic la riapre.
+- Gli strumenti interni rispondono solo al sustain, e solo Analog Synth e FM Synth. Gli strumenti VST3 ricevono
+  tutti i controller. Se lo strumento della traccia ignora il controller scelto, la corsia lo scrive in grigio.
+- L'assistente e i client MCP cambiano gli stessi eventi con `replace_cc` (sostituisce un controller in un
+  intervallo di beat) e li aggiungono con `add_cc`.
+
 ### Quantize, Humanize e Snap to key
 
 I tre pulsanti della barra degli strumenti lavorano sulle note selezionate.

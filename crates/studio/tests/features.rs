@@ -1201,3 +1201,102 @@ fn assistant_undo_group_closes_when_the_guard_drops() {
     s.execute(Command::SetTempo { bpm: 100.0 }, Source::Ai).unwrap();
     assert_eq!(s.can_undo(), Some("set_tempo"));
 }
+
+/// A MIDI track with an 8-beat region holding sustain 127@0, 0@1, 127@2, 0@3 and mod wheel 10@0.5, 50@1.5, 90@2.5.
+fn region_with_pedal_and_mod_wheel(s: &mut Session) -> (u64, u64) {
+    let t = ok(s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}));
+    let tid = t["track_id"].as_u64().unwrap();
+    let r = ok(s, "create_midi_region", json!({"track_id": tid, "start": 0, "length": 8}));
+    let rid = r["region_id"].as_u64().unwrap();
+    let sustain = [(0.0, 127), (1.0, 0), (2.0, 127), (3.0, 0)].map(|(b, v)| json!({"beat": b, "controller": 64, "value": v}));
+    let wheel = [(0.5, 10), (1.5, 50), (2.5, 90)].map(|(b, v)| json!({"beat": b, "controller": 1, "value": v}));
+    let events: Vec<Value> = sustain.into_iter().chain(wheel).collect();
+    ok(s, "add_cc", json!({"region_id": rid, "events": events}));
+    (tid, rid)
+}
+
+/// The region's controller events as (beat, controller, value), read through get_region.
+fn cc_list(s: &mut Session, rid: u64) -> Vec<(f64, u64, u64)> {
+    let r = ok(s, "get_region", json!({"region_id": rid}));
+    r["cc"].as_array().unwrap().iter().map(|e| (e["beat"].as_f64().unwrap(), e["controller"].as_u64().unwrap(), e["value"].as_u64().unwrap())).collect()
+}
+
+fn only(cc: &[(f64, u64, u64)], controller: u64) -> Vec<(f64, u64)> {
+    cc.iter().filter(|e| e.1 == controller).map(|e| (e.0, e.2)).collect()
+}
+
+#[test]
+fn replace_cc_replaces_one_controller_in_a_range() {
+    let mut s = Session::new(false);
+    let (_, rid) = region_with_pedal_and_mod_wheel(&mut s);
+    let before = cc_list(&mut s, rid);
+
+    let v = ok(&mut s, "replace_cc", json!({"region_id": rid, "controller": 64, "from_beat": 1, "to_beat": 3, "events": [{"beat": 1.5, "value": 127}, {"beat": 2.5, "value": 0}]}));
+    assert_eq!((v["removed"].as_u64(), v["added"].as_u64(), v["cc_count"].as_u64()), (Some(2), Some(2), Some(7)));
+    let after = cc_list(&mut s, rid);
+    assert_eq!(only(&after, 64), vec![(0.0, 127), (1.5, 127), (2.5, 0), (3.0, 0)]);
+    assert_eq!(only(&after, 1), only(&before, 1));
+    assert!(after.windows(2).all(|w| w[0].0 <= w[1].0), "cc must stay sorted by beat: {after:?}");
+    assert_eq!(s.can_undo(), Some("replace_cc"));
+
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(cc_list(&mut s, rid), before);
+    ok(&mut s, "redo", json!({}));
+    assert_eq!(cc_list(&mut s, rid), after);
+}
+
+#[test]
+fn replace_cc_without_range_clears_the_controller() {
+    let mut s = Session::new(false);
+    let (_, rid) = region_with_pedal_and_mod_wheel(&mut s);
+    let before = cc_list(&mut s, rid);
+    let v = ok(&mut s, "replace_cc", json!({"region_id": rid, "controller": 1, "events": []}));
+    assert_eq!((v["removed"].as_u64(), v["added"].as_u64()), (Some(3), Some(0)));
+    let after = cc_list(&mut s, rid);
+    assert!(only(&after, 1).is_empty());
+    assert_eq!(only(&after, 64), only(&before, 64));
+    assert_eq!(after.len(), 4);
+}
+
+#[test]
+fn replace_cc_rejects_bad_input_and_keeps_the_project() {
+    let wav = tmp("replace_cc_audio.wav");
+    write_wav(&wav, &[vec![0.1f32; 4410]], 44100);
+    let mut s = Session::new(false);
+    let (_, rid) = region_with_pedal_and_mod_wheel(&mut s);
+    let a = ok(&mut s, "import_audio", json!({"path": wav.display().to_string(), "start": 0}));
+    let audio = a["region_id"].as_u64().unwrap();
+    let pt = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}));
+    let pr = ok(&mut s, "create_pattern_region", json!({"track_id": pt["track_id"], "start": 0}));
+    let pattern = pr["region_id"].as_u64().unwrap();
+
+    let before = cc_list(&mut s, rid);
+    let undo_before = s.can_undo().map(String::from);
+    let ev = json!([{"beat": 1, "value": 10}]);
+    for args in [
+        json!({"region_id": audio, "controller": 64, "events": ev}),
+        json!({"region_id": pattern, "controller": 64, "events": ev}),
+        json!({"region_id": 999999, "controller": 64, "events": ev}),
+        json!({"region_id": rid, "controller": 129, "events": ev}),
+        json!({"region_id": rid, "controller": 64, "events": [{"beat": 1, "value": 128}]}),
+        json!({"region_id": rid, "controller": 64, "from_beat": 3, "to_beat": 1, "events": ev}),
+        json!({"region_id": rid, "controller": 64, "events": [{"beat": -1, "value": 10}]}),
+    ] {
+        assert!(call(&mut s, "replace_cc", args.clone()).is_err(), "{args} should fail");
+        assert_eq!(cc_list(&mut s, rid), before);
+        assert_eq!(s.can_undo().map(String::from), undo_before);
+    }
+}
+
+#[test]
+fn replace_cc_is_a_mutating_tool_with_optional_range() {
+    let spec = tool_specs().into_iter().find(|t| t.name == "replace_cc").expect("replace_cc tool");
+    assert!(!spec.read_only);
+    let req: Vec<String> = spec.input_schema.get("required").and_then(|r| r.as_array()).cloned().unwrap_or_default().iter().filter_map(|v| v.as_str().map(String::from)).collect();
+    for name in ["region_id", "controller", "events"] {
+        assert!(req.iter().any(|r| r == name), "{name} must be required: {req:?}");
+    }
+    for name in ["from_beat", "to_beat"] {
+        assert!(!req.iter().any(|r| r == name), "{name} must be optional: {req:?}");
+    }
+}

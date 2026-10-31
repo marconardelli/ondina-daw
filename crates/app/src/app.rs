@@ -174,6 +174,11 @@ pub enum Drag {
         p1: f32,
         additive: bool,
     },
+    /// A mouse stroke in the piano roll's controller lane: drawing (left button) or erasing (right button).
+    CcStroke {
+        region: Id,
+        stroke: crate::cc_lane::CcStroke,
+    },
 }
 
 pub struct OndinaApp {
@@ -219,6 +224,8 @@ pub struct OndinaApp {
     pub note_len: f64,
     /// Notes copied or cut in the piano roll (Ctrl+C / Ctrl+X); lives for the whole app session.
     pub note_clipboard: Option<crate::note_clipboard::NoteClip>,
+    /// What the piano roll's controller lane shows (open or closed, which controller).
+    pub cc_lane: crate::cc_lane::CcLaneState,
     // misc
     pub meters: HashMap<Id, [f32; 2]>,
     pub waveforms: HashMap<Id, Vec<(f32, f32)>>,
@@ -307,6 +314,7 @@ impl OndinaApp {
             notes_region: None,
             note_len: 0.25,
             note_clipboard: None,
+            cc_lane: Default::default(),
             meters: HashMap::new(),
             waveforms: HashMap::new(),
             ai: AiState {
