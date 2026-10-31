@@ -3,6 +3,7 @@
 pub mod ai;
 pub mod local_ai;
 pub mod mcp;
+pub mod prompts;
 pub mod session;
 pub mod session_ext;
 pub mod settings;

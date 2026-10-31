@@ -29,7 +29,7 @@ pub const LOCAL_TOOLS: &[&str] = &[
     "add_pattern_row", "get_plugin", "set_plugin_params", "add_scene", "create_live_cell",
 ];
 
-const SYSTEM: &str = "You are the assistant inside Ondina DAW. You control the DAW only by calling the provided tools. Positions are in beats (quarter notes); bar N starts at beat (N-1)*4 in 4/4. MIDI pitch 60 = C4. Call get_project to learn track ids before editing existing tracks; add_track returns the new track_id. Prefer library patches (e.g. \"Pop Drum Kit\", \"Deep Sub Bass\", \"Lush Pad\", \"Stage Electric Piano\") and the generate_* tools. After finishing, answer briefly in the user's language. All your edits for one request are one undo step: undo reverts everything you did in this request, so fix a single mistake directly.";
+const SYSTEM: &str = "You are the assistant inside Ondina DAW. You control the DAW only by calling the provided tools. Positions are in beats (quarter notes); bar N starts at beat (N-1)*4 in 4/4. MIDI pitch 60 = C4. Call get_project to learn track ids before editing existing tracks; add_track returns the new track_id. Prefer library patches (e.g. \"Pop Drum Kit\", \"Deep Sub Bass\", \"Lush Pad\", \"Stage Electric Piano\") and the generate_* tools. The [Ondina context] lists the selected notes as index:pitch@start+length; to change only those notes pass their index values as indices (quantize_notes, transpose_notes, set_note_velocities). Read a region with get_region before rewriting it and a plug-in with get_plugin before setting its parameters. After finishing, answer briefly in the user's language. All your edits for one request are one undo step: undo reverts everything you did in this request, so fix a single mistake directly.";
 
 /// Context size the bundled server is started with; the history budget is derived from it.
 const CONTEXT_TOKENS: usize = 16384;
@@ -372,6 +372,7 @@ impl LocalAssistant {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prompts;
     use crate::session::Session;
     use ondina_core::model::RegionContent;
     use std::process::Stdio;
@@ -504,6 +505,34 @@ mod tests {
         let budget = history_budget(local_tools().to_string().len());
         assert!(budget >= 2 * MIN_HISTORY_CHARS, "only {budget} characters left for the conversation");
         assert_eq!(history_budget(usize::MAX / 2), MIN_HISTORY_CHARS);
+    }
+
+    #[test]
+    fn local_tools_cover_the_contextual_requests() {
+        let design = prompts::design_sound(7, "Analog Synth");
+        assert_eq!(design, "Adjust the parameters of plug-in 7 (Analog Synth) to get a great sound for this track's role in the song. Explain briefly.");
+        // tools each request needs even when its text does not name them
+        let cases: [(&str, &[&str]); 7] = [
+            (prompts::CONTINUE_IMPROVE, &["get_region", "replace_notes", "add_notes", "quantize_notes", "transpose_notes"]),
+            (prompts::WRITE_GROOVE, &["get_region", "set_pattern_row", "add_pattern_row"]),
+            (design.as_str(), &["get_plugin", "set_plugin_params"]),
+            (prompts::FILL_GRID, &["get_project", "add_scene", "create_live_cell"]),
+            (prompts::FIX_MIX, &["analyze_mix", "set_volume", "set_pan", "add_effect", "set_plugin_params"]),
+            (prompts::WRITE_PART, &["get_project", "list_patches", "create_midi_region", "add_notes", "generate_melody"]),
+            (prompts::VARY_REGION, &["get_region", "create_midi_region", "duplicate_region", "replace_notes"]),
+        ];
+        let all: Vec<&str> = mcp::tools().iter().map(|t| t.name.as_str()).collect();
+        for (text, needed) in cases {
+            for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                if all.contains(&word) {
+                    assert!(LOCAL_TOOLS.contains(&word), "{word}, named in {text:?}, is not offered to the local model");
+                }
+            }
+            for tool in needed {
+                assert!(LOCAL_TOOLS.contains(tool), "{tool} is needed by {text:?}");
+            }
+        }
+        assert!(SYSTEM.contains("indices"), "the local system prompt must explain indices");
     }
 
     #[test]
