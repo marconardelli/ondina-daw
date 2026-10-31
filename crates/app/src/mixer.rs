@@ -1,0 +1,456 @@
+//! Mixer: one channel strip per track plus the master.
+
+use aurora_core::command::Command;
+use aurora_core::model::*;
+use aurora_core::plugins::{self, PluginCategory};
+use eframe::egui::{self, vec2, Color32, RichText, Rounding, Sense};
+
+use crate::app::{AuroraApp, LeftTab};
+use crate::arrange::draw_meter;
+use crate::theme;
+
+const STRIP_W: f32 = 108.0;
+
+impl AuroraApp {
+    pub fn mixer_ui(&mut self, ui: &mut egui::Ui) {
+        let p = self.project();
+        egui::ScrollArea::horizontal().show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                for t in &p.tracks {
+                    self.channel_strip(ui, &p, Some(t), t.id, &t.channel);
+                }
+                ui.separator();
+                self.channel_strip(ui, &p, None, MASTER_ID, &p.master);
+            });
+        });
+    }
+
+    fn channel_strip(
+        &mut self,
+        ui: &mut egui::Ui,
+        p: &Project,
+        track: Option<&Track>,
+        id: Id,
+        ch: &Channel,
+    ) {
+        let selected = self.selected_track == Some(id) && id != MASTER_ID;
+        let color = track.map(|t| theme::rgb(t.color)).unwrap_or(theme::ACCENT);
+        egui::Frame::none()
+            .fill(if selected {
+                Color32::from_rgb(52, 56, 64)
+            } else {
+                theme::LANE_ALT
+            })
+            .rounding(4.0_f32)
+            .inner_margin(4.0)
+            .show(ui, |ui| {
+                ui.set_width(STRIP_W);
+                ui.vertical(|ui| {
+                    // name
+                    let name = track.map(|t| t.name.clone()).unwrap_or("Master".into());
+                    let (r, resp) = ui.allocate_exact_size(vec2(STRIP_W, 18.0), Sense::click());
+                    ui.painter().rect_filled(r, Rounding::same(3.0_f32), color);
+                    ui.painter().text(
+                        r.center(),
+                        egui::Align2::CENTER_CENTER,
+                        short(&name, 14),
+                        egui::FontId::proportional(11.5),
+                        Color32::BLACK,
+                    );
+                    if resp.clicked() && id != MASTER_ID {
+                        self.selected_track = Some(id);
+                    }
+                    // instrument
+                    if let Some(t) = track {
+                        if let Some(inst) = &t.instrument {
+                            let label = plugins::find(&inst.kind).map(|i| i.name).unwrap_or("?");
+                            if ui
+                                .add_sized(
+                                    vec2(STRIP_W, 18.0),
+                                    egui::Button::new(
+                                        RichText::new(short(label, 15))
+                                            .small()
+                                            .color(theme::ACCENT),
+                                    ),
+                                )
+                                .clicked()
+                            {
+                                self.selected_track = Some(id);
+                                self.selected_plugin = Some(inst.id);
+                                self.left = LeftTab::Inspector;
+                                self.show_left = true;
+                            }
+                        } else {
+                            ui.add_space(22.0);
+                        }
+                    } else {
+                        ui.add_space(22.0);
+                    }
+                    // inserts
+                    ui.label(RichText::new("Inserts").small().color(theme::TEXT_DIM));
+                    for fx in &ch.inserts {
+                        let label = plugins::find(&fx.kind).map(|i| i.name).unwrap_or("?");
+                        let txt = RichText::new(short(label, 15)).small().color(if fx.bypass {
+                            theme::TEXT_DIM
+                        } else {
+                            Color32::WHITE
+                        });
+                        let resp = ui.add_sized(
+                            vec2(STRIP_W, 17.0),
+                            egui::Button::new(txt).fill(if self.selected_plugin == Some(fx.id) {
+                                Color32::from_rgb(90, 70, 30)
+                            } else {
+                                theme::LANE
+                            }),
+                        );
+                        if resp.clicked() {
+                            self.selected_plugin = Some(fx.id);
+                            if id != MASTER_ID {
+                                self.selected_track = Some(id);
+                            }
+                            self.left = LeftTab::Inspector;
+                            self.show_left = true;
+                        }
+                        let pid = fx.id;
+                        let byp = fx.bypass;
+                        resp.context_menu(|ui| {
+                            if ui.button(if byp { "Enable" } else { "Bypass" }).clicked() {
+                                self.cmd(Command::SetPluginBypass {
+                                    plugin_id: pid,
+                                    bypass: !byp,
+                                });
+                                ui.close_menu();
+                            }
+                            if ui.button("Remove").clicked() {
+                                self.cmd(Command::RemovePlugin { plugin_id: pid });
+                                ui.close_menu();
+                            }
+                        });
+                    }
+                    ui.menu_button(RichText::new("＋ effect").small(), |ui| {
+                        effect_menu(ui, |kind| {
+                            self.cmd(Command::AddEffect {
+                                track_id: id,
+                                kind: kind.to_string(),
+                                preset: None,
+                                index: None,
+                            });
+                        });
+                    });
+                    // sends
+                    if let Some(t) = track {
+                        if t.kind != TrackKind::Bus || !t.channel.sends.is_empty() {
+                            ui.label(RichText::new("Sends").small().color(theme::TEXT_DIM));
+                        }
+                        for (si, s) in t.channel.sends.iter().enumerate() {
+                            let bus = p
+                                .track(s.bus_id)
+                                .map(|b| b.name.clone())
+                                .unwrap_or("?".into());
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(short(&bus, 6)).small());
+                                let mut lv = s.level_db;
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut lv)
+                                            .range(-60.0..=6.0)
+                                            .speed(0.2)
+                                            .suffix("dB")
+                                            .max_decimals(1),
+                                    )
+                                    .changed()
+                                {
+                                    self.cmd_merge(
+                                        Command::SetSendLevel {
+                                            track_id: id,
+                                            send_index: si,
+                                            level_db: lv,
+                                        },
+                                        format!("send{id}-{si}"),
+                                    );
+                                }
+                                if ui.small_button("×").clicked() {
+                                    self.cmd(Command::RemoveSend {
+                                        track_id: id,
+                                        send_index: si,
+                                    });
+                                }
+                            });
+                        }
+                        let buses: Vec<(Id, String)> = p
+                            .tracks
+                            .iter()
+                            .filter(|b| b.kind == TrackKind::Bus && b.id != id)
+                            .map(|b| (b.id, b.name.clone()))
+                            .collect();
+                        ui.menu_button(RichText::new("＋ send").small(), |ui| {
+                            for (bid, bname) in &buses {
+                                if ui.button(bname).clicked() {
+                                    self.cmd(Command::AddSend {
+                                        track_id: id,
+                                        bus_id: *bid,
+                                        level_db: Some(-10.0),
+                                        pre_fader: None,
+                                    });
+                                    ui.close_menu();
+                                }
+                            }
+                            if ui.button("New reverb bus…").clicked() {
+                                if let Some(v) = self.exec(Command::AddTrack {
+                                    kind: TrackKind::Bus,
+                                    name: Some("Reverb".into()),
+                                    patch: None,
+                                    instrument: None,
+                                    preset: None,
+                                    index: None,
+                                }) {
+                                    if let Some(bid) = v["track_id"].as_u64() {
+                                        self.cmd(Command::AddEffect {
+                                            track_id: bid,
+                                            kind: "reverb".into(),
+                                            preset: Some("Reverb Return 100%".into()),
+                                            index: None,
+                                        });
+                                        self.cmd(Command::AddSend {
+                                            track_id: id,
+                                            bus_id: bid,
+                                            level_db: Some(-10.0),
+                                            pre_fader: None,
+                                        });
+                                    }
+                                }
+                                ui.close_menu();
+                            }
+                            if ui.button("New delay bus…").clicked() {
+                                if let Some(v) = self.exec(Command::AddTrack {
+                                    kind: TrackKind::Bus,
+                                    name: Some("Delay".into()),
+                                    patch: None,
+                                    instrument: None,
+                                    preset: None,
+                                    index: None,
+                                }) {
+                                    if let Some(bid) = v["track_id"].as_u64() {
+                                        self.cmd(Command::AddEffect {
+                                            track_id: bid,
+                                            kind: "stereo_delay".into(),
+                                            preset: Some("Delay Return 100%".into()),
+                                            index: None,
+                                        });
+                                        self.cmd(Command::AddSend {
+                                            track_id: id,
+                                            bus_id: bid,
+                                            level_db: Some(-12.0),
+                                            pre_fader: None,
+                                        });
+                                    }
+                                }
+                                ui.close_menu();
+                            }
+                        });
+                        // output
+                        let out = match t.channel.output {
+                            Output::Master => "→ Master".to_string(),
+                            Output::Bus(b) => format!(
+                                "→ {}",
+                                p.track(b).map(|x| x.name.clone()).unwrap_or("?".into())
+                            ),
+                        };
+                        ui.menu_button(RichText::new(short(&out, 14)).small(), |ui| {
+                            if ui.button("Master").clicked() {
+                                self.cmd(Command::SetTrackOutput {
+                                    track_id: id,
+                                    bus_id: None,
+                                });
+                                ui.close_menu();
+                            }
+                            for (bid, bname) in &buses {
+                                if ui.button(bname).clicked() {
+                                    self.cmd(Command::SetTrackOutput {
+                                        track_id: id,
+                                        bus_id: Some(*bid),
+                                    });
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    }
+                    ui.add_space(4.0);
+                    // pan
+                    let mut pan = ch.pan;
+                    ui.spacing_mut().slider_width = STRIP_W - 8.0;
+                    if ui
+                        .add(egui::Slider::new(&mut pan, -1.0..=1.0).show_value(false))
+                        .on_hover_text(format!("Pan {:+.0}", pan * 64.0))
+                        .double_clicked()
+                    {
+                        self.cmd(Command::SetPan {
+                            track_id: id,
+                            pan: 0.0,
+                        });
+                    } else if (pan - ch.pan).abs() > 1e-6 {
+                        self.cmd_merge(Command::SetPan { track_id: id, pan }, format!("pan{id}"));
+                    }
+                    // fader + meter
+                    ui.horizontal(|ui| {
+                        let mut v = ch.volume_db;
+                        ui.spacing_mut().slider_width = 130.0;
+                        let resp = ui.add(
+                            egui::Slider::new(&mut v, -60.0..=6.0)
+                                .vertical()
+                                .show_value(false),
+                        );
+                        if resp.double_clicked() {
+                            self.cmd(Command::SetVolume {
+                                track_id: id,
+                                db: 0.0,
+                            });
+                        } else if resp.changed() {
+                            self.cmd_merge(
+                                Command::SetVolume {
+                                    track_id: id,
+                                    db: v,
+                                },
+                                format!("vol{id}"),
+                            );
+                        }
+                        let (mr, _) = ui.allocate_exact_size(vec2(14.0, 130.0), Sense::hover());
+                        draw_meter(
+                            ui.painter(),
+                            mr,
+                            self.meters.get(&id).copied().unwrap_or([0.0; 2]),
+                        );
+                        ui.vertical(|ui| {
+                            ui.label(
+                                RichText::new(format!("{:+.1}", ch.volume_db))
+                                    .small()
+                                    .monospace(),
+                            );
+                            let m = self.meters.get(&id).copied().unwrap_or([0.0; 2]);
+                            let pk = aurora_dsp::util::gain_to_db(m[0].max(m[1]));
+                            ui.label(
+                                RichText::new(if pk < -59.0 {
+                                    "-∞".into()
+                                } else {
+                                    format!("{pk:.1}")
+                                })
+                                .small()
+                                .monospace()
+                                .color(if pk > -0.5 {
+                                    theme::REC
+                                } else {
+                                    theme::TEXT_DIM
+                                }),
+                            );
+                        });
+                    });
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("M").small().color(if ch.mute {
+                                    Color32::BLACK
+                                } else {
+                                    Color32::WHITE
+                                }))
+                                .fill(if ch.mute {
+                                    theme::MUTE
+                                } else {
+                                    theme::LANE
+                                }),
+                            )
+                            .clicked()
+                        {
+                            self.cmd(Command::SetMute {
+                                track_id: id,
+                                mute: !ch.mute,
+                            });
+                        }
+                        if id != MASTER_ID
+                            && ui
+                                .add(
+                                    egui::Button::new(RichText::new("S").small().color(
+                                        if ch.solo {
+                                            Color32::BLACK
+                                        } else {
+                                            Color32::WHITE
+                                        },
+                                    ))
+                                    .fill(if ch.solo {
+                                        theme::SOLO
+                                    } else {
+                                        theme::LANE
+                                    }),
+                                )
+                                .clicked()
+                        {
+                            self.cmd(Command::SetSolo {
+                                track_id: id,
+                                solo: !ch.solo,
+                            });
+                        }
+                        if let Some(t) = track {
+                            if t.kind != TrackKind::Bus
+                                && ui
+                                    .add(
+                                        egui::Button::new(RichText::new("R").small().color(
+                                            if t.record_armed {
+                                                Color32::BLACK
+                                            } else {
+                                                Color32::WHITE
+                                            },
+                                        ))
+                                        .fill(
+                                            if t.record_armed {
+                                                theme::REC
+                                            } else {
+                                                theme::LANE
+                                            },
+                                        ),
+                                    )
+                                    .clicked()
+                            {
+                                self.cmd(Command::SetRecordArm {
+                                    track_id: id,
+                                    armed: !t.record_armed,
+                                });
+                            }
+                        }
+                    });
+                });
+            });
+    }
+}
+
+pub fn effect_menu(ui: &mut egui::Ui, mut on_pick: impl FnMut(&'static str)) {
+    let mut groups: Vec<&str> = plugins::registry()
+        .iter()
+        .filter(|p| p.category == PluginCategory::Effect)
+        .map(|p| p.group)
+        .collect();
+    groups.dedup();
+    let mut seen = std::collections::HashSet::new();
+    for g in groups {
+        if !seen.insert(g) {
+            continue;
+        }
+        ui.menu_button(g, |ui| {
+            for p in plugins::registry()
+                .iter()
+                .filter(|p| p.category == PluginCategory::Effect && p.group == g)
+            {
+                if ui.button(p.name).on_hover_text(p.description).clicked() {
+                    on_pick(p.kind);
+                    ui.close_menu();
+                }
+            }
+        });
+    }
+}
+
+pub fn short(s: &str, n: usize) -> String {
+    if s.chars().count() > n {
+        format!("{}…", s.chars().take(n - 1).collect::<String>())
+    } else {
+        s.to_string()
+    }
+}

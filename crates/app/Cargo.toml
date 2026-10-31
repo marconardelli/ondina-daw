@@ -1,0 +1,25 @@
+[package]
+name = "aurora-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Aurora DAW desktop application"
+
+[[bin]]
+name = "aurora"
+path = "src/main.rs"
+
+[[bin]]
+name = "aurora-mcp"
+path = "src/bin/aurora-mcp.rs"
+
+[dependencies]
+aurora-core = { path = "../core" }
+aurora-dsp = { path = "../dsp" }
+aurora-engine = { path = "../engine" }
+aurora-studio = { path = "../studio" }
+eframe.workspace = true
+rfd.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true

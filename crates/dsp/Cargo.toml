@@ -1,0 +1,19 @@
+[package]
+name = "aurora-dsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Aurora DAW instruments and effects"
+
+[dependencies]
+aurora-core = { path = "../core" }
+rand.workspace = true
+rustfft = "6"
+vst3-host = { version = "0.10", default-features = false }
+ort = "=2.0.0-rc.15"
+
+[dev-dependencies]
+hound.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

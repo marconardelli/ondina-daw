@@ -1,0 +1,1447 @@
+//! Pure project-model command execution. Engine/IO-level commands (transport, bounce,
+//! file import, devices, analysis) are handled by the studio session and return
+//! [`Outcome::NotHandled`] here.
+
+use serde_json::{json, Value};
+
+use crate::command::Command;
+use crate::generate::{self, TimedChord};
+use crate::model::*;
+use crate::plugins::{self, PluginCategory};
+use crate::theory::{self, Chord, Key, ScaleKind};
+
+pub enum Outcome {
+    Done(Value),
+    NotHandled,
+}
+
+type R = Result<Outcome, String>;
+
+fn ok(v: Value) -> R {
+    Ok(Outcome::Done(v))
+}
+
+fn err<T>(msg: impl Into<String>) -> Result<T, String> {
+    Err(msg.into())
+}
+
+pub fn parse_key(s: &str) -> Result<Key, String> {
+    let s = s.trim();
+    let (pc, used) = theory::parse_pitch_class(s).ok_or_else(|| format!("invalid key '{s}'"))?;
+    let rest = s[used..].trim().to_lowercase().replace([' ', '-'], "_");
+    let scale = match rest.as_str() {
+        "" | "major" | "maj" | "ionian" => ScaleKind::Major,
+        "m" | "minor" | "min" | "aeolian" | "natural_minor" => ScaleKind::Minor,
+        "harmonic_minor" => ScaleKind::HarmonicMinor,
+        "melodic_minor" => ScaleKind::MelodicMinor,
+        "dorian" => ScaleKind::Dorian,
+        "phrygian" => ScaleKind::Phrygian,
+        "lydian" => ScaleKind::Lydian,
+        "mixolydian" => ScaleKind::Mixolydian,
+        "locrian" => ScaleKind::Locrian,
+        "major_pentatonic" | "pentatonic" => ScaleKind::MajorPentatonic,
+        "minor_pentatonic" => ScaleKind::MinorPentatonic,
+        "blues" => ScaleKind::Blues,
+        "chromatic" => ScaleKind::Chromatic,
+        other => return err(format!("unknown scale '{other}'")),
+    };
+    Ok(Key { root: pc, scale })
+}
+
+pub fn parse_color(s: &str) -> Result<[u8; 3], String> {
+    let h = s.trim().trim_start_matches('#');
+    if h.len() != 6 {
+        return err("color must be #RRGGBB");
+    }
+    let v = u32::from_str_radix(h, 16).map_err(|_| "invalid hex color".to_string())?;
+    Ok([(v >> 16) as u8, (v >> 8) as u8, v as u8])
+}
+
+pub fn new_plugin(project: &mut Project, kind: &str, preset: Option<&str>) -> Result<PluginInstance, String> {
+    let info = plugins::find(kind).ok_or_else(|| format!("unknown plug-in kind '{kind}' (see list_plugins)"))?;
+    let mut inst = PluginInstance { id: project.alloc_id(), kind: info.kind.to_string(), params: Default::default(), bypass: false, preset: None, sample: None, vst3_path: None, vst3_params: vec![], vst3_state: None };
+    if let Some(name) = preset.filter(|s| !s.is_empty()) {
+        apply_preset(&mut inst, name)?;
+    }
+    Ok(inst)
+}
+
+fn apply_preset(inst: &mut PluginInstance, name: &str) -> Result<(), String> {
+    if inst.kind == "vst3" {
+        return Err("factory presets are not available for VST3 plug-ins; set parameters instead".into());
+    }
+    let preset = plugins::presets_for(&inst.kind)
+        .find(|p| p.name.eq_ignore_ascii_case(name))
+        .ok_or_else(|| format!("no preset '{name}' for {}", inst.kind))?;
+    inst.params.clear();
+    for (k, v) in preset.params {
+        inst.params.insert(k.to_string(), *v);
+    }
+    inst.preset = Some(preset.name.to_string());
+    Ok(())
+}
+
+fn set_param(inst: &mut PluginInstance, param: &str, value: f32) -> Result<f32, String> {
+    if !value.is_finite() {
+        return Err(format!("value for '{param}' must be a finite number"));
+    }
+    if inst.kind == "vst3" {
+        if !inst.vst3_params.iter().any(|p| p.id == param) {
+            let some: Vec<String> = inst.vst3_params.iter().take(20).map(|p| format!("{} ({})", p.id, p.name)).collect();
+            return Err(format!("VST3 plug-in has no parameter '{param}'. Examples: {}", some.join(", ")));
+        }
+        let v = value.clamp(0.0, 1.0);
+        inst.params.insert(param.to_string(), v);
+        return Ok(v);
+    }
+    let info = plugins::find(&inst.kind).ok_or("unknown plug-in")?;
+    let p = info
+        .params
+        .iter()
+        .find(|p| p.id == param)
+        .ok_or_else(|| format!("{} has no parameter '{param}'. Valid: {}", inst.kind, info.params.iter().map(|p| p.id).collect::<Vec<_>>().join(", ")))?;
+    let mut v = value.clamp(p.min, p.max);
+    if !p.choices.is_empty() {
+        v = v.round();
+    }
+    inst.params.insert(param.to_string(), v);
+    Ok(v)
+}
+
+pub fn apply_patch(project: &mut Project, track_id: Id, patch_name: &str) -> Result<(), String> {
+    let patch = plugins::find_patch(patch_name).ok_or_else(|| format!("unknown patch '{patch_name}' (see list_patches)"))?;
+    let instrument = match patch.instrument {
+        Some((k, pr)) => Some(new_plugin(project, k, Some(pr))?),
+        None => None,
+    };
+    let mut fx = vec![];
+    for (k, pr) in patch.effects {
+        fx.push(new_plugin(project, k, Some(pr))?);
+    }
+    let t = project.track_mut(track_id).ok_or("track not found")?;
+    if t.kind == TrackKind::Instrument {
+        if instrument.is_some() {
+            t.instrument = instrument;
+        }
+    }
+    t.channel.inserts = fx;
+    Ok(())
+}
+
+pub fn add_track(project: &mut Project, kind: TrackKind, name: Option<String>, patch: Option<&str>, instrument: Option<&str>, preset: Option<&str>, index: Option<usize>) -> Result<Id, String> {
+    // infer the right track type from the patch / instrument so callers cannot create
+    // an audio track carrying an instrument patch (or vice versa)
+    let kind = match (patch.and_then(plugins::find_patch), instrument) {
+        (Some(pt), _) if kind != TrackKind::Bus => if pt.instrument.is_some() { TrackKind::Instrument } else { TrackKind::Audio },
+        (None, Some(_)) if kind != TrackKind::Bus => TrackKind::Instrument,
+        _ => kind,
+    };
+    let id = project.alloc_id();
+    let n = project.tracks.len();
+    let default_name = match kind {
+        TrackKind::Instrument => patch.map(|s| s.to_string()).or(preset.map(|s| s.to_string())).unwrap_or_else(|| format!("Inst {}", n + 1)),
+        TrackKind::Audio => patch.map(|s| s.to_string()).unwrap_or_else(|| format!("Audio {}", n + 1)),
+        TrackKind::Bus => format!("Bus {}", n + 1),
+    };
+    let track = Track {
+        id,
+        name: name.unwrap_or(default_name),
+        kind,
+        color: TRACK_COLORS[n % TRACK_COLORS.len()],
+        // instrument tracks start at -6 dB to leave mix headroom when many parts are summed
+        channel: Channel { volume_db: if kind == TrackKind::Instrument { -6.0 } else { 0.0 }, ..Channel::default() },
+        instrument: None,
+        midi_fx: vec![],
+        regions: vec![],
+        automation: vec![],
+        record_armed: false,
+        input_channel: 0,
+        height: 0.0,
+    };
+    let idx = index.unwrap_or(n).min(n);
+    project.tracks.insert(idx, track);
+    if let Some(p) = patch {
+        apply_patch(project, id, p)?;
+    }
+    if kind == TrackKind::Instrument && project.track(id).unwrap().instrument.is_none() {
+        let kind = instrument.unwrap_or("analog_synth");
+        let inst = new_plugin(project, kind, preset)?;
+        if plugins::find(kind).map(|p| p.category) != Some(PluginCategory::Instrument) {
+            return err(format!("'{kind}' is not an instrument"));
+        }
+        project.track_mut(id).unwrap().instrument = Some(inst);
+    }
+    Ok(id)
+}
+
+fn region_mut<'a>(p: &'a mut Project, id: Id) -> Result<&'a mut Region, String> {
+    p.find_region_mut(id).ok_or_else(|| format!("region {id} not found"))
+}
+
+fn midi_mut<'a>(p: &'a mut Project, id: Id) -> Result<&'a mut MidiContent, String> {
+    match &mut region_mut(p, id)?.content {
+        RegionContent::Midi(m) => Ok(m),
+        _ => err("region is not a MIDI region"),
+    }
+}
+
+fn pattern_mut<'a>(p: &'a mut Project, id: Id) -> Result<&'a mut PatternContent, String> {
+    match &mut region_mut(p, id)?.content {
+        RegionContent::Pattern(m) => Ok(m),
+        _ => err("region is not a pattern region"),
+    }
+}
+
+fn sanitize_notes(notes: &mut Vec<Note>) {
+    for n in notes.iter_mut() {
+        n.pitch = n.pitch.min(127);
+        n.velocity = n.velocity.clamp(1, 127);
+        n.start = n.start.max(0.0);
+        n.length = n.length.max(0.01);
+    }
+    notes.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap().then(a.pitch.cmp(&b.pitch)));
+}
+
+pub fn default_drum_rows(steps: u32) -> Vec<PatternRow> {
+    [("Kick", 36u8), ("Snare", 38), ("Clap", 39), ("Closed Hat", 42), ("Open Hat", 46), ("Low Tom", 45), ("Hi Tom", 50), ("Crash", 49)]
+        .iter()
+        .map(|(n, p)| PatternRow { name: n.to_string(), pitch: *p, steps: vec![0; steps as usize], muted: false })
+        .collect()
+}
+
+pub fn pattern_to_notes(p: &PatternContent) -> Vec<Note> {
+    let mut out = vec![];
+    for row in &p.rows {
+        if row.muted {
+            continue;
+        }
+        for (i, v) in row.steps.iter().enumerate() {
+            if *v == 0 {
+                continue;
+            }
+            let mut start = i as f64 * p.step_length;
+            if i % 2 == 1 {
+                start += p.swing as f64 * p.step_length * 0.5;
+            }
+            out.push(Note { pitch: row.pitch, velocity: *v, start, length: p.step_length * 0.9 });
+        }
+    }
+    out
+}
+
+fn parse_step_string(s: &str, steps: usize) -> Vec<u8> {
+    let mut v: Vec<u8> = s
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '|')
+        .map(|c| match c {
+            'x' | 'X' => 115,
+            'o' | 'O' => 90,
+            'g' | 'G' => 45,
+            _ => 0,
+        })
+        .collect();
+    v.resize(steps, 0);
+    v
+}
+
+/// Resolve chord symbols (or roman numerals) for generators. If `chords` is None, read the chord track.
+pub fn resolve_chords(project: &Project, start: f64, bars: u32, chords: &Option<Vec<String>>, beats_per_chord: Option<f64>) -> Result<Vec<TimedChord>, String> {
+    let bpb = project.time_signature.beats_per_bar();
+    let total = bars as f64 * bpb;
+    if let Some(list) = chords {
+        if list.is_empty() {
+            return err("chords list is empty");
+        }
+        let per = beats_per_chord.unwrap_or(bpb);
+        let mut out = vec![];
+        let mut t = 0.0;
+        let mut i = 0;
+        while t < total - 1e-9 {
+            let sym = &list[i % list.len()];
+            let ch = parse_chord_or_roman(sym, project.key)?;
+            out.push(TimedChord { start: t, length: per.min(total - t), chord: ch });
+            t += per;
+            i += 1;
+        }
+        return Ok(out);
+    }
+    let end = start + total;
+    let mut out: Vec<TimedChord> = project
+        .chords
+        .iter()
+        .filter(|c| c.beat < end && c.beat + c.length > start)
+        .filter_map(|c| {
+            let s = c.beat.max(start);
+            let e = (c.beat + c.length).min(end);
+            Chord::parse(&c.symbol).map(|ch| TimedChord { start: s - start, length: e - s, chord: ch })
+        })
+        .collect();
+    if out.is_empty() {
+        // fall back to the tonic chord of the project key
+        let tonic = theory::NOTE_NAMES[project.key.root as usize];
+        let minor = matches!(project.key.scale, ScaleKind::Minor | ScaleKind::Dorian | ScaleKind::Phrygian | ScaleKind::HarmonicMinor | ScaleKind::MelodicMinor | ScaleKind::MinorPentatonic | ScaleKind::Blues);
+        let sym = format!("{tonic}{}", if minor { "m" } else { "" });
+        out.push(TimedChord { start: 0.0, length: total, chord: Chord::parse(&sym).unwrap() });
+    }
+    out.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
+    Ok(out)
+}
+
+pub fn parse_chord_or_roman(sym: &str, key: Key) -> Result<Chord, String> {
+    if let Some(c) = Chord::parse(sym) {
+        return Ok(c);
+    }
+    if let Some(s) = theory::roman_to_symbol(sym, key) {
+        if let Some(c) = Chord::parse(&s) {
+            return Ok(c);
+        }
+    }
+    err(format!("cannot parse chord '{sym}'"))
+}
+
+fn put_generated_region(project: &mut Project, track_id: Id, start: f64, bars: u32, name: &str, notes: Vec<Note>) -> Result<Id, String> {
+    let bpb = project.time_signature.beats_per_bar();
+    let id = project.alloc_id();
+    let t = project.track_mut(track_id).ok_or("track not found")?;
+    if t.kind != TrackKind::Instrument {
+        return err("generators need an instrument track");
+    }
+    let mut notes = notes;
+    sanitize_notes(&mut notes);
+    t.regions.push(Region { take: None,
+        id,
+        name: name.to_string(),
+        start,
+        length: bars as f64 * bpb,
+        loop_count: 1,
+        muted: false,
+        color: None,
+        content: RegionContent::Midi(MidiContent { notes, ..Default::default() }),
+    });
+    Ok(id)
+}
+
+fn seed_or_random(seed: Option<u64>) -> u64 {
+    seed.unwrap_or_else(rand::random)
+}
+
+/// Shift a region list for section operations.
+fn shift_after(project: &mut Project, at: f64, delta: f64) {
+    for t in &mut project.tracks {
+        for r in &mut t.regions {
+            if r.start >= at - 1e-9 {
+                r.start += delta;
+            }
+        }
+        for lane in &mut t.automation {
+            for p in &mut lane.points {
+                if p.beat >= at - 1e-9 {
+                    p.beat += delta;
+                }
+            }
+        }
+    }
+    for m in &mut project.markers {
+        if m.beat >= at - 1e-9 {
+            m.beat += delta;
+        }
+    }
+    for c in &mut project.chords {
+        if c.beat >= at - 1e-9 {
+            c.beat += delta;
+        }
+    }
+}
+
+/// Split all regions crossing `at` so section operations act on clean boundaries.
+fn split_all_at(project: &mut Project, at: f64) {
+    let ids: Vec<Id> = project
+        .tracks
+        .iter()
+        .flat_map(|t| t.regions.iter().filter(|r| r.start < at - 1e-9 && r.end() > at + 1e-9).map(|r| r.id))
+        .collect();
+    for id in ids {
+        let _ = split_region(project, id, at);
+    }
+}
+
+pub fn split_region(project: &mut Project, region_id: Id, beat: f64) -> Result<Id, String> {
+    let new_id = project.alloc_id();
+    let tempo = project.tempo.clone();
+    let t = project.tracks.iter_mut().find(|t| t.regions.iter().any(|r| r.id == region_id)).ok_or("region not found")?;
+    let idx = t.regions.iter().position(|r| r.id == region_id).unwrap();
+    let r = &mut t.regions[idx];
+    if beat <= r.start + 1e-9 || beat >= r.end() - 1e-9 {
+        return err("split position must be inside the region");
+    }
+    // unroll loops first
+    if r.loop_count > 1 {
+        if let RegionContent::Midi(m) = &mut r.content {
+            let mut all = vec![];
+            for i in 0..r.loop_count {
+                for n in &m.notes {
+                    if n.start < r.length {
+                        let mut c = *n;
+                        c.start += i as f64 * r.length;
+                        all.push(c);
+                    }
+                }
+            }
+            m.notes = all;
+        }
+        r.length *= r.loop_count as f64;
+        r.loop_count = 1;
+    }
+    let rel = beat - r.start;
+    let mut right = r.clone();
+    right.id = new_id;
+    right.start = beat;
+    right.length = r.length - rel;
+    r.length = rel;
+    match (&mut r.content, &mut right.content) {
+        (RegionContent::Midi(l), RegionContent::Midi(rr)) => {
+            let notes = std::mem::take(&mut l.notes);
+            for n in notes {
+                if n.start < rel {
+                    let mut c = n;
+                    c.length = c.length.min(rel - c.start);
+                    l.notes.push(c);
+                } else {
+                    let mut c = n;
+                    c.start -= rel;
+                    rr.notes.push(c);
+                }
+            }
+            rr.notes.retain(|n| n.start >= 0.0);
+            let cc = std::mem::take(&mut l.cc);
+            l.cc = cc.iter().filter(|c| c.beat < rel).copied().collect();
+            rr.cc = cc.iter().filter(|c| c.beat >= rel).map(|c| CcEvent { beat: c.beat - rel, ..*c }).collect();
+        }
+        (RegionContent::Audio(_), RegionContent::Audio(ra)) => {
+            let secs = tempo.beat_to_sec(beat) - tempo.beat_to_sec(beat - rel);
+            ra.offset_sec += secs;
+            ra.fade_in = 0.0;
+        }
+        (RegionContent::Pattern(_), RegionContent::Pattern(_)) => {}
+        _ => {}
+    }
+    if let RegionContent::Audio(la) = &mut r.content {
+        la.fade_out = 0.0;
+    }
+    t.regions.insert(idx + 1, right);
+    Ok(new_id)
+}
+
+fn region_summary(r: &Region, project: &Project) -> Value {
+    let (kind, extra) = match &r.content {
+        RegionContent::Midi(m) => ("midi", json!({"note_count": m.notes.len(), "transpose": m.transpose})),
+        RegionContent::Audio(a) => ("audio", json!({"file": project.audio_file(a.file_id).map(|f| f.name.clone()), "gain_db": a.gain_db})),
+        RegionContent::Pattern(p) => ("pattern", json!({"steps": p.steps, "rows": p.rows.len()})),
+    };
+    json!({
+        "id": r.id, "name": r.name, "type": kind, "start": r.start, "length": r.length,
+        "loop_count": r.loop_count, "end": r.end(), "muted": r.muted,
+        "position": project.bar_beat_string(r.start), "info": extra
+    })
+}
+
+fn plugin_brief(p: &PluginInstance) -> Value {
+    json!({"id": p.id, "kind": p.kind, "preset": p.preset, "bypass": p.bypass})
+}
+
+pub fn plugin_detail(p: &PluginInstance) -> Value {
+    if p.kind == "vst3" {
+        let params: Vec<Value> = p.vst3_params.iter().map(|vp| json!({"id": vp.id, "name": vp.name, "value": p.param(&vp.id), "min": 0.0, "max": 1.0, "unit": vp.unit, "normalized": true})).collect();
+        return json!({"id": p.id, "kind": "vst3", "name": p.preset, "path": p.vst3_path, "bypass": p.bypass, "params": params});
+    }
+    let info = plugins::find(&p.kind);
+    let params: Vec<Value> = info
+        .map(|i| {
+            i.params
+                .iter()
+                .map(|pi| {
+                    let v = p.param(pi.id);
+                    let mut o = json!({"id": pi.id, "name": pi.name, "value": v, "min": pi.min, "max": pi.max, "unit": pi.unit});
+                    if !pi.choices.is_empty() {
+                        o["choices"] = json!(pi.choices);
+                        o["selected"] = json!(pi.choices.get(v.round() as usize));
+                    }
+                    o
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    json!({"id": p.id, "kind": p.kind, "name": info.map(|i| i.name), "preset": p.preset, "bypass": p.bypass, "sample_file_id": p.sample, "params": params})
+}
+
+fn channel_brief(c: &Channel) -> Value {
+    json!({
+        "volume_db": c.volume_db, "pan": c.pan, "mute": c.mute, "solo": c.solo,
+        "output": match c.output { Output::Master => json!("master"), Output::Bus(b) => json!({"bus": b}) },
+        "sends": c.sends.iter().enumerate().map(|(i, s)| json!({"index": i, "bus_id": s.bus_id, "level_db": s.level_db, "pre_fader": s.pre_fader})).collect::<Vec<_>>(),
+        "inserts": c.inserts.iter().map(plugin_brief).collect::<Vec<_>>(),
+    })
+}
+
+pub fn project_summary(p: &Project) -> Value {
+    let tracks: Vec<Value> = p
+        .tracks
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            json!({
+                "id": t.id, "index": i, "name": t.name, "kind": t.kind,
+                "instrument": t.instrument.as_ref().map(plugin_brief),
+                "midi_fx": t.midi_fx.iter().map(plugin_brief).collect::<Vec<_>>(),
+                "channel": channel_brief(&t.channel),
+                "record_armed": t.record_armed,
+                "regions": t.regions.iter().map(|r| region_summary(r, p)).collect::<Vec<_>>(),
+                "automation": t.automation.iter().map(|a| json!({"target": a.target, "points": a.points.len()})).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    json!({
+        "name": p.name,
+        "tempo_bpm": p.tempo.initial_bpm(),
+        "tempo_changes": p.tempo.points.iter().skip(1).collect::<Vec<_>>(),
+        "time_signature": format!("{}/{}", p.time_signature.numerator, p.time_signature.denominator),
+        "beats_per_bar": p.time_signature.beats_per_bar(),
+        "key": p.key.name(),
+        "length_beats": p.content_end(),
+        "length_bars": (p.content_end() / p.time_signature.beats_per_bar()).ceil(),
+        "master": { "id": MASTER_ID, "channel": channel_brief(&p.master) },
+        "tracks": tracks,
+        "markers": p.markers,
+        "chords": p.chords,
+        "cycle": {"enabled": p.cycle.enabled, "start": p.cycle.start, "end": p.cycle.end},
+        "metronome": p.metronome,
+        "audio_files": p.audio_files.iter().map(|f| json!({"id": f.id, "name": f.name, "duration_sec": f.duration_sec})).collect::<Vec<_>>(),
+        "notes": p.notes,
+    })
+}
+
+pub fn track_detail(p: &Project, t: &Track) -> Value {
+    json!({
+        "id": t.id, "name": t.name, "kind": t.kind,
+        "color": format!("#{:02X}{:02X}{:02X}", t.color[0], t.color[1], t.color[2]),
+        "instrument": t.instrument.as_ref().map(plugin_detail),
+        "midi_fx": t.midi_fx.iter().map(plugin_detail).collect::<Vec<_>>(),
+        "channel": {
+            "volume_db": t.channel.volume_db, "pan": t.channel.pan, "mute": t.channel.mute, "solo": t.channel.solo,
+            "output": match t.channel.output { Output::Master => json!("master"), Output::Bus(b) => json!({"bus": b}) },
+            "sends": t.channel.sends.iter().enumerate().map(|(i, s)| json!({"index": i, "bus_id": s.bus_id, "level_db": s.level_db})).collect::<Vec<_>>(),
+            "inserts": t.channel.inserts.iter().map(plugin_detail).collect::<Vec<_>>(),
+        },
+        "regions": t.regions.iter().map(|r| region_summary(r, p)).collect::<Vec<_>>(),
+        "automation": t.automation.iter().map(|a| json!({"target": a.target, "points": a.points})).collect::<Vec<_>>(),
+    })
+}
+
+fn all_regions_in(project: &Project, from: f64, to: f64) -> Vec<(Id, Region)> {
+    project
+        .tracks
+        .iter()
+        .flat_map(|t| t.regions.iter().filter(|r| r.start >= from - 1e-9 && r.start < to - 1e-9).map(move |r| (t.id, r.clone())))
+        .collect()
+}
+
+/// Execute a model-level command.
+pub fn apply(project: &mut Project, cmd: &Command) -> R {
+    use Command::*;
+    match cmd {
+        GetProject {} => ok(project_summary(project)),
+        GetProjectJson {} => ok(serde_json::to_value(&*project).map_err(|e| e.to_string())?),
+        NewProject { name, tempo, time_signature, key } => {
+            let mut p = Project::new(name.as_deref().unwrap_or("Untitled"));
+            if let Some(t) = tempo {
+                p.tempo.set_initial_bpm(*t);
+            }
+            if let Some(ts) = time_signature {
+                let (a, b) = ts.split_once('/').ok_or("time signature like 4/4")?;
+                p.time_signature = TimeSignature { numerator: a.trim().parse().map_err(|_| "bad numerator")?, denominator: b.trim().parse().map_err(|_| "bad denominator")? };
+            }
+            if let Some(k) = key {
+                p.key = parse_key(k)?;
+            }
+            *project = p;
+            ok(json!({"ok": true}))
+        }
+        SetProjectName { name } => {
+            project.name = name.clone();
+            ok(json!({"ok": true}))
+        }
+        SetProjectNotes { notes } => {
+            project.notes = notes.clone();
+            ok(json!({"ok": true}))
+        }
+        SetTempo { bpm } => {
+            project.tempo.set_initial_bpm(*bpm);
+            ok(json!({"tempo": project.tempo.initial_bpm()}))
+        }
+        AddTempoChange { beat, bpm } => {
+            project.tempo.add_change(*beat, *bpm);
+            ok(json!({"tempo_points": project.tempo.points}))
+        }
+        ClearTempoChanges {} => {
+            project.tempo.clear_changes();
+            ok(json!({"ok": true}))
+        }
+        SetTimeSignature { numerator, denominator } => {
+            if *numerator == 0 || !matches!(denominator, 1 | 2 | 4 | 8 | 16) {
+                return err("invalid time signature");
+            }
+            project.time_signature = TimeSignature { numerator: *numerator, denominator: *denominator };
+            ok(json!({"ok": true}))
+        }
+        SetKey { key } => {
+            project.key = parse_key(key)?;
+            ok(json!({"key": project.key.name()}))
+        }
+        SetCycle { enabled, start, end } => {
+            project.cycle.enabled = *enabled;
+            if let Some(s) = start {
+                project.cycle.start = s.max(0.0);
+            }
+            if let Some(e) = end {
+                project.cycle.end = *e;
+            }
+            if project.cycle.end <= project.cycle.start {
+                project.cycle.end = project.cycle.start + project.time_signature.beats_per_bar();
+            }
+            ok(json!({"cycle": {"enabled": project.cycle.enabled, "start": project.cycle.start, "end": project.cycle.end}}))
+        }
+        SetMetronome { enabled } => {
+            project.metronome = *enabled;
+            ok(json!({"ok": true}))
+        }
+        SetCountIn { bars } => {
+            project.count_in_bars = (*bars).min(4);
+            ok(json!({"count_in_bars": project.count_in_bars}))
+        }
+
+        // tracks
+        AddTrack { kind, name, patch, instrument, preset, index } => {
+            let id = add_track(project, *kind, name.clone(), patch.as_deref(), instrument.as_deref(), preset.as_deref(), *index)?;
+            ok(json!({"track_id": id, "track": track_detail(project, project.track(id).unwrap())}))
+        }
+        RemoveTrack { track_id } => {
+            let idx = project.track_index(*track_id).ok_or("track not found")?;
+            project.tracks.remove(idx);
+            for t in &mut project.tracks {
+                t.channel.sends.retain(|s| s.bus_id != *track_id);
+                if t.channel.output == Output::Bus(*track_id) {
+                    t.channel.output = Output::Master;
+                }
+            }
+            ok(json!({"ok": true}))
+        }
+        DuplicateTrack { track_id } => {
+            let idx = project.track_index(*track_id).ok_or("track not found")?;
+            let mut t = project.tracks[idx].clone();
+            t.id = project.alloc_id();
+            t.name = format!("{} copy", t.name);
+            if let Some(i) = t.instrument.as_mut() {
+                i.id = project.alloc_id();
+            }
+            for p in t.midi_fx.iter_mut().chain(t.channel.inserts.iter_mut()) {
+                p.id = project.alloc_id();
+            }
+            for r in t.regions.iter_mut() {
+                r.id = project.alloc_id();
+            }
+            t.automation.clear();
+            let id = t.id;
+            project.tracks.insert(idx + 1, t);
+            ok(json!({"track_id": id}))
+        }
+        RenameTrack { track_id, name } => {
+            project.track_mut(*track_id).ok_or("track not found")?.name = name.clone();
+            ok(json!({"ok": true}))
+        }
+        SetTrackColor { track_id, color } => {
+            let c = parse_color(color)?;
+            project.track_mut(*track_id).ok_or("track not found")?.color = c;
+            ok(json!({"ok": true}))
+        }
+        MoveTrack { track_id, index } => {
+            let idx = project.track_index(*track_id).ok_or("track not found")?;
+            let t = project.tracks.remove(idx);
+            let i = (*index).min(project.tracks.len());
+            project.tracks.insert(i, t);
+            ok(json!({"ok": true}))
+        }
+        SetVolume { track_id, db } => {
+            let c = project.channel_mut(*track_id).ok_or("track not found")?;
+            c.volume_db = db.clamp(-96.0, 6.0);
+            ok(json!({"volume_db": c.volume_db}))
+        }
+        SetPan { track_id, pan } => {
+            let c = project.channel_mut(*track_id).ok_or("track not found")?;
+            c.pan = pan.clamp(-1.0, 1.0);
+            ok(json!({"pan": c.pan}))
+        }
+        SetMute { track_id, mute } => {
+            project.channel_mut(*track_id).ok_or("track not found")?.mute = *mute;
+            ok(json!({"ok": true}))
+        }
+        SetSolo { track_id, solo } => {
+            project.channel_mut(*track_id).ok_or("track not found")?.solo = *solo;
+            ok(json!({"ok": true}))
+        }
+        SetRecordArm { track_id, armed } => {
+            project.track_mut(*track_id).ok_or("track not found")?.record_armed = *armed;
+            ok(json!({"ok": true}))
+        }
+        SetTrackOutput { track_id, bus_id } => {
+            if let Some(b) = bus_id {
+                let bt = project.track(*b).ok_or("bus not found")?;
+                if bt.kind != TrackKind::Bus {
+                    return err("target is not a bus track");
+                }
+                if *b == *track_id {
+                    return err("cannot route a bus into itself");
+                }
+            }
+            let c = project.channel_mut(*track_id).ok_or("track not found")?;
+            c.output = bus_id.map(Output::Bus).unwrap_or(Output::Master);
+            ok(json!({"ok": true}))
+        }
+        AddSend { track_id, bus_id, level_db, pre_fader } => {
+            let bt = project.track(*bus_id).ok_or("bus not found")?;
+            if bt.kind != TrackKind::Bus {
+                return err("send target must be a bus track (add_track kind=bus)");
+            }
+            if bus_id == track_id {
+                return err("cannot send a bus to itself");
+            }
+            let t = project.track_mut(*track_id).ok_or("track not found")?;
+            t.channel.sends.push(Send { bus_id: *bus_id, level_db: level_db.unwrap_or(-10.0), pre_fader: pre_fader.unwrap_or(false) });
+            ok(json!({"send_index": t.channel.sends.len() - 1}))
+        }
+        SetSendLevel { track_id, send_index, level_db } => {
+            let t = project.track_mut(*track_id).ok_or("track not found")?;
+            t.channel.sends.get_mut(*send_index).ok_or("send not found")?.level_db = level_db.clamp(-96.0, 6.0);
+            ok(json!({"ok": true}))
+        }
+        RemoveSend { track_id, send_index } => {
+            let t = project.track_mut(*track_id).ok_or("track not found")?;
+            if *send_index >= t.channel.sends.len() {
+                return err("send not found");
+            }
+            t.channel.sends.remove(*send_index);
+            ok(json!({"ok": true}))
+        }
+        GetTrack { track_id } => {
+            if *track_id == MASTER_ID {
+                return ok(json!({"id": 0, "name": "Master", "volume_db": project.master.volume_db, "inserts": project.master.inserts.iter().map(plugin_detail).collect::<Vec<_>>()}));
+            }
+            let t = project.track(*track_id).ok_or("track not found")?;
+            ok(track_detail(project, t))
+        }
+        ApplyPatch { track_id, patch } => {
+            apply_patch(project, *track_id, patch)?;
+            ok(track_detail(project, project.track(*track_id).unwrap()))
+        }
+
+        // plug-ins
+        ListPlugins { category } => {
+            let list: Vec<Value> = plugins::registry()
+                .iter()
+                .filter(|p| match category.as_deref() {
+                    Some("instrument") => p.category == PluginCategory::Instrument,
+                    Some("effect") => p.category == PluginCategory::Effect,
+                    Some("midi_effect") => p.category == PluginCategory::MidiEffect,
+                    _ => true,
+                })
+                .map(|p| serde_json::to_value(p).unwrap())
+                .collect();
+            ok(json!(list))
+        }
+        ListPresets { kind } => {
+            let list: Vec<Value> = plugins::PRESETS
+                .iter()
+                .filter(|p| kind.as_deref().map(|k| k == p.kind).unwrap_or(true))
+                .map(|p| json!({"name": p.name, "kind": p.kind}))
+                .collect();
+            ok(json!(list))
+        }
+        ListPatches {} => {
+            let list: Vec<Value> = plugins::PATCHES
+                .iter()
+                .map(|p| json!({"name": p.name, "category": p.category, "instrument": p.instrument.map(|i| i.0), "effects": p.effects.iter().map(|e| e.0).collect::<Vec<_>>()}))
+                .collect();
+            ok(json!(list))
+        }
+        SetInstrument { track_id, kind, preset } => {
+            if plugins::find(kind).map(|p| p.category) != Some(PluginCategory::Instrument) {
+                return err(format!("'{kind}' is not an instrument"));
+            }
+            let inst = new_plugin(project, kind, preset.as_deref())?;
+            let id = inst.id;
+            let t = project.track_mut(*track_id).ok_or("track not found")?;
+            if t.kind != TrackKind::Instrument {
+                return err("not an instrument track");
+            }
+            t.instrument = Some(inst);
+            ok(json!({"plugin_id": id}))
+        }
+        AddEffect { track_id, kind, preset, index } => {
+            if plugins::find(kind).map(|p| p.category) != Some(PluginCategory::Effect) {
+                return err(format!("'{kind}' is not an audio effect"));
+            }
+            let fx = new_plugin(project, kind, preset.as_deref())?;
+            let id = fx.id;
+            let c = project.channel_mut(*track_id).ok_or("track not found")?;
+            let i = index.unwrap_or(c.inserts.len()).min(c.inserts.len());
+            c.inserts.insert(i, fx);
+            ok(json!({"plugin_id": id, "slot": i}))
+        }
+        AddMidiEffect { track_id, kind, preset } => {
+            if plugins::find(kind).map(|p| p.category) != Some(PluginCategory::MidiEffect) {
+                return err(format!("'{kind}' is not a MIDI effect"));
+            }
+            let fx = new_plugin(project, kind, preset.as_deref())?;
+            let id = fx.id;
+            let t = project.track_mut(*track_id).ok_or("track not found")?;
+            t.midi_fx.push(fx);
+            ok(json!({"plugin_id": id}))
+        }
+        RemovePlugin { plugin_id } => {
+            let pid = *plugin_id;
+            if project.master.inserts.iter().any(|p| p.id == pid) {
+                project.master.inserts.retain(|p| p.id != pid);
+                return ok(json!({"ok": true}));
+            }
+            for t in &mut project.tracks {
+                if t.instrument.as_ref().map(|i| i.id == pid).unwrap_or(false) {
+                    t.instrument = None;
+                    return ok(json!({"ok": true}));
+                }
+                let before = t.midi_fx.len() + t.channel.inserts.len();
+                t.midi_fx.retain(|p| p.id != pid);
+                t.channel.inserts.retain(|p| p.id != pid);
+                if t.midi_fx.len() + t.channel.inserts.len() != before {
+                    return ok(json!({"ok": true}));
+                }
+            }
+            err("plug-in not found")
+        }
+        MovePlugin { plugin_id, index } => {
+            let owner = project.plugin_owner(*plugin_id).ok_or("plug-in not found")?;
+            let c = project.channel_mut(owner).unwrap();
+            let pos = c.inserts.iter().position(|p| p.id == *plugin_id).ok_or("only insert effects can be moved")?;
+            let p = c.inserts.remove(pos);
+            let i = (*index).min(c.inserts.len());
+            c.inserts.insert(i, p);
+            ok(json!({"ok": true}))
+        }
+        SetPluginParam { plugin_id, param, value } => {
+            let p = project.find_plugin_mut(*plugin_id).ok_or("plug-in not found")?;
+            let v = set_param(p, param, *value)?;
+            ok(json!({"param": param, "value": v}))
+        }
+        SetPluginParams { plugin_id, params } => {
+            let p = project.find_plugin_mut(*plugin_id).ok_or("plug-in not found")?;
+            let mut out = serde_json::Map::new();
+            for (k, v) in params {
+                out.insert(k.clone(), json!(set_param(p, k, *v)?));
+            }
+            ok(Value::Object(out))
+        }
+        LoadPreset { plugin_id, preset } => {
+            let p = project.find_plugin_mut(*plugin_id).ok_or("plug-in not found")?;
+            apply_preset(p, preset)?;
+            ok(json!({"ok": true}))
+        }
+        SetPluginBypass { plugin_id, bypass } => {
+            project.find_plugin_mut(*plugin_id).ok_or("plug-in not found")?.bypass = *bypass;
+            ok(json!({"ok": true}))
+        }
+        GetPlugin { plugin_id } => {
+            let p = project.find_plugin(*plugin_id).ok_or("plug-in not found")?;
+            ok(plugin_detail(p))
+        }
+
+        // regions
+        CreateMidiRegion { track_id, start, length, name, notes } => {
+            let id = project.alloc_id();
+            let t = project.track_mut(*track_id).ok_or("track not found")?;
+            if t.kind != TrackKind::Instrument {
+                return err("MIDI regions need an instrument track");
+            }
+            let mut notes = notes.clone().unwrap_or_default();
+            sanitize_notes(&mut notes);
+            let name = name.clone().unwrap_or_else(|| t.name.clone());
+            t.regions.push(Region { take: None, id, name, start: start.max(0.0), length: length.max(0.0625), loop_count: 1, muted: false, color: None, content: RegionContent::Midi(MidiContent { notes, ..Default::default() }) });
+            ok(json!({"region_id": id}))
+        }
+        CreatePatternRegion { track_id, start, steps, step_length, rows, name } => {
+            let id = project.alloc_id();
+            let steps = steps.unwrap_or(16).clamp(1, 128);
+            let step_length = step_length.unwrap_or(0.25).max(0.03125);
+            let t = project.track_mut(*track_id).ok_or("track not found")?;
+            if t.kind != TrackKind::Instrument {
+                return err("pattern regions need an instrument track");
+            }
+            let mut rows = rows.clone().unwrap_or_else(|| default_drum_rows(steps));
+            for r in &mut rows {
+                r.steps.resize(steps as usize, 0);
+            }
+            t.regions.push(Region { take: None,
+                id,
+                name: name.clone().unwrap_or_else(|| "Pattern".into()),
+                start: start.max(0.0),
+                length: steps as f64 * step_length,
+                loop_count: 1,
+                muted: false,
+                color: None,
+                content: RegionContent::Pattern(PatternContent { steps, step_length, rows, swing: 0.0 }),
+            });
+            ok(json!({"region_id": id}))
+        }
+        DeleteRegion { region_id } => {
+            for t in &mut project.tracks {
+                if let Some(i) = t.regions.iter().position(|r| r.id == *region_id) {
+                    t.regions.remove(i);
+                    return ok(json!({"ok": true}));
+                }
+            }
+            err("region not found")
+        }
+        MoveRegion { region_id, start, track_id } => {
+            let src_track = project.region_track_id(*region_id).ok_or("region not found")?;
+            if let Some(dst) = track_id {
+                if *dst != src_track {
+                    let dst_kind = project.track(*dst).ok_or("destination track not found")?.kind;
+                    let st = project.track_mut(src_track).unwrap();
+                    let i = st.regions.iter().position(|r| r.id == *region_id).unwrap();
+                    let is_audio = matches!(st.regions[i].content, RegionContent::Audio(_));
+                    if (is_audio && dst_kind != TrackKind::Audio) || (!is_audio && dst_kind != TrackKind::Instrument) {
+                        return err("region type does not match destination track type");
+                    }
+                    let r = st.regions.remove(i);
+                    project.track_mut(*dst).unwrap().regions.push(r);
+                }
+            }
+            if let Some(s) = start {
+                region_mut(project, *region_id)?.start = s.max(0.0);
+            }
+            ok(json!({"ok": true}))
+        }
+        ResizeRegion { region_id, length } => {
+            let r = region_mut(project, *region_id)?;
+            r.length = length.max(0.0625);
+            if let RegionContent::Pattern(p) = &mut r.content {
+                let steps = (r.length / p.step_length).round().max(1.0) as u32;
+                p.steps = steps;
+                for row in &mut p.rows {
+                    row.steps.resize(steps as usize, 0);
+                }
+                r.length = steps as f64 * p.step_length;
+            }
+            ok(json!({"length": r.length}))
+        }
+        SplitRegion { region_id, beat } => {
+            let id = split_region(project, *region_id, *beat)?;
+            ok(json!({"new_region_id": id}))
+        }
+        JoinRegions { region_ids } => {
+            if region_ids.len() < 2 {
+                return err("need at least two regions");
+            }
+            let tid = project.region_track_id(region_ids[0]).ok_or("region not found")?;
+            let t = project.track_mut(tid).unwrap();
+            let mut regs: Vec<Region> = vec![];
+            for id in region_ids {
+                let i = t.regions.iter().position(|r| r.id == *id).ok_or("all regions must be on the same track")?;
+                if !matches!(t.regions[i].content, RegionContent::Midi(_)) {
+                    return err("only MIDI regions can be joined");
+                }
+                regs.push(t.regions[i].clone());
+            }
+            regs.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
+            let start = regs[0].start;
+            let end = regs.iter().map(|r| r.end()).fold(0.0, f64::max);
+            let mut notes = vec![];
+            for r in &regs {
+                if let RegionContent::Midi(m) = &r.content {
+                    for k in 0..r.loop_count.max(1) {
+                        for n in m.notes.iter().filter(|n| n.start < r.length) {
+                            let mut c = *n;
+                            c.start += r.start - start + k as f64 * r.length;
+                            c.pitch = (c.pitch as i32 + m.transpose).clamp(0, 127) as u8;
+                            notes.push(c);
+                        }
+                    }
+                }
+            }
+            t.regions.retain(|r| !region_ids.contains(&r.id));
+            let mut first = regs[0].clone();
+            first.start = start;
+            first.length = end - start;
+            first.loop_count = 1;
+            sanitize_notes(&mut notes);
+            first.content = RegionContent::Midi(MidiContent { notes, ..Default::default() });
+            let id = first.id;
+            t.regions.push(first);
+            ok(json!({"region_id": id}))
+        }
+        DuplicateRegion { region_id, start, count } => {
+            let (tid, r) = project.find_region(*region_id).map(|(t, r)| (t.id, r.clone())).ok_or("region not found")?;
+            let mut ids = vec![];
+            let mut pos = start.unwrap_or(r.end());
+            for _ in 0..count.unwrap_or(1).clamp(1, 256) {
+                let mut c = r.clone();
+                c.id = project.alloc_id();
+                c.start = pos;
+                pos += c.end() - c.start;
+                ids.push(c.id);
+                project.track_mut(tid).unwrap().regions.push(c);
+            }
+            ok(json!({"region_ids": ids}))
+        }
+        SetRegionProperties { region_id, name, muted, loop_count, transpose, velocity_offset, gain_db, fade_in, fade_out, reverse, color } => {
+            let col = match color {
+                Some(c) => Some(parse_color(c)?),
+                None => None,
+            };
+            let r = region_mut(project, *region_id)?;
+            if let Some(v) = name {
+                r.name = v.clone();
+            }
+            if let Some(v) = muted {
+                r.muted = *v;
+            }
+            if let Some(v) = loop_count {
+                r.loop_count = (*v).clamp(1, 1024);
+            }
+            if col.is_some() {
+                r.color = col;
+            }
+            match &mut r.content {
+                RegionContent::Midi(m) => {
+                    if let Some(v) = transpose {
+                        m.transpose = (*v).clamp(-48, 48);
+                    }
+                    if let Some(v) = velocity_offset {
+                        m.velocity_offset = (*v).clamp(-127, 127);
+                    }
+                }
+                RegionContent::Audio(a) => {
+                    if let Some(v) = gain_db {
+                        a.gain_db = v.clamp(-60.0, 24.0);
+                    }
+                    if let Some(v) = fade_in {
+                        a.fade_in = v.max(0.0);
+                    }
+                    if let Some(v) = fade_out {
+                        a.fade_out = v.max(0.0);
+                    }
+                    if let Some(v) = reverse {
+                        a.reverse = *v;
+                    }
+                }
+                _ => {}
+            }
+            ok(json!({"ok": true}))
+        }
+        GetRegion { region_id } => {
+            let (t, r) = project.find_region(*region_id).ok_or("region not found")?;
+            let mut v = region_summary(r, project);
+            v["track_id"] = json!(t.id);
+            match &r.content {
+                RegionContent::Midi(m) => {
+                    v["notes"] = json!(m.notes.iter().enumerate().map(|(i, n)| json!({"index": i, "pitch": n.pitch, "name": theory::note_name(n.pitch), "velocity": n.velocity, "start": n.start, "length": n.length})).collect::<Vec<_>>());
+                    v["cc"] = json!(m.cc);
+                    v["velocity_offset"] = json!(m.velocity_offset);
+                }
+                RegionContent::Pattern(p) => {
+                    v["step_length"] = json!(p.step_length);
+                    v["swing"] = json!(p.swing);
+                    v["rows"] = json!(p.rows.iter().enumerate().map(|(i, r)| json!({
+                        "index": i, "name": r.name, "pitch": r.pitch, "muted": r.muted,
+                        "pattern": r.steps.iter().map(|s| match s { 0 => '.', 1..=60 => 'g', 61..=100 => 'o', _ => 'x' }).collect::<String>()
+                    })).collect::<Vec<_>>());
+                }
+                RegionContent::Audio(a) => {
+                    v["audio"] = json!({"file_id": a.file_id, "offset_sec": a.offset_sec, "gain_db": a.gain_db, "fade_in": a.fade_in, "fade_out": a.fade_out, "reverse": a.reverse});
+                }
+            }
+            ok(v)
+        }
+
+        // notes
+        AddNotes { region_id, notes } => {
+            let m = midi_mut(project, *region_id)?;
+            m.notes.extend(notes.iter().copied());
+            sanitize_notes(&mut m.notes);
+            ok(json!({"note_count": m.notes.len()}))
+        }
+        ReplaceNotes { region_id, notes } => {
+            let m = midi_mut(project, *region_id)?;
+            m.notes = notes.clone();
+            sanitize_notes(&mut m.notes);
+            ok(json!({"note_count": m.notes.len()}))
+        }
+        RemoveNotes { region_id, indices, pitch, from_beat, to_beat } => {
+            let m = midi_mut(project, *region_id)?;
+            let before = m.notes.len();
+            let mut i = 0;
+            m.notes.retain(|n| {
+                let idx = i;
+                i += 1;
+                let mut matched = true;
+                if let Some(ix) = indices {
+                    matched &= ix.contains(&idx);
+                }
+                if let Some(p) = pitch {
+                    matched &= n.pitch == *p;
+                }
+                if let Some(f) = from_beat {
+                    matched &= n.start >= *f;
+                }
+                if let Some(t) = to_beat {
+                    matched &= n.start < *t;
+                }
+                !matched
+            });
+            ok(json!({"removed": before - m.notes.len(), "note_count": m.notes.len()}))
+        }
+        TransposeNotes { region_id, semitones, indices } => {
+            let m = midi_mut(project, *region_id)?;
+            for (i, n) in m.notes.iter_mut().enumerate() {
+                if indices.as_ref().map(|ix| ix.contains(&i)).unwrap_or(true) {
+                    n.pitch = (n.pitch as i32 + semitones).clamp(0, 127) as u8;
+                }
+            }
+            ok(json!({"ok": true}))
+        }
+        QuantizeNotes { region_id, grid, strength, swing, quantize_ends } => {
+            let m = midi_mut(project, *region_id)?;
+            generate::quantize(&mut m.notes, *grid, strength.unwrap_or(1.0).clamp(0.0, 1.0), swing.unwrap_or(0.0), quantize_ends.unwrap_or(false));
+            sanitize_notes(&mut m.notes);
+            ok(json!({"ok": true}))
+        }
+        HumanizeNotes { region_id, timing, velocity, seed } => {
+            let m = midi_mut(project, *region_id)?;
+            generate::humanize(&mut m.notes, timing.unwrap_or(0.01), velocity.unwrap_or(8), seed_or_random(*seed));
+            sanitize_notes(&mut m.notes);
+            ok(json!({"ok": true}))
+        }
+        SetNoteVelocities { region_id, velocity, scale, indices } => {
+            let m = midi_mut(project, *region_id)?;
+            for (i, n) in m.notes.iter_mut().enumerate() {
+                if indices.as_ref().map(|ix| ix.contains(&i)).unwrap_or(true) {
+                    if let Some(v) = velocity {
+                        n.velocity = (*v).clamp(1, 127);
+                    }
+                    if let Some(s) = scale {
+                        n.velocity = ((n.velocity as f32) * s).round().clamp(1.0, 127.0) as u8;
+                    }
+                }
+            }
+            ok(json!({"ok": true}))
+        }
+        SnapNotesToKey { region_id } => {
+            let key = project.key;
+            let m = midi_mut(project, *region_id)?;
+            let mut changed = 0;
+            for n in &mut m.notes {
+                let s = key.snap(n.pitch);
+                if s != n.pitch {
+                    changed += 1;
+                    n.pitch = s;
+                }
+            }
+            ok(json!({"changed": changed}))
+        }
+        InsertChord { region_id, symbol, start, length, octave, inversion, velocity, with_bass } => {
+            let chord = parse_chord_or_roman(symbol, project.key)?;
+            let center = ((octave.unwrap_or(4) + 1) * 12 + 4).clamp(12, 115) as u8;
+            let pitches = chord.voicing(center, inversion.unwrap_or(0), with_bass.unwrap_or(false));
+            let m = midi_mut(project, *region_id)?;
+            for p in &pitches {
+                m.notes.push(Note { pitch: *p, velocity: velocity.unwrap_or(90), start: *start, length: *length });
+            }
+            sanitize_notes(&mut m.notes);
+            ok(json!({"pitches": pitches}))
+        }
+        AddCc { region_id, events } => {
+            let m = midi_mut(project, *region_id)?;
+            m.cc.extend(events.iter().copied());
+            m.cc.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
+            ok(json!({"cc_count": m.cc.len()}))
+        }
+
+        // pattern
+        SetPatternStep { region_id, row, step, velocity } => {
+            let p = pattern_mut(project, *region_id)?;
+            let r = p.rows.get_mut(*row).ok_or("row not found")?;
+            *r.steps.get_mut(*step).ok_or("step out of range")? = (*velocity).min(127);
+            ok(json!({"ok": true}))
+        }
+        SetPatternRow { region_id, row, pattern } => {
+            let p = pattern_mut(project, *region_id)?;
+            let steps = p.steps as usize;
+            let r = p.rows.get_mut(*row).ok_or("row not found")?;
+            r.steps = parse_step_string(pattern, steps);
+            ok(json!({"ok": true}))
+        }
+        AddPatternRow { region_id, name, pitch } => {
+            let p = pattern_mut(project, *region_id)?;
+            p.rows.push(PatternRow { name: name.clone(), pitch: (*pitch).min(127), steps: vec![0; p.steps as usize], muted: false });
+            ok(json!({"row": p.rows.len() - 1}))
+        }
+        SetPatternSwing { region_id, swing } => {
+            pattern_mut(project, *region_id)?.swing = swing.clamp(0.0, 1.0);
+            ok(json!({"ok": true}))
+        }
+        ConvertPatternToMidi { region_id } => {
+            let r = region_mut(project, *region_id)?;
+            let notes = match &r.content {
+                RegionContent::Pattern(p) => pattern_to_notes(p),
+                _ => return err("not a pattern region"),
+            };
+            r.content = RegionContent::Midi(MidiContent { notes, ..Default::default() });
+            ok(json!({"ok": true}))
+        }
+
+        // generators
+        GenerateDrums { track_id, start, bars, style, intensity, fill, seed } => {
+            let bpb = project.time_signature.beats_per_bar();
+            let notes = generate::drums(*style, (*bars).clamp(1, 512), bpb, intensity.unwrap_or(0.5).clamp(0.0, 1.0), fill.unwrap_or(true), seed_or_random(*seed));
+            let id = put_generated_region(project, *track_id, *start, (*bars).max(1), &format!("Drums ({style:?})"), notes)?;
+            ok(json!({"region_id": id}))
+        }
+        GenerateBass { track_id, start, bars, style, chords, beats_per_chord, octave, seed } => {
+            let tc = resolve_chords(project, *start, *bars, chords, *beats_per_chord)?;
+            let notes = generate::bass(&tc, *style, octave.unwrap_or(1), seed_or_random(*seed));
+            let id = put_generated_region(project, *track_id, *start, (*bars).max(1), &format!("Bass ({style:?})"), notes)?;
+            ok(json!({"region_id": id}))
+        }
+        GenerateChords { track_id, start, bars, style, chords, beats_per_chord, center_pitch, seed } => {
+            let tc = resolve_chords(project, *start, *bars, chords, *beats_per_chord)?;
+            let notes = generate::comp(&tc, *style, center_pitch.unwrap_or(62), seed_or_random(*seed));
+            let id = put_generated_region(project, *track_id, *start, (*bars).max(1), &format!("Chords ({style:?})"), notes)?;
+            ok(json!({"region_id": id}))
+        }
+        GenerateArpeggio { track_id, start, bars, mode, rate, octaves, chords, beats_per_chord, center_pitch, seed } => {
+            let tc = resolve_chords(project, *start, *bars, chords, *beats_per_chord)?;
+            let notes = generate::arpeggio(&tc, *mode, rate.unwrap_or(0.25), octaves.unwrap_or(2), center_pitch.unwrap_or(60), 0.8, seed_or_random(*seed));
+            let id = put_generated_region(project, *track_id, *start, (*bars).max(1), "Arpeggio", notes)?;
+            ok(json!({"region_id": id}))
+        }
+        GenerateMelody { track_id, start, bars, density, octave, chords, beats_per_chord, seed } => {
+            let tc = resolve_chords(project, *start, *bars, chords, *beats_per_chord)?;
+            let notes = generate::melody(&tc, project.key, density.unwrap_or(0.5), octave.unwrap_or(4), seed_or_random(*seed));
+            let id = put_generated_region(project, *track_id, *start, (*bars).max(1), "Melody", notes)?;
+            ok(json!({"region_id": id}))
+        }
+
+        // chord track
+        SetChordProgression { start, chords, beats_per_chord, replace } => {
+            let per = beats_per_chord.unwrap_or(project.time_signature.beats_per_bar());
+            let end = start + per * chords.len() as f64;
+            if replace.unwrap_or(true) {
+                project.chords.retain(|c| c.beat + c.length <= *start + 1e-9 || c.beat >= end - 1e-9);
+            }
+            let mut ids = vec![];
+            for (i, s) in chords.iter().enumerate() {
+                let ch = parse_chord_or_roman(s, project.key)?;
+                let symbol = if Chord::parse(s).is_some() { s.clone() } else { theory::roman_to_symbol(s, project.key).unwrap_or(s.clone()) };
+                let _ = ch;
+                let id = project.alloc_id();
+                project.chords.push(ChordEvent { id, beat: start + i as f64 * per, length: per, symbol });
+                ids.push(id);
+            }
+            project.chords.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
+            ok(json!({"chord_ids": ids, "chords": project.chords}))
+        }
+        AddChord { beat, length, symbol } => {
+            parse_chord_or_roman(symbol, project.key)?;
+            let id = project.alloc_id();
+            project.chords.push(ChordEvent { id, beat: *beat, length: *length, symbol: symbol.clone() });
+            project.chords.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
+            ok(json!({"chord_id": id}))
+        }
+        RemoveChord { chord_id } => {
+            project.chords.retain(|c| c.id != *chord_id);
+            ok(json!({"ok": true}))
+        }
+        ClearChords {} => {
+            project.chords.clear();
+            ok(json!({"ok": true}))
+        }
+
+        // automation
+        SetAutomation { track_id, target, points } => {
+            validate_target(project, *track_id, target)?;
+            let lanes = automation_lanes_mut(project, *track_id)?;
+            let mut pts = points.clone();
+            pts.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
+            lanes.retain(|l| l.target != *target);
+            lanes.push(AutomationLane { target: target.clone(), points: pts, enabled: true });
+            ok(json!({"ok": true}))
+        }
+        AddAutomationPoint { track_id, target, beat, value } => {
+            validate_target(project, *track_id, target)?;
+            let lanes = automation_lanes_mut(project, *track_id)?;
+            let lane = match lanes.iter_mut().position(|l| l.target == *target) {
+                Some(i) => &mut lanes[i],
+                None => {
+                    lanes.push(AutomationLane { target: target.clone(), points: vec![], enabled: true });
+                    lanes.last_mut().unwrap()
+                }
+            };
+            lane.points.retain(|p| (p.beat - beat).abs() > 1e-6);
+            lane.points.push(AutomationPoint { beat: *beat, value: *value });
+            lane.points.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
+            ok(json!({"points": lane.points.len()}))
+        }
+        ClearAutomation { track_id, target } => {
+            let lanes = automation_lanes_mut(project, *track_id)?;
+            match target {
+                Some(t) => lanes.retain(|l| l.target != *t),
+                None => lanes.clear(),
+            }
+            ok(json!({"ok": true}))
+        }
+
+        // markers & sections
+        AddMarker { beat, name, length } => {
+            let id = project.alloc_id();
+            project.markers.push(Marker { id, beat: beat.max(0.0), name: name.clone(), length: *length });
+            project.markers.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
+            ok(json!({"marker_id": id}))
+        }
+        RemoveMarker { marker_id } => {
+            project.markers.retain(|m| m.id != *marker_id);
+            ok(json!({"ok": true}))
+        }
+        UpdateMarker { marker_id, name, beat, length } => {
+            let m = project.markers.iter_mut().find(|m| m.id == *marker_id).ok_or("marker not found")?;
+            if let Some(n) = name {
+                m.name = n.clone();
+            }
+            if let Some(b) = beat {
+                m.beat = b.max(0.0);
+            }
+            if let Some(l) = length {
+                m.length = if *l > 0.0 { Some(*l) } else { None };
+            }
+            project.markers.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
+            ok(json!({"ok": true}))
+        }
+        CopySection { from_beat, length, to_beat, insert } => {
+            split_all_at(project, *from_beat);
+            split_all_at(project, from_beat + length);
+            let regs = all_regions_in(project, *from_beat, from_beat + length);
+            let chords: Vec<ChordEvent> = project.chords.iter().filter(|c| c.beat >= *from_beat && c.beat < from_beat + length).cloned().collect();
+            if insert.unwrap_or(false) {
+                split_all_at(project, *to_beat);
+                shift_after(project, *to_beat, *length);
+            }
+            let delta = to_beat - from_beat;
+            let mut n = 0;
+            for (tid, mut r) in regs {
+                r.id = project.alloc_id();
+                r.start += delta;
+                project.track_mut(tid).unwrap().regions.push(r);
+                n += 1;
+            }
+            for mut c in chords {
+                c.id = project.alloc_id();
+                c.beat += delta;
+                project.chords.push(c);
+            }
+            project.chords.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
+            ok(json!({"copied_regions": n}))
+        }
+        DeleteSection { from_beat, length, ripple } => {
+            let end = from_beat + length;
+            split_all_at(project, *from_beat);
+            split_all_at(project, end);
+            for t in &mut project.tracks {
+                t.regions.retain(|r| !(r.start >= *from_beat - 1e-9 && r.start < end - 1e-9));
+            }
+            project.chords.retain(|c| !(c.beat >= *from_beat && c.beat < end));
+            project.markers.retain(|m| !(m.beat >= *from_beat && m.beat < end));
+            if ripple.unwrap_or(true) {
+                shift_after(project, end, -length);
+            }
+            ok(json!({"ok": true}))
+        }
+        InsertTime { at_beat, length } => {
+            split_all_at(project, *at_beat);
+            shift_after(project, *at_beat, *length);
+            ok(json!({"ok": true}))
+        }
+
+        _ => crate::ops2::apply(project, cmd),
+    }
+}
+
+fn automation_lanes_mut(project: &mut Project, track_id: Id) -> Result<&mut Vec<AutomationLane>, String> {
+    if track_id == MASTER_ID {
+        return err("master automation is not supported; automate a track or a bus");
+    }
+    Ok(&mut project.track_mut(track_id).ok_or("track not found")?.automation)
+}
+
+fn validate_target(project: &Project, track_id: Id, target: &str) -> Result<(), String> {
+    if matches!(target, "volume" | "pan" | "surround:azimuth" | "surround:elevation" | "surround:spread") {
+        return Ok(());
+    }
+    if let Some(rest) = target.strip_prefix("send:") {
+        let idx: usize = rest.parse().map_err(|_| "send target must be send:<index>")?;
+        let t = project.track(track_id).ok_or("track not found")?;
+        return if idx < t.channel.sends.len() { Ok(()) } else { err("send index out of range") };
+    }
+    if let Some(rest) = target.strip_prefix("plugin:") {
+        let (pid, param) = rest.split_once(':').ok_or("plugin target must be plugin:<id>:<param>")?;
+        let pid: Id = pid.parse().map_err(|_| "invalid plugin id")?;
+        let p = project.find_plugin(pid).ok_or("plug-in not found")?;
+        let info = plugins::find(&p.kind).ok_or("unknown plug-in")?;
+        return if info.params.iter().any(|x| x.id == param) { Ok(()) } else { err(format!("{} has no parameter {param}", p.kind)) };
+    }
+    err("target must be volume, pan, surround:azimuth, surround:elevation, surround:spread, send:<i> or plugin:<id>:<param>")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::generate::DrumStyle;
+
+    fn run(p: &mut Project, c: Command) -> Value {
+        match apply(p, &c) {
+            Ok(Outcome::Done(v)) => v,
+            Ok(Outcome::NotHandled) => panic!("not handled"),
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    #[test]
+    fn build_song() {
+        let mut p = Project::new("t");
+        let d = run(&mut p, Command::AddTrack { kind: TrackKind::Instrument, name: None, patch: Some("Pop Drum Kit".into()), instrument: None, preset: None, index: None });
+        let did = d["track_id"].as_u64().unwrap();
+        run(&mut p, Command::SetChordProgression { start: 0.0, chords: vec!["I".into(), "vi".into(), "IV".into(), "V".into()], beats_per_chord: None, replace: None });
+        assert_eq!(p.chords[1].symbol, "Am");
+        let r = run(&mut p, Command::GenerateDrums { track_id: did, start: 0.0, bars: 4, style: DrumStyle::Pop, intensity: None, fill: None, seed: Some(1) });
+        let rid = r["region_id"].as_u64().unwrap();
+        let b = run(&mut p, Command::AddTrack { kind: TrackKind::Instrument, name: None, patch: Some("Deep Sub Bass".into()), instrument: None, preset: None, index: None });
+        let bid = b["track_id"].as_u64().unwrap();
+        run(&mut p, Command::GenerateBass { track_id: bid, start: 0.0, bars: 4, style: crate::generate::BassStyle::RootFifth, chords: None, beats_per_chord: None, octave: None, seed: Some(2) });
+        let s = run(&mut p, Command::SplitRegion { region_id: rid, beat: 8.0 });
+        assert!(s["new_region_id"].as_u64().is_some());
+        run(&mut p, Command::CopySection { from_beat: 0.0, length: 16.0, to_beat: 16.0, insert: Some(false) });
+        assert!(p.content_end() >= 32.0);
+        let summary = project_summary(&p);
+        assert_eq!(summary["tracks"].as_array().unwrap().len(), 2);
+        let bus = run(&mut p, Command::AddTrack { kind: TrackKind::Bus, name: Some("Verb".into()), patch: None, instrument: None, preset: None, index: None });
+        let bus_id = bus["track_id"].as_u64().unwrap();
+        run(&mut p, Command::AddSend { track_id: bid, bus_id, level_db: None, pre_fader: None });
+        run(&mut p, Command::AddAutomationPoint { track_id: bid, target: "send:0".into(), beat: 0.0, value: -20.0 });
+        assert!(apply(&mut p, &Command::AddAutomationPoint { track_id: bid, target: "send:5".into(), beat: 0.0, value: 0.0 }).is_err());
+    }
+}

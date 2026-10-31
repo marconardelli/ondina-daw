@@ -1,0 +1,14 @@
+# build
+/target/
+
+# Large runtime binaries and models (ffmpeg, local LLM, ONNX models, VST3 test plug-ins, loopMIDI).
+# They stay on this PC only; tests that need them skip themselves when they are missing.
+/tools/
+
+# Logic Pro reference manuals (108 MB): read them from the main checkout, docs/*.pdf
+/docs/*.pdf
+
+# OS / editor
+Thumbs.db
+.DS_Store
+*.swp
