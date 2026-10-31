@@ -509,11 +509,16 @@ fn region_summary(r: &Region, project: &Project) -> Value {
         RegionContent::Audio(a) => ("audio", json!({"file": project.audio_file(a.file_id).map(|f| f.name.clone()), "gain_db": a.gain_db})),
         RegionContent::Pattern(p) => ("pattern", json!({"steps": p.steps, "rows": p.rows.len()})),
     };
-    json!({
+    let mut v = json!({
         "id": r.id, "name": r.name, "type": kind, "start": r.start, "length": r.length,
         "loop_count": r.loop_count, "end": r.end(), "muted": r.muted,
         "position": project.bar_beat_string(r.start), "info": extra
-    })
+    });
+    // only when set: the local model truncates long results
+    if let Some(c) = r.color {
+        v["color"] = json!(format!("#{:02X}{:02X}{:02X}", c[0], c[1], c[2]));
+    }
+    v
 }
 
 fn plugin_brief(p: &PluginInstance) -> Value {
@@ -1146,9 +1151,11 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             ok(json!({"region_ids": ids}))
         }
         SetRegionProperties { region_id, name, muted, loop_count, transpose, velocity_offset, gain_db, fade_in, fade_out, reverse, color } => {
-            let col = match color {
-                Some(c) => Some(parse_color(c)?),
+            // Outer None leaves the color alone; Some(None) removes it so the region follows its track.
+            let col = match color.as_deref().map(str::trim) {
                 None => None,
+                Some(c) if c.is_empty() || c.eq_ignore_ascii_case("none") => Some(None),
+                Some(c) => Some(Some(parse_color(c)?)),
             };
             let r = region_mut(project, *region_id)?;
             if let Some(v) = name {
@@ -1160,8 +1167,8 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             if let Some(v) = loop_count {
                 r.loop_count = (*v).clamp(1, 1024);
             }
-            if col.is_some() {
-                r.color = col;
+            if let Some(c) = col {
+                r.color = c;
             }
             match &mut r.content {
                 RegionContent::Midi(m) => {
@@ -1717,6 +1724,43 @@ mod tests {
             Ok(Outcome::NotHandled) => panic!("not handled"),
             Err(e) => panic!("{e}"),
         }
+    }
+
+    fn region_color_props(region_id: Id, name: Option<&str>, color: Option<&str>) -> Command {
+        Command::SetRegionProperties { region_id, name: name.map(String::from), muted: None, loop_count: None, transpose: None, velocity_offset: None, gain_db: None, fade_in: None, fade_out: None, reverse: None, color: color.map(String::from) }
+    }
+
+    #[test]
+    fn region_color_clears_with_an_empty_string_or_none() {
+        let mut p = Project::new("t");
+        let tid = add_track_named(&mut p, TrackKind::Instrument, "Keys");
+        let rid = run(&mut p, Command::CreateMidiRegion { track_id: tid, start: 0.0, length: 4.0, name: None, notes: None })["region_id"].as_u64().unwrap();
+        let state = |p: &Project| {
+            let r = p.find_region(rid).unwrap().1;
+            (r.name.clone(), r.color)
+        };
+        let shown = |p: &mut Project| run(p, Command::GetRegion { region_id: rid })["color"].clone();
+
+        run(&mut p, region_color_props(rid, None, Some("#FF8000")));
+        assert_eq!(state(&p).1, Some([255, 128, 0]));
+        assert_eq!(shown(&mut p), json!("#FF8000"));
+
+        run(&mut p, region_color_props(rid, None, Some("")));
+        assert_eq!(state(&p).1, None);
+        assert!(shown(&mut p).is_null());
+
+        run(&mut p, region_color_props(rid, None, Some("#102030")));
+        run(&mut p, region_color_props(rid, None, Some(" None ")));
+        assert_eq!(state(&p).1, None);
+
+        // A name alone leaves the color as it is.
+        run(&mut p, region_color_props(rid, None, Some("#102030")));
+        run(&mut p, region_color_props(rid, Some("Fill"), None));
+        assert_eq!(state(&p), ("Fill".to_string(), Some([16, 32, 48])));
+
+        // A bad color changes nothing, not even the name sent with it.
+        assert!(apply(&mut p, &region_color_props(rid, Some("X"), Some("#12"))).is_err());
+        assert_eq!(state(&p), ("Fill".to_string(), Some([16, 32, 48])));
     }
 
     #[test]
