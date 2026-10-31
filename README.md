@@ -121,7 +121,7 @@ extension: Ondina opens both.
 - **Piano roll**: click on empty space to add a note (length from the toolbar); click a note to select it,
   Ctrl/Shift+click to add to the selection; drag on empty space to box-select (stacked notes included); drag a note
   to move it, drag its right edge to resize; Delete/Backspace removes the selection; double-click or right-click
-  deletes a single note; drag in the velocity lane to set velocities; the selection stays on the same notes after Undo/Redo and assistant or MCP edits.
+  deletes a single note; drag in the velocity lane to set velocities; the selection stays on the same notes after Undo/Redo and assistant or MCP edits; the view opens on the region's notes (double-click the region to frame them again), the wheel scrolls pitch at the same speed both ways, Shift+wheel scrolls time, Ctrl+wheel zooms time around the pointer, Ctrl+Shift+wheel zooms pitch, and the playhead follows the repeats of a looped region.
 - **Score**: switch the editor to 𝄞 Score to see the selected region as notation, export MusicXML, assign lyrics.
 - **Mixer and inspector**: volume, pan, sends, inserts, plug-in parameters and native VST3 windows.
 - **Unsaved changes**: when the project has unsaved changes (the • in the title bar), closing the window, New,
@@ -138,6 +138,7 @@ extension: Ondina opens both.
 | K | metronome | Ctrl+S / O / N | save / open / new |
 | Home | go to start | Ctrl+B | bounce |
 | Ctrl+wheel | zoom | Shift+wheel | scroll horizontally |
+| Ctrl+Shift+wheel | piano roll vertical zoom | | |
 
 Musical Typing: `A W S E D F T G Y H U J K` play notes, `Z` / `X` change octave.
 

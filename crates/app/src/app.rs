@@ -176,6 +176,10 @@ pub struct OndinaApp {
     pub pr_scroll_beat: f64,
     pub pr_top_pitch: i32,
     pub pr_key_height: f32,
+    /// Fraction of a row left over from smooth wheel scrolling, carried to the next frame.
+    pub pr_pitch_carry: f32,
+    /// Which region the piano roll last framed on its notes.
+    pub pr_framing: crate::piano_roll_view::ViewFraming,
     pub selected_notes: HashSet<usize>,
     /// Region the note selection was made in; when `selected_region` changes the indices mean nothing.
     notes_region: Option<Id>,
@@ -257,6 +261,8 @@ impl OndinaApp {
             pr_scroll_beat: 0.0,
             pr_top_pitch: 84,
             pr_key_height: 12.0,
+            pr_pitch_carry: 0.0,
+            pr_framing: Default::default(),
             selected_notes: HashSet::new(),
             notes_region: None,
             note_len: 0.25,
@@ -626,6 +632,7 @@ impl OndinaApp {
         });
         self.selected_track = None;
         self.selected_region = None;
+        self.pr_framing.reset();
         self.waveforms.clear();
     }
 
@@ -646,6 +653,7 @@ impl OndinaApp {
             self.settings.add_recent(&path);
             self.settings.save();
             self.waveforms.clear();
+            self.pr_framing.reset();
             self.status = format!("Opened {path}");
         }
     }

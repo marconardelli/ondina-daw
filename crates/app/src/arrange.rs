@@ -716,7 +716,7 @@ impl OndinaApp {
                 if body_resp.double_clicked() {
                     self.bottom = BottomTab::Editor;
                     if let RegionContent::Midi(_) = r.content {
-                        self.pr_scroll_beat = 0.0;
+                        self.pr_framing.reset();
                     }
                 }
                 if start_move {

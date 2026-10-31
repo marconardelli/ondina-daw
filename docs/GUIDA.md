@@ -10,6 +10,13 @@ Questa guida spiega come usare gli editor di Ondina con mouse, tastiera e menu.
 - Trascinamento di una nota: la sposta. Trascinando il bordo destro ne cambi la durata.
 - Canc o Backspace: elimina le note selezionate. Doppio clic o clic destro elimina una sola nota.
 - Corsia delle velocity: trascina per impostare la velocity.
+- Quando apri una regione la vista si porta sulle sue note (su C4 se è vuota). Doppio clic sulla regione
+  nell'arrangiamento: la inquadra di nuovo.
+- Rotella: scorre le altezze, alla stessa velocità in su e in giù. Maiusc+rotella: scorre il tempo.
+- Ctrl+rotella: zoom orizzontale attorno al punto sotto il puntatore. Ctrl+Maiusc+rotella: zoom verticale
+  (altezza dei tasti) attorno alla nota sotto il puntatore.
+- In riproduzione la linea del playhead segue le ripetizioni di una regione in loop e, con **Follow playhead**
+  attivo, la vista la segue.
 
 ### Quantize, Humanize e Snap to key
 
@@ -171,3 +178,4 @@ take resta nel progetto.
 | Ctrl+B | bounce |
 | Ctrl+rotella | zoom |
 | Maiusc+rotella | scorrimento orizzontale |
+| Ctrl+Maiusc+rotella | zoom verticale del piano roll |

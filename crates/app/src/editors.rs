@@ -9,6 +9,9 @@ use eframe::egui::{
 };
 
 use crate::app::{OndinaApp, Drag};
+use crate::piano_roll_view::{
+    follow_scroll, initial_view, loop_local_beat, scroll_pitch, wheel_zoom, zoom_factor, zoom_pitch, zoom_time,
+};
 use crate::theme;
 
 const KEYS_W: f32 = 54.0;
@@ -70,7 +73,8 @@ impl OndinaApp {
         let rid = region.id;
         // toolbar
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("🎹 {} — {}", track.name, region.name)).strong());
+            ui.label(RichText::new(format!("🎹 {} — {}", track.name, region.name)).strong())
+                .on_hover_text("Wheel: scroll pitch · Shift+wheel: scroll time · Ctrl+wheel: zoom time · Ctrl+Shift+wheel: zoom pitch");
             ui.separator();
             ui.label("Note length");
             egui::ComboBox::from_id_salt("notelen").width(60.0).selected_text(len_label(self.note_len)).show_ui(ui, |ui| {
@@ -125,28 +129,63 @@ impl OndinaApp {
         );
         let painter = ui.painter_at(full);
         painter.rect_filled(full, Rounding::ZERO, theme::BG);
-        let kh = self.pr_key_height;
-        let pbb = self.pr_px_per_beat;
+        // Frame the region's notes the first time it is shown; before the input so this frame already
+        // draws the framed view.
+        if self.pr_framing.take(rid) {
+            let rows = ((grid.height() / self.pr_key_height).floor() as i32).max(1);
+            let (top, beat) = initial_view(&m.notes, rows);
+            self.pr_top_pitch = top;
+            self.pr_scroll_beat = beat;
+            self.pr_pitch_carry = 0.0;
+        }
         // input: scroll & zoom
         if ui.rect_contains_pointer(full) {
-            let (scroll, cmd, shift) = ui.input(|i| {
+            let line_px = ui.ctx().options(|o| o.line_scroll_speed);
+            let (scroll, hover, zoom) = ui.input(|i| {
                 (
                     i.smooth_scroll_delta,
-                    i.modifiers.command,
-                    i.modifiers.shift,
+                    i.pointer.hover_pos(),
+                    wheel_zoom(&i.events, line_px, i.screen_rect().height()),
                 )
             });
-            if cmd && scroll.y != 0.0 {
-                self.pr_px_per_beat =
-                    (self.pr_px_per_beat * (1.0 + scroll.y * 0.002)).clamp(10.0, 600.0);
-            } else if shift || scroll.x != 0.0 {
-                let dx = if shift { scroll.y } else { scroll.x };
-                self.pr_scroll_beat = (self.pr_scroll_beat - (dx / pbb) as f64).max(0.0);
-            } else if scroll.y != 0.0 {
-                self.pr_top_pitch =
-                    (self.pr_top_pitch as f32 + scroll.y / kh).clamp(20.0, 127.0) as i32;
+            let hover = hover.unwrap_or(grid.center());
+            let dx = (hover.x - grid.left()).clamp(0.0, grid.width());
+            let dy = (hover.y - grid.top()).clamp(0.0, grid.height());
+            if zoom.time != 0.0 {
+                (self.pr_scroll_beat, self.pr_px_per_beat) =
+                    zoom_time(self.pr_scroll_beat, self.pr_px_per_beat, dx, zoom_factor(zoom.time));
+            }
+            if zoom.pitch != 0.0 {
+                (self.pr_top_pitch, self.pr_key_height) =
+                    zoom_pitch(self.pr_top_pitch, self.pr_key_height, dy, zoom_factor(zoom.pitch));
+                self.pr_pitch_carry = 0.0;
+            }
+            // egui already turns Shift+wheel into horizontal scrolling.
+            if scroll.x != 0.0 {
+                self.pr_scroll_beat =
+                    (self.pr_scroll_beat - (scroll.x / self.pr_px_per_beat) as f64).max(0.0);
+            }
+            if scroll.y != 0.0 {
+                (self.pr_top_pitch, self.pr_pitch_carry) =
+                    scroll_pitch(self.pr_top_pitch, self.pr_pitch_carry, scroll.y, self.pr_key_height);
             }
         }
+        // Follow the playhead while playing, inside the region's repeats, like the arrangement does.
+        let rel = self.position() - region.start;
+        let local = loop_local_beat(rel, region.length, region.loop_count);
+        if self.follow_playhead
+            && self.playing()
+            && self.drag.is_none()
+            && (0.0..region.end() - region.start).contains(&rel)
+        {
+            let visible = (grid.width() / self.pr_px_per_beat) as f64;
+            let margin = (40.0 / self.pr_px_per_beat) as f64;
+            if let Some(s) = follow_scroll(self.pr_scroll_beat, local, visible, margin) {
+                self.pr_scroll_beat = s;
+            }
+        }
+        let kh = self.pr_key_height;
+        let pbb = self.pr_px_per_beat;
         let rows = (grid.height() / kh).ceil() as i32;
         let pitch_y = |pitch: i32, top_pitch: i32| grid.top() + (top_pitch - pitch) as f32 * kh;
         let beat_x = |b: f64, sb: f64| grid.left() + ((b - sb) as f32) * pbb;
@@ -580,9 +619,8 @@ impl OndinaApp {
                 }
             }
         }
-        // playhead
-        let pos = self.position() - region.start;
-        let px = beat_x(pos, sb);
+        // playhead (inside a looped region it is drawn in the repeat being played)
+        let px = beat_x(local, sb);
         if px >= grid.left() && px <= grid.right() {
             painter.line_segment(
                 [pos2(px, grid.top()), pos2(px, full.bottom())],
