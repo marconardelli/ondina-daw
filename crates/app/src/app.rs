@@ -66,6 +66,8 @@ pub struct View {
     pub project: Arc<Project>,
     pub revision: u64,
     pub undo: Option<String>,
+    /// The step Undo would revert was made by the built-in assistant.
+    pub undo_ai: bool,
     pub redo: Option<String>,
     pub path: Option<PathBuf>,
     pub dirty: bool,
@@ -305,6 +307,7 @@ impl OndinaApp {
             project: Arc::new(s.project.clone()),
             revision: s.revision,
             undo: s.can_undo().map(|x| x.to_string()),
+            undo_ai: s.last_undo_is_ai(),
             redo: s.can_redo().map(|x| x.to_string()),
             path: s.path.clone(),
             dirty: s.dirty,
