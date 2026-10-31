@@ -397,7 +397,7 @@ pub enum Command {
     ExportAdm { path: String, start: Option<f64>, end: Option<f64> },
 
     // ------------------------------------------------------------------ video
-    /// Link a movie (mp4/mov/m4v) for scoring to picture; its audio is imported onto an audio track unless import_audio=false.
+    /// Link a movie (mp4/mov/m4v) on a local drive for scoring to picture; URLs, network paths and paths starting with '-' are refused. Its audio is imported onto an audio track unless import_audio=false.
     LoadMovie { path: String, offset_sec: Option<f64>, import_audio: Option<bool> },
     /// Change the movie start offset (song seconds).
     SetMovieOffset { offset_sec: f64 },
@@ -405,9 +405,9 @@ pub enum Command {
     RemoveMovie {},
     /// Set the SMPTE frame rate for timecode (23.976, 24, 25, 29.97, 30, 50, 60).
     SetFrameRate { fps: f64 },
-    /// Extract the movie frame at a song position as PNG (requires ffmpeg on PATH), so an agent can look at the picture.
+    /// Extract the movie frame at a song position as an image (path ending in .png, .jpg or .jpeg; requires ffmpeg on PATH), so an agent can look at the picture.
     ExtractMovieFrame { path: String, beat: Option<f64> },
-    /// Export the movie with the bounced mix as soundtrack (requires ffmpeg on PATH).
+    /// Export the movie with the bounced mix as soundtrack (path ending in .mp4, .mov, .mkv or .m4v; requires ffmpeg on PATH).
     ExportMovie { path: String },
 
     // ------------------------------------------------------------------ environment / MIDI transform

@@ -46,6 +46,95 @@ fn run_ffmpeg(args: &[&str]) -> Result<(), String> {
     }
 }
 
+/// Extensions ffmpeg may write when it grabs a single frame (lower case, without the dot).
+pub const FRAME_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg"];
+/// Extensions ffmpeg may write when it exports the movie with the mix.
+pub const MOVIE_EXTENSIONS: &[&str] = &["mp4", "mov", "mkv", "m4v"];
+
+/// Check that `path` names a file on a local drive and return it as an absolute path.
+/// Movie paths come from MCP clients and from project files made by someone else, and they
+/// end up on ffmpeg's command line: an option (`-f ...`), a URL or protocol (`http:`,
+/// `concat:`) or a network share (`\\server\share`) is refused here, before anything touches
+/// the file system. Relative paths resolve against the working directory, as before.
+pub fn local_media_path(path: &str) -> Result<PathBuf, String> {
+    if path.trim().is_empty() {
+        return Err("the path is empty".into());
+    }
+    if path.starts_with('-') {
+        return Err(format!("{path} starts with '-'"));
+    }
+    if path.starts_with("\\\\") || path.starts_with("//") {
+        return Err(format!("{path} is a network or device path: use a file on a local drive"));
+    }
+    // the only colon a local path may have is the drive letter's (C:\...); any other one is a
+    // URL scheme, an ffmpeg protocol or an NTFS alternate stream
+    let b = path.as_bytes();
+    let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+    if path.matches(':').count() > usize::from(drive) {
+        return Err(format!("{path} looks like a URL or protocol: only local file paths are accepted"));
+    }
+    // lexical only (GetFullPathNameW): canonicalize would open the file first
+    let abs = std::path::absolute(path).map_err(|e| format!("{path}: {e}"))?;
+    let s = abs.to_string_lossy();
+    let b = s.as_bytes();
+    let local = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/');
+    if !local || s[2..].contains(':') {
+        return Err(format!("{path} is not a file on a local drive"));
+    }
+    Ok(abs)
+}
+
+/// A movie path as an ffmpeg input: a checked local path behind the `file:` protocol prefix.
+pub fn ffmpeg_input(path: &str) -> Result<String, String> {
+    local_media_path(path).map(|p| format!("file:{}", p.display()))
+}
+
+/// An ffmpeg output path: a checked local path with one of the `allowed` extensions, behind
+/// the `file:` prefix so that ffmpeg can never read it as an option.
+pub fn ffmpeg_output(path: &str, allowed: &[&str]) -> Result<String, String> {
+    let p = local_media_path(path)?;
+    let ext = p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).unwrap_or_default();
+    if !allowed.contains(&ext.as_str()) {
+        let list = allowed.iter().map(|e| format!(".{e}")).collect::<Vec<_>>().join(", ");
+        return Err(format!("{path} must end in {list}"));
+    }
+    Ok(format!("file:{}", p.display()))
+}
+
+/// The project's movie as an ffmpeg input, with an error that tells the user what to do.
+fn project_movie_input(m: &MovieRef) -> Result<String, String> {
+    ffmpeg_input(&m.path).map_err(|e| format!("the project's movie path is refused ({e}): load the movie again from a local file"))
+}
+
+/// Arguments that decode the frame at `t` seconds of `input` (already a `file:` URL) as
+/// `w`x`h` RGB24 pixels on stdout.
+fn frame_preview_args(input: &str, t: f64, w: usize, h: usize) -> Vec<String> {
+    let ss = format!("{t:.3}");
+    let scale = format!("scale={w}:{h}");
+    [
+        "-hide_banner", "-loglevel", "error", "-ss", ss.as_str(),
+        "-protocol_whitelist", "file", "-i", input,
+        "-frames:v", "1", "-vf", scale.as_str(), "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// Decode the movie frame at `t` seconds as `w`x`h` RGB24 pixels, for the GUI's movie window.
+/// The path goes through the same check as every other movie path before ffmpeg starts.
+pub fn movie_frame_rgb(path: &str, t: f64, w: usize, h: usize) -> Result<Vec<u8>, String> {
+    let input = ffmpeg_input(path)?;
+    let ff = ffmpeg_path().ok_or("ffmpeg not found: install it on PATH or place it in tools\\ffmpeg\\bin")?;
+    let out = std::process::Command::new(ff).args(frame_preview_args(&input, t, w, h)).output().map_err(|e| e.to_string())?;
+    let mut px = out.stdout;
+    if px.len() < w * h * 3 {
+        return Err(format!("ffmpeg returned no frame: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    px.truncate(w * h * 3);
+    Ok(px)
+}
+
 impl Session {
     /// Returns `Some(result)` when the command is handled here.
     pub(crate) fn dispatch_ext(&mut self, cmd: &Command) -> Option<Result<Value, String>> {
@@ -174,16 +263,33 @@ impl Session {
             LoadMovie { path, offset_sec, import_audio } => self.load_movie(path, offset_sec.unwrap_or(0.0), import_audio.unwrap_or(true)),
             ExtractMovieFrame { path, beat } => {
                 let Some(m) = self.project.movie.clone() else { return Some(Err("no movie loaded".into())) };
+                let input = match project_movie_input(&m) {
+                    Ok(i) => i,
+                    Err(e) => return Some(Err(e)),
+                };
+                let output = match ffmpeg_output(path, FRAME_EXTENSIONS) {
+                    Ok(o) => o,
+                    Err(e) => return Some(Err(format!("output path refused: {e}"))),
+                };
                 let b = beat.unwrap_or(self.engine.position());
                 let t = (self.project.tempo.beat_to_sec(b) - m.offset_sec).max(0.0);
                 let ts = format!("{t:.3}");
-                match run_ffmpeg(&["-ss", &ts, "-i", &m.path, "-frames:v", "1", path]) {
+                // -update 1: write the single image under its own name, even if it contains %d
+                match run_ffmpeg(&["-ss", &ts, "-protocol_whitelist", "file", "-i", &input, "-frames:v", "1", "-update", "1", &output]) {
                     Ok(()) => Ok(json!({"path": path, "movie_time_sec": t, "timecode": self.project.timecode(b)})),
                     Err(e) => Err(e),
                 }
             }
             ExportMovie { path } => {
                 let Some(m) = self.project.movie.clone() else { return Some(Err("no movie loaded".into())) };
+                let input = match project_movie_input(&m) {
+                    Ok(i) => i,
+                    Err(e) => return Some(Err(e)),
+                };
+                let output = match ffmpeg_output(path, MOVIE_EXTENSIONS) {
+                    Ok(o) => o,
+                    Err(e) => return Some(Err(format!("output path refused: {e}"))),
+                };
                 let tmp = std::env::temp_dir().join(format!("aurora_mix_{}.wav", std::process::id()));
                 let sr = self.engine.sample_rate();
                 let start = self.project.tempo.sec_to_beat(m.offset_sec);
@@ -199,7 +305,8 @@ impl Session {
                 if let Err(e) = write_wav(&tmp, &res.left, &res.right, sr, 24) {
                     return Some(Err(e));
                 }
-                let r = run_ffmpeg(&["-i", &m.path, "-i", &tmp.display().to_string(), "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "256k", "-shortest", path]);
+                let mix = format!("file:{}", tmp.display());
+                let r = run_ffmpeg(&["-protocol_whitelist", "file", "-i", &input, "-protocol_whitelist", "file", "-i", &mix, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "256k", "-shortest", &output]);
                 let _ = std::fs::remove_file(&tmp);
                 r.map(|_| json!({"path": path}))
             }
@@ -489,20 +596,21 @@ impl Session {
     }
 
     fn load_movie(&mut self, path: &str, offset_sec: f64, import_audio: bool) -> Result<Value, String> {
-        let p = Path::new(path);
-        if !p.exists() {
+        let abs = local_media_path(path).map_err(|e| format!("movie path refused: {e}"))?;
+        if !abs.exists() {
             return Err(format!("movie not found: {path}"));
         }
+        let input = format!("file:{}", abs.display());
         let mut duration = 0.0;
         let mut audio_file_id = None;
         let mut region = None;
         // decode natively, or let ffmpeg extract the soundtrack for codecs symphonia lacks
-        let decoded = load_audio_file(p).or_else(|e| {
+        let decoded = load_audio_file(&abs).or_else(|e| {
             if ffmpeg_path().is_none() {
                 return Err(e);
             }
             let tmp = std::env::temp_dir().join(format!("aurora_movie_{}.wav", std::process::id()));
-            run_ffmpeg(&["-i", path, "-vn", "-acodec", "pcm_f32le", &tmp.display().to_string()])?;
+            run_ffmpeg(&["-protocol_whitelist", "file", "-i", &input, "-vn", "-acodec", "pcm_f32le", &format!("file:{}", tmp.display())])?;
             let d = load_audio_file(&tmp);
             let _ = std::fs::remove_file(&tmp);
             d
@@ -511,7 +619,7 @@ impl Session {
             Ok(d) => {
                 duration = d.duration_sec();
                 if import_audio {
-                    let file_id = self.save_audio(&d, &format!("{} (movie audio)", p.file_stem().and_then(|s| s.to_str()).unwrap_or("movie")))?;
+                    let file_id = self.save_audio(&d, &format!("{} (movie audio)", abs.file_stem().and_then(|s| s.to_str()).unwrap_or("movie")))?;
                     audio_file_id = Some(file_id);
                     let tid = ops::add_track(&mut self.project, TrackKind::Audio, Some("Movie Audio".into()), None, None, None, Some(0))?;
                     let start = self.project.tempo.sec_to_beat(offset_sec);
@@ -524,7 +632,7 @@ impl Session {
             Err(e) if import_audio => return Err(format!("cannot read the movie's audio track: {e}")),
             Err(_) => {}
         }
-        let abs = aurora_dsp::vst3::absolute(path);
+        let abs = abs.display().to_string();
         self.project.movie = Some(MovieRef { path: abs.clone(), offset_sec, duration_sec: duration, audio_file_id });
         Ok(json!({"movie": abs, "duration_sec": duration, "offset_sec": offset_sec, "audio_track": region.map(|r| json!({"track_id": r.0, "region_id": r.1})), "frame_rate": self.project.frame_rate, "ffmpeg_available": ffmpeg_path().is_some()}))
     }
@@ -558,5 +666,53 @@ impl Session {
             c.inserts.insert(i, inst);
         }
         Ok(json!({"plugin_id": pid, "name": name, "as_instrument": as_inst, "parameter_count": params.len(), "parameters": params.iter().take(40).map(|p| json!({"id": format!("p{}", p.id), "name": p.name, "default": p.default})).collect::<Vec<_>>()}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ffmpeg_input_refuses_options_urls_and_network_paths() {
+        for bad in [
+            "", "  ", "-i x", "-f", "http://a/b.mp4", "concat:a|b", "file:C:\\m.mp4",
+            "\\\\server\\share\\m.mp4", "//server/share/m.mp4", "\\\\?\\C:\\m.mp4", "C:\\film\\m.mp4:stream",
+        ] {
+            assert!(ffmpeg_input(bad).is_err(), "{bad:?} was accepted");
+        }
+    }
+
+    #[test]
+    fn ffmpeg_input_prefixes_local_paths_with_file() {
+        assert_eq!(ffmpeg_input("C:\\film\\m.mp4").unwrap(), "file:C:\\film\\m.mp4");
+        assert_eq!(ffmpeg_input("C:/film/m.mp4").unwrap(), "file:C:\\film\\m.mp4");
+    }
+
+    #[test]
+    fn ffmpeg_input_makes_relative_paths_absolute() {
+        let expected = format!("file:{}", std::env::current_dir().unwrap().join("m.mp4").display());
+        assert_eq!(ffmpeg_input("m.mp4").unwrap(), expected);
+    }
+
+    #[test]
+    fn ffmpeg_output_checks_options_and_extensions() {
+        for bad in ["-y.mp4", "C:\\out\\m.avi", "C:\\out\\m", "http://a/m.mp4"] {
+            assert!(ffmpeg_output(bad, MOVIE_EXTENSIONS).is_err(), "{bad:?} was accepted");
+        }
+        assert!(ffmpeg_output("C:\\out\\f.bmp", FRAME_EXTENSIONS).is_err());
+        assert_eq!(ffmpeg_output("C:\\out\\m.MP4", MOVIE_EXTENSIONS).unwrap(), "file:C:\\out\\m.MP4");
+        assert_eq!(ffmpeg_output("C:\\out\\f.jpg", FRAME_EXTENSIONS).unwrap(), "file:C:\\out\\f.jpg");
+    }
+
+    #[test]
+    fn frame_preview_reads_only_local_files() {
+        let a = frame_preview_args("file:C:\\m.mp4", 1.5, 320, 180);
+        let i = a.iter().position(|x| x == "-i").unwrap();
+        assert_eq!(a[i - 2], "-protocol_whitelist");
+        assert_eq!(a[i - 1], "file");
+        assert_eq!(a[i + 1], "file:C:\\m.mp4");
+        assert_eq!(a.last().unwrap(), "-");
+        assert!(a.contains(&"scale=320:180".to_string()));
     }
 }

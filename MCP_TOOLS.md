@@ -708,7 +708,7 @@ Export an ADM BWF master (ITU-R BS.2076 metadata in a BW64 file, 48 kHz / 24-bit
 Parameters: `end, path, start`
 
 ### `load_movie`
-Link a movie (mp4/mov/m4v) for scoring to picture; its audio is imported onto an audio track unless import_audio=false.
+Link a movie (mp4/mov/m4v) on a local drive for scoring to picture; URLs, network paths and paths starting with '-' are refused. Its audio is imported onto an audio track unless import_audio=false.
 
 Parameters: `import_audio, offset_sec, path`
 
@@ -728,12 +728,12 @@ Set the SMPTE frame rate for timecode (23.976, 24, 25, 29.97, 30, 50, 60).
 Parameters: `fps`
 
 ### `extract_movie_frame` · read-only
-Extract the movie frame at a song position as PNG (requires ffmpeg on PATH), so an agent can look at the picture.
+Extract the movie frame at a song position as an image (path ending in .png, .jpg or .jpeg; requires ffmpeg on PATH), so an agent can look at the picture.
 
 Parameters: `beat, path`
 
 ### `export_movie` · read-only
-Export the movie with the bounced mix as soundtrack (requires ffmpeg on PATH).
+Export the movie with the bounced mix as soundtrack (path ending in .mp4, .mov, .mkv or .m4v; requires ffmpeg on PATH).
 
 Parameters: `path`
 
