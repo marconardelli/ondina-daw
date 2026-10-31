@@ -2009,5 +2009,7 @@ impl eframe::App for OndinaApp {
         if let Some(h) = &self.mcp {
             h.shutdown();
         }
+        // The bundled model server keeps gigabytes in memory: it goes away with the app.
+        ondina_studio::local_ai::shutdown_server();
     }
 }

@@ -149,8 +149,8 @@ All three use the same command API, and every AI edit is undoable.
    all 156 tools. See below.
 2. **Offline assistant** — the ✨ AI Assistant panel uses a **local language model** through an OpenAI-compatible
    server (llama.cpp, Ollama, LM Studio…). Ondina starts the bundled llama.cpp server automatically when it finds a
-   `.gguf` model in `tools\llm`. No account, nothing leaves your machine; small models get a curated subset of 31
-   tools.
+   `.gguf` model in `tools\llm` and stops it when Ondina closes. No account, nothing leaves your machine; small
+   models get a curated subset of 31 tools.
 3. **Claude (optional)** — with an Anthropic API key (Settings ⚙ or `ANTHROPIC_API_KEY`) the panel uses Claude with
    all tools.
 

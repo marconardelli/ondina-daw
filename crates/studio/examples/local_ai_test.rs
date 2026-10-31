@@ -24,4 +24,5 @@ fn main() {
         let notes: usize = tr.regions.iter().map(|r| match &r.content { ondina_core::RegionContent::Midi(m) => m.notes.len(), _ => 0 }).sum();
         println!("track '{}' instrument={:?} regions={} notes={}", tr.name, tr.instrument.as_ref().map(|i| i.kind.clone()), tr.regions.len(), notes);
     }
+    ondina_studio::local_ai::shutdown_server();
 }
