@@ -16,6 +16,7 @@ mod extra_ui;
 mod inspector;
 mod mixer;
 mod note_selection;
+mod piano_roll_view;
 mod theme;
 
 use ondina_studio::{Session, Settings, Source};
