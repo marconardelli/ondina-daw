@@ -367,7 +367,7 @@ mod tests {
         let new = s.project.clone();
         // 59@0 sorts before 60@0, so every old note moved one place down.
         let ix = Some(vec![0, 2]);
-        let mut cmds = vec![
+        let mut cmds = [
             remove(rid, ix.clone()),
             Command::TransposeNotes { region_id: rid, semitones: 1, indices: ix.clone() },
             Command::QuantizeNotes { region_id: rid, grid: 0.5, strength: None, swing: None, quantize_ends: None, indices: ix.clone() },
