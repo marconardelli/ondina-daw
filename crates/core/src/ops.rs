@@ -729,16 +729,17 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             let mut t = project.tracks[idx].clone();
             t.id = project.alloc_id();
             t.name = format!("{} copy", t.name);
-            if let Some(i) = t.instrument.as_mut() {
-                i.id = project.alloc_id();
-            }
-            for p in t.midi_fx.iter_mut().chain(t.channel.inserts.iter_mut()) {
-                p.id = project.alloc_id();
+            // the copy keeps its automation; lanes of its own plug-ins follow the new plug-in ids
+            let mut new_ids: Vec<(Id, Id)> = vec![];
+            for p in t.instrument.iter_mut().chain(t.midi_fx.iter_mut()).chain(t.channel.inserts.iter_mut()) {
+                let new = project.alloc_id();
+                new_ids.push((p.id, new));
+                p.id = new;
             }
             for r in t.regions.iter_mut() {
                 r.id = project.alloc_id();
             }
-            t.automation.clear();
+            remap_plugin_lanes(&mut t.automation, &new_ids);
             let id = t.id;
             project.tracks.insert(idx + 1, t);
             ok(json!({"track_id": id}))
@@ -1554,6 +1555,18 @@ fn remove_plugin_lanes(project: &mut Project, plugin_ids: &[Id]) -> usize {
     n
 }
 
+/// Points the `plugin:<old>:<param>` lanes of a copied track at the copy's own plug-ins. `ids` pairs each old
+/// plug-in id with the new one; lanes of plug-ins that are not in `ids` (on another track or on the master) and
+/// every other target are left as they are.
+fn remap_plugin_lanes(lanes: &mut [AutomationLane], ids: &[(Id, Id)]) {
+    for lane in lanes {
+        let Some(old) = lane_plugin_id(&lane.target) else { continue };
+        let Some(&(_, new)) = ids.iter().find(|(o, _)| *o == old) else { continue };
+        let Some((_, param)) = lane.target.strip_prefix("plugin:").and_then(|r| r.split_once(':')) else { continue };
+        lane.target = format!("plugin:{new}:{param}");
+    }
+}
+
 /// Ids of every plug-in on a track: instrument, MIDI effects and inserts.
 fn track_plugin_ids(t: &Track) -> Vec<Id> {
     t.instrument.iter().chain(&t.midi_fx).chain(&t.channel.inserts).map(|p| p.id).collect()
@@ -1895,5 +1908,50 @@ mod tests {
         assert_eq!(cells, vec![kept_cell]);
         assert_eq!(p.midi_routes, vec![route("two", t2)]);
         assert!(lanes_of(&p, t2).is_empty());
+    }
+
+    #[test]
+    fn duplicate_track_copies_automation_onto_its_own_plugins() {
+        let mut p = Project::new("t");
+        let src = add_track_named(&mut p, TrackKind::Instrument, "src");
+        let other = add_track_named(&mut p, TrackKind::Instrument, "other");
+        let bus = add_track_named(&mut p, TrackKind::Bus, "bus");
+        run(&mut p, Command::AddSend { track_id: src, bus_id: bus, level_db: None, pre_fader: None });
+        let inst = p.track(src).unwrap().instrument.as_ref().unwrap().id;
+        let arp = run(&mut p, Command::AddMidiEffect { track_id: src, kind: "arpeggiator".into(), preset: None })["plugin_id"].as_u64().unwrap();
+        let filt = run(&mut p, Command::AddEffect { track_id: src, kind: "auto_filter".into(), preset: None, index: None })["plugin_id"].as_u64().unwrap();
+        let m = run(&mut p, Command::AddEffect { track_id: MASTER_ID, kind: "reverb".into(), preset: None, index: None })["plugin_id"].as_u64().unwrap();
+        set_lane(&mut p, src, "volume", -6.0);
+        set_lane(&mut p, src, "pan", 0.5);
+        set_lane(&mut p, src, "send:0", -12.0);
+        let sweep = vec![AutomationPoint { beat: 0.0, value: 300.0 }, AutomationPoint { beat: 4.0, value: 5000.0 }];
+        run(&mut p, Command::SetAutomation { track_id: src, target: format!("plugin:{filt}:cutoff"), points: sweep });
+        set_lane(&mut p, src, &format!("plugin:{inst}:cutoff"), 800.0);
+        set_lane(&mut p, src, &format!("plugin:{arp}:gate"), 0.3);
+        set_lane(&mut p, src, &format!("plugin:{m}:mix"), 0.2);
+        p.track_mut(src).unwrap().automation[1].enabled = false;
+        set_lane(&mut p, other, &format!("plugin:{filt}:mix"), 0.4);
+        let src_before = serde_json::to_value(p.track(src).unwrap()).unwrap();
+        let other_before = serde_json::to_value(&p.track(other).unwrap().automation).unwrap();
+
+        let r = run(&mut p, Command::DuplicateTrack { track_id: src });
+        let copy = r["track_id"].as_u64().unwrap();
+        assert_eq!(r, json!({"track_id": copy}));
+        assert_eq!(p.track_index(copy), Some(p.track_index(src).unwrap() + 1));
+        let t = p.track(copy).unwrap();
+        let (inst2, arp2, filt2) = (t.instrument.as_ref().unwrap().id, t.midi_fx[0].id, t.channel.inserts[0].id);
+        for (old, new) in [(inst, inst2), (arp, arp2), (filt, filt2)] {
+            assert_ne!(old, new);
+        }
+        let targets: Vec<String> = t.automation.iter().map(|l| l.target.clone()).collect();
+        let expected = ["volume".to_string(), "pan".into(), "send:0".into(), format!("plugin:{filt2}:cutoff"), format!("plugin:{inst2}:cutoff"), format!("plugin:{arp2}:gate"), format!("plugin:{m}:mix")];
+        assert_eq!(targets, expected);
+        // points and enabled flags are copied as they are
+        let shape = |v: &Value| -> Vec<Value> { v.as_array().unwrap().iter().map(|l| json!([l["points"], l["enabled"]])).collect() };
+        assert_eq!(shape(&serde_json::to_value(&t.automation).unwrap()), shape(&src_before["automation"]));
+        assert_eq!(t.channel.sends[0].bus_id, bus);
+        // the original and the lanes of the other track are untouched
+        assert_eq!(serde_json::to_value(p.track(src).unwrap()).unwrap(), src_before);
+        assert_eq!(serde_json::to_value(&p.track(other).unwrap().automation).unwrap(), other_before);
     }
 }

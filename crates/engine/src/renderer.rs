@@ -1014,4 +1014,25 @@ mod tests {
         }
         assert!(r.live_state().0.is_empty());
     }
+
+    #[test]
+    fn duplicated_track_automation_drives_the_copy_plugins() {
+        let mut p = Project::new("t");
+        let src = add_track(&mut p, TrackKind::Instrument);
+        let held = Note { pitch: 60, velocity: 100, start: 0.0, length: 8.0 };
+        run(&mut p, Command::CreateMidiRegion { track_id: src, start: 0.0, length: 8.0, name: None, notes: Some(vec![held]) });
+        let g = run(&mut p, Command::AddEffect { track_id: src, kind: "gain".into(), preset: None, index: None })["plugin_id"].as_u64().unwrap();
+        let open = energy(&p);
+        assert!(open > 1e-3, "the track is silent without automation: {open}");
+        run(&mut p, Command::SetAutomation { track_id: src, target: format!("plugin:{g}:gain"), points: vec![AutomationPoint { beat: 0.0, value: -60.0 }] });
+        let copy = run(&mut p, Command::DuplicateTrack { track_id: src })["track_id"].as_u64().unwrap();
+        run(&mut p, Command::SetMute { track_id: src, mute: true });
+        let e_copy = energy(&p);
+        assert!(e_copy < 0.01 * open, "the copy's gain lane does not reach its own gain plug-in: open {open}, copy {e_copy}");
+        // the copy is silent because of its lane, not for another reason
+        let mut q = p.clone();
+        q.track_mut(copy).unwrap().automation.clear();
+        let e_free = energy(&q);
+        assert!(e_free > 0.5 * open, "the copy should play without its lane: open {open}, free {e_free}");
+    }
 }
