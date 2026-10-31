@@ -482,7 +482,7 @@ dependencies = [
 
 [[package]]
 name = "aurora-app"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "aurora-core",
  "aurora-dsp",
@@ -497,7 +497,7 @@ dependencies = [
 
 [[package]]
 name = "aurora-core"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "midly",
@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "aurora-dsp"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "aurora-core",
  "hound",
@@ -522,7 +522,7 @@ dependencies = [
 
 [[package]]
 name = "aurora-engine"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "aurora-core",
  "aurora-dsp",
@@ -537,7 +537,7 @@ dependencies = [
 
 [[package]]
 name = "aurora-studio"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "aurora-core",
  "aurora-dsp",

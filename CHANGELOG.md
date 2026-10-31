@@ -7,6 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-31
+
+### Added
+
+- Aurora now asks *Save*, *Don't Save* or *Cancel* before closing the window, starting a new project, opening
+  another one or picking a recent file when there are unsaved changes. Esc cancels, Enter saves, and a recording
+  in progress is stopped and kept before the question.
+
+### Changed
+
+- Bounces keep reverb and delay tails: after the end of the song (or the cycle), Aurora keeps rendering until the
+  sound fades out, from 2 up to 20 seconds, instead of always adding a fixed 2 seconds. This also applies to
+  Bounce in Place, surround and binaural bounces.
+- The `bounce` MCP tool accepts an optional `tail_sec` to set an exact tail length; `tail_sec: 0` exports a loop
+  of exact length with no tail.
+
 ## [0.1.2] - 2026-10-31
 
 ### Fixed
@@ -61,7 +77,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/aurora-daw/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/marconardelli/aurora-daw/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/marconardelli/aurora-daw/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/marconardelli/aurora-daw/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/marconardelli/aurora-daw/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/marconardelli/aurora-daw/releases/tag/v0.1.0
