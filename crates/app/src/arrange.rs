@@ -17,8 +17,8 @@ const LANE_H: f32 = 18.0;
 /// instead, so there is always some body left to grab for moving.
 const REGION_EDGE_PX: f32 = 6.0;
 
-/// A marker being renamed in place in the marker lane.
-pub struct MarkerRename {
+/// A marker or track name being edited in place.
+pub struct InPlaceRename {
     pub id: Id,
     pub text: String,
     /// Give the text field focus and select its text on the next frame it is shown.
@@ -286,11 +286,13 @@ impl OndinaApp {
                 });
             }
             if resp.double_clicked() {
-                self.marker_rename = Some(MarkerRename {
+                self.marker_rename = Some(InPlaceRename {
                     id: m.id,
                     text: m.name.clone(),
                     focus: true,
                 });
+                // open the field on this frame: rename_rect was decided before the double-click
+                rename_rect = Some(r);
             }
             let mid = m.id;
             let (mb, ml) = (m.beat, m.length);
@@ -327,34 +329,12 @@ impl OndinaApp {
             Some((ren, old, rename_rect?))
         });
         if let Some((mut ren, old, r)) = target {
+            // computed first: the call below borrows ui mutably
             let edit_id = ui.id().with(("mrename", ren.id));
-            let er = Rect::from_min_size(r.min, vec2(r.width().max(120.0), r.height()));
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(er));
-            let resp = child.add(
-                egui::TextEdit::singleline(&mut ren.text)
-                    .id(edit_id)
-                    .font(FontId::proportional(11.0))
-                    .margin(vec2(3.0, 1.0))
-                    .desired_width(er.width() - 6.0),
-            );
-            if ren.focus {
-                resp.request_focus();
-                // select the whole name so typing replaces it
-                if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), edit_id) {
-                    let n = ren.text.chars().count();
-                    st.cursor.set_char_range(Some(egui::text::CCursorRange::two(
-                        egui::text::CCursor::new(0),
-                        egui::text::CCursor::new(n),
-                    )));
-                    st.store(ui.ctx(), edit_id);
-                }
-                ren.focus = false;
-            }
-            if resp.lost_focus() {
-                // egui drops the focus on Esc before the field sees it: check the key to tell cancel from commit
-                let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                if !cancelled {
-                    if let Some(name) = marker_rename_commit(&old, &ren.text) {
+            match rename_field(ui, edit_id, r, FontId::proportional(11.0), &mut ren) {
+                RenameEdit::Editing => self.marker_rename = Some(ren),
+                RenameEdit::Commit => {
+                    if let Some(name) = rename_commit(&old, &ren.text) {
                         self.cmd(Command::UpdateMarker {
                             marker_id: ren.id,
                             name: Some(name),
@@ -363,8 +343,7 @@ impl OndinaApp {
                         });
                     }
                 }
-            } else {
-                self.marker_rename = Some(ren);
+                RenameEdit::Cancel => {}
             }
         }
 
@@ -416,6 +395,7 @@ impl OndinaApp {
         let ctrl_alt = ui.input(|i| i.modifiers.alt);
         let mut hovered_track: Option<(Id, TrackKind)> = None;
         let pointer = ui.input(|i| i.pointer.hover_pos());
+        let mut track_rename_rect: Option<Rect> = None;
         for (i, t) in p.tracks.iter().enumerate() {
             let y = tracks_top + i as f32 * th - self.scroll_y;
             if y + th < tracks_top || y > full.bottom() {
@@ -799,7 +779,31 @@ impl OndinaApp {
 
             // header
             let header = Rect::from_min_max(pos2(full.left(), y), pos2(timeline_x, y + th));
-            self.track_header(ui, &tpainter, header, t, sel);
+            if let Some(r) = self.track_header(ui, &tpainter, header, t, i, sel) {
+                track_rename_rect = Some(r);
+            }
+        }
+
+        // Track name field, registered after every header so it sits on top. A track that scrolled out of
+        // view, was deleted or undone away drops the edit.
+        let target = self.track_rename.take().and_then(|ren| {
+            let old = p.track(ren.id)?.name.clone();
+            Some((ren, old, track_rename_rect?))
+        });
+        if let Some((mut ren, old, r)) = target {
+            let edit_id = ui.id().with(("trename", ren.id));
+            match rename_field(ui, edit_id, r, FontId::proportional(12.5), &mut ren) {
+                RenameEdit::Editing => self.track_rename = Some(ren),
+                RenameEdit::Commit => {
+                    if let Some(name) = rename_commit(&old, &ren.text) {
+                        self.cmd(Command::RenameTrack {
+                            track_id: ren.id,
+                            name,
+                        });
+                    }
+                }
+                RenameEdit::Cancel => {}
+            }
         }
 
         // dragging updates
@@ -807,6 +811,9 @@ impl OndinaApp {
         let released = ui.input(|i| i.pointer.any_released());
         let pointer_beat = pointer_pos.map(|pp| self.x_to_beat(pp.x, timeline_x));
         let snap = self.snap;
+        if matches!(self.drag, Some(Drag::MoveTrack { .. })) && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.drag = None;
+        }
         match &mut self.drag {
             Some(Drag::MoveRegion {
                 grab_beat,
@@ -862,7 +869,27 @@ impl OndinaApp {
                     *cur_len = resized_marker_length(*start, b, snap);
                 }
             }
+            Some(Drag::MoveTrack { gap, .. }) => {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                if let Some(pp) = pointer_pos {
+                    let n = p.tracks.len();
+                    *gap = track_drop_index(pp.y, tracks_top - self.scroll_y, th, n);
+                    let v = edge_scroll_speed(pp.y, tracks_top, full.bottom());
+                    if v != 0.0 {
+                        let dt = ui.input(|i| i.stable_dt).min(0.1);
+                        // same limit as the mouse wheel above
+                        let max = (n as f32 * th + 80.0 - (full.bottom() - tracks_top)).max(0.0);
+                        self.scroll_y = (self.scroll_y + v * dt).clamp(0.0, max);
+                        // keep scrolling while the pointer rests in the band
+                        ui.ctx().request_repaint();
+                    }
+                }
+            }
             _ => {}
+        }
+        if let Some(Drag::MoveTrack { gap, .. }) = &self.drag {
+            let y = (tracks_top - self.scroll_y + *gap as f32 * th).clamp(tracks_top + 1.0, full.bottom() - 1.0);
+            tpainter.line_segment([pos2(full.left(), y), pos2(full.right(), y)], Stroke::new(2.0_f32, theme::SELECT));
         }
         if released {
             match self.drag.take() {
@@ -944,6 +971,15 @@ impl OndinaApp {
                             beat: None,
                             length: Some(cur_len),
                         });
+                    }
+                }
+                Some(Drag::MoveTrack { id, gap }) => {
+                    // Found by id: the assistant or MCP may have reordered the tracks during the drag.
+                    if let Some(index) = p
+                        .track_index(id)
+                        .and_then(|from| track_move_target(from, gap.min(p.tracks.len())))
+                    {
+                        self.cmd(Command::MoveTrack { track_id: id, index });
                     }
                 }
                 other => self.drag = other.filter(|d| !matches!(d, Drag::Cycle { .. })),
@@ -1046,14 +1082,17 @@ impl OndinaApp {
         ui.allocate_rect(full, Sense::hover());
     }
 
+    /// Draws one track header and handles its clicks, drag-to-reorder and double-click-to-rename.
+    /// Returns where the rename field goes when this track is being renamed and its name row is fully visible.
     fn track_header(
         &mut self,
         ui: &mut egui::Ui,
         painter: &egui::Painter,
         rect: Rect,
         t: &Track,
+        index: usize,
         selected: bool,
-    ) {
+    ) -> Option<Rect> {
         painter.rect_filled(
             rect,
             Rounding::ZERO,
@@ -1068,9 +1107,26 @@ impl OndinaApp {
             Rounding::ZERO,
             theme::rgb(t.color),
         );
-        let resp = ui.interact(rect, ui.id().with(("hdr", t.id)), Sense::click());
+        // Background first: M/S/R, the volume slider and the rename field are registered after it and sit on top.
+        let resp = ui.interact(rect, ui.id().with(("hdr", t.id)), Sense::click_and_drag());
         if resp.clicked() {
             self.selected_track = Some(t.id);
+        }
+        if resp.drag_started() && self.drag.is_none() {
+            self.selected_track = Some(t.id);
+            self.drag = Some(Drag::MoveTrack { id: t.id, gap: index });
+        }
+        // the top row (icon and name) opens the rename; the rest of the header only selects
+        let name_row = Rect::from_min_max(
+            pos2(rect.left() + 6.0, rect.top()),
+            pos2(rect.right() - 26.0, rect.top() + 22.0),
+        );
+        if resp.double_clicked() && resp.interact_pointer_pos().is_some_and(|pp| name_row.contains(pp)) {
+            self.track_rename = Some(InPlaceRename {
+                id: t.id,
+                text: t.name.clone(),
+                focus: true,
+            });
         }
         let icon = match t.kind {
             TrackKind::Instrument => {
@@ -1087,13 +1143,27 @@ impl OndinaApp {
             TrackKind::Audio => "🎤",
             TrackKind::Bus => "🔀",
         };
-        painter.text(
-            pos2(rect.left() + 10.0, rect.top() + 12.0),
-            Align2::LEFT_CENTER,
-            format!("{icon} {}", t.name),
-            FontId::proportional(12.5),
-            Color32::WHITE,
-        );
+        // decided after the double-click above, so the field opens on the same frame
+        let renaming = self.track_rename.as_ref().is_some_and(|e| e.id == t.id);
+        let name_pos = pos2(rect.left() + 10.0, rect.top() + 12.0);
+        let mut field = None;
+        if renaming {
+            let ir = painter.text(name_pos, Align2::LEFT_CENTER, icon, FontId::proportional(12.5), Color32::WHITE);
+            let r = Rect::from_min_max(
+                pos2(ir.right() + 4.0, rect.top() + 3.0),
+                pos2(rect.right() - 28.0, rect.top() + 21.0),
+            );
+            // half-hidden under the lanes or the window edge: drop the edit rather than draw over them
+            field = painter.clip_rect().contains_rect(r).then_some(r);
+        } else {
+            painter.text(
+                name_pos,
+                Align2::LEFT_CENTER,
+                format!("{icon} {}", t.name),
+                FontId::proportional(12.5),
+                Color32::WHITE,
+            );
+        }
         let tid = t.id;
         resp.context_menu(|ui| {
             if ui.button("Duplicate track").clicked() {
@@ -1185,6 +1255,12 @@ impl OndinaApp {
             pos2(rect.right() - 8.0, rect.bottom() - 6.0),
         );
         draw_meter(painter, mr, m);
+        if matches!(&self.drag, Some(Drag::MoveTrack { id, .. }) if *id == t.id) {
+            // the dragged header stays in place, dimmed, until it is dropped
+            painter.rect_filled(rect, Rounding::ZERO, Color32::from_black_alpha(110));
+            painter.rect_stroke(rect.shrink(1.0), Rounding::ZERO, Stroke::new(1.5_f32, theme::SELECT));
+        }
+        field
     }
 }
 
@@ -1232,10 +1308,98 @@ fn resized_marker_length(start: f64, pointer_beat: f64, snap: f64) -> f64 {
     (snap_to(pointer_beat, snap) - start).max(MIN_MARKER_LEN)
 }
 
-/// The name to send after an in-place rename, or None when nothing should change.
-fn marker_rename_commit(old: &str, typed: &str) -> Option<String> {
+/// Height of the band at the top and bottom of the track area where a dragged header scrolls the view.
+const TRACK_DRAG_EDGE_PX: f32 = 24.0;
+/// Fastest scroll speed of that band, in pixels per second.
+const TRACK_DRAG_SCROLL_PX_S: f32 = 600.0;
+
+/// Gap a dragged track header drops into: 0 is above the first track, `count` below the last.
+/// `first_top` is the screen y of the first track's top edge (above the view when scrolled down);
+/// over a track the pointer picks its nearer edge.
+fn track_drop_index(pointer_y: f32, first_top: f32, height: f32, count: usize) -> usize {
+    let g = ((pointer_y - first_top) / height + 0.5).floor();
+    // max() also turns NaN into 0
+    (g.max(0.0) as usize).min(count)
+}
+
+/// The `index` for `MoveTrack` (the track's final position) when the track at `from` is dropped into
+/// `gap`, or None when it would stay where it is: the gaps just above and below it change nothing.
+fn track_move_target(from: usize, gap: usize) -> Option<usize> {
+    let to = if gap > from { gap - 1 } else { gap };
+    (to != from).then_some(to)
+}
+
+/// Scroll speed (pixels per second, negative = up) while a track header is dragged at screen y
+/// `pointer_y` over a track area spanning `top..bottom`: faster the deeper it is in the edge band.
+fn edge_scroll_speed(pointer_y: f32, top: f32, bottom: f32) -> f32 {
+    let up = (top + TRACK_DRAG_EDGE_PX - pointer_y) / TRACK_DRAG_EDGE_PX;
+    let down = (pointer_y - (bottom - TRACK_DRAG_EDGE_PX)) / TRACK_DRAG_EDGE_PX;
+    if up > 0.0 {
+        -up.min(1.0) * TRACK_DRAG_SCROLL_PX_S
+    } else if down > 0.0 {
+        down.min(1.0) * TRACK_DRAG_SCROLL_PX_S
+    } else {
+        0.0
+    }
+}
+
+/// The name to send after an in-place rename of a marker or a track, or None when nothing should change.
+fn rename_commit(old: &str, typed: &str) -> Option<String> {
     let t = typed.trim();
     (!t.is_empty() && t != old).then(|| t.to_string())
+}
+
+/// What the user did with an in-place name field this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenameEdit {
+    /// Still typing: keep the edit open.
+    Editing,
+    /// Enter, or a click elsewhere.
+    Commit,
+    /// Esc.
+    Cancel,
+}
+
+/// Draws the in-place name field over `r` (at least 120 px wide). Call it after every widget it covers,
+/// so it sits on top and gets the clicks.
+fn rename_field(
+    ui: &mut egui::Ui,
+    edit_id: egui::Id,
+    r: Rect,
+    font: FontId,
+    ren: &mut InPlaceRename,
+) -> RenameEdit {
+    let er = Rect::from_min_size(r.min, vec2(r.width().max(120.0), r.height()));
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(er));
+    let resp = child.add(
+        egui::TextEdit::singleline(&mut ren.text)
+            .id(edit_id)
+            .font(font)
+            .margin(vec2(3.0, 1.0))
+            .desired_width(er.width() - 6.0),
+    );
+    if ren.focus {
+        resp.request_focus();
+        // select the whole name so typing replaces it
+        if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), edit_id) {
+            let n = ren.text.chars().count();
+            st.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(n),
+            )));
+            st.store(ui.ctx(), edit_id);
+        }
+        ren.focus = false;
+    }
+    if !resp.lost_focus() {
+        return RenameEdit::Editing;
+    }
+    // egui drops the focus on Esc before the field sees it: check the key to tell cancel from commit
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        RenameEdit::Cancel
+    } else {
+        RenameEdit::Commit
+    }
 }
 
 pub fn draw_meter(painter: &egui::Painter, r: Rect, m: [f32; 2]) {
@@ -1265,9 +1429,26 @@ pub fn draw_meter(painter: &egui::Painter, r: Rect, m: [f32; 2]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        dragged_marker_beat, marker_rename_commit, region_edge_width, region_hit_zone,
-        resized_marker_length, RegionZone, MIN_MARKER_LEN, REGION_EDGE_PX,
+        dragged_marker_beat, edge_scroll_speed, region_edge_width, region_hit_zone, rename_commit,
+        resized_marker_length, track_drop_index, track_move_target, RegionZone, MIN_MARKER_LEN,
+        REGION_EDGE_PX, TRACK_DRAG_SCROLL_PX_S,
     };
+    use ondina_core::command::Command;
+    use ondina_studio::{Session, Source};
+    use serde_json::{json, Value};
+
+    fn run(s: &mut Session, name: &str, args: Value) -> Value {
+        let c = Command::from_tool_call(name, &args).unwrap();
+        s.execute(c, Source::Gui).unwrap_or_else(|e| panic!("{name} {args} failed: {e}"))
+    }
+
+    fn track_names(s: &Session) -> Vec<String> {
+        s.project.tracks.iter().map(|t| t.name.clone()).collect()
+    }
+
+    fn track_id(s: &Session, name: &str) -> u64 {
+        s.project.tracks.iter().find(|t| t.name == name).unwrap().id
+    }
 
     #[test]
     fn region_edge_hit_zones() {
@@ -1314,10 +1495,101 @@ mod tests {
 
     #[test]
     fn marker_rename_trims_and_ignores_empty_or_unchanged() {
-        assert_eq!(marker_rename_commit("Verse", "  Chorus "), Some("Chorus".into()));
-        assert_eq!(marker_rename_commit("Verse", "Verse"), None);
-        assert_eq!(marker_rename_commit("Verse", " Verse "), None);
-        assert_eq!(marker_rename_commit("Verse", "   "), None);
-        assert_eq!(marker_rename_commit("Verse", ""), None);
+        assert_eq!(rename_commit("Verse", "  Chorus "), Some("Chorus".into()));
+        assert_eq!(rename_commit("Verse", "Verse"), None);
+        assert_eq!(rename_commit("Verse", " Verse "), None);
+        assert_eq!(rename_commit("Verse", "   "), None);
+        assert_eq!(rename_commit("Verse", ""), None);
+    }
+
+    #[test]
+    fn rename_commit_keeps_inner_spaces_and_case_changes() {
+        assert_eq!(rename_commit("Bass", "Lead  Vox"), Some("Lead  Vox".into()));
+        assert_eq!(rename_commit("bass", "Bass"), Some("Bass".into()));
+        assert_eq!(rename_commit("Drums", "  Batteria 🥁 "), Some("Batteria 🥁".into()));
+    }
+
+    #[test]
+    fn track_drop_index_picks_the_nearest_gap() {
+        // four tracks of 50 px from y = 100: 100-150, 150-200, 200-250, 250-300
+        assert_eq!(track_drop_index(80.0, 100.0, 50.0, 4), 0);
+        assert_eq!(track_drop_index(110.0, 100.0, 50.0, 4), 0);
+        assert_eq!(track_drop_index(140.0, 100.0, 50.0, 4), 1);
+        assert_eq!(track_drop_index(190.0, 100.0, 50.0, 4), 2);
+        assert_eq!(track_drop_index(210.0, 100.0, 50.0, 4), 2);
+        assert_eq!(track_drop_index(290.0, 100.0, 50.0, 4), 4);
+        assert_eq!(track_drop_index(500.0, 100.0, 50.0, 4), 4);
+        assert_eq!(track_drop_index(-1000.0, 100.0, 50.0, 4), 0);
+        // scrolled down: the first track starts above the view
+        assert_eq!(track_drop_index(110.0, -50.0, 50.0, 4), 3);
+        assert_eq!(track_drop_index(110.0, -400.0, 50.0, 4), 4);
+        // no tracks
+        assert_eq!(track_drop_index(300.0, 100.0, 50.0, 0), 0);
+    }
+
+    #[test]
+    fn track_move_target_is_none_when_the_track_stays() {
+        assert_eq!(track_move_target(2, 2), None);
+        assert_eq!(track_move_target(2, 3), None);
+        assert_eq!(track_move_target(3, 4), None);
+        assert_eq!(track_move_target(2, 0), Some(0));
+        assert_eq!(track_move_target(2, 1), Some(1));
+        assert_eq!(track_move_target(0, 2), Some(1));
+        assert_eq!(track_move_target(0, 4), Some(3));
+        assert_eq!(track_move_target(3, 0), Some(0));
+    }
+
+    #[test]
+    fn dropping_a_header_moves_the_track_to_the_line_in_one_undo_step() {
+        let mut s = Session::new(false);
+        for name in ["Drums", "Bass", "Keys", "Vox"] {
+            run(&mut s, "add_track", json!({"kind": "instrument", "name": name}));
+        }
+        let start = track_names(&s);
+        assert_eq!(start, ["Drums", "Bass", "Keys", "Vox"]);
+        let cases = [
+            ("Vox", 0, ["Vox", "Drums", "Bass", "Keys"]),
+            ("Drums", 4, ["Bass", "Keys", "Vox", "Drums"]),
+            ("Bass", 3, ["Drums", "Keys", "Bass", "Vox"]),
+            ("Keys", 1, ["Drums", "Keys", "Bass", "Vox"]),
+        ];
+        for (name, gap, expected) in cases {
+            let id = track_id(&s, name);
+            let from = s.project.track_index(id).unwrap();
+            let index = track_move_target(from, gap).unwrap();
+            run(&mut s, "move_track", json!({"track_id": id, "index": index}));
+            assert_eq!(track_names(&s), expected, "{name} dropped into gap {gap}");
+            run(&mut s, "undo", json!({}));
+            assert_eq!(track_names(&s), start, "undo after moving {name}");
+        }
+    }
+
+    #[test]
+    fn drag_near_the_edges_scrolls_the_tracks() {
+        // track area from y = 100 to y = 500, 24 px bands
+        assert_eq!(edge_scroll_speed(300.0, 100.0, 500.0), 0.0);
+        assert_eq!(edge_scroll_speed(124.0, 100.0, 500.0), 0.0);
+        assert_eq!(edge_scroll_speed(476.0, 100.0, 500.0), 0.0);
+        assert_eq!(edge_scroll_speed(100.0, 100.0, 500.0), -TRACK_DRAG_SCROLL_PX_S);
+        assert_eq!(edge_scroll_speed(50.0, 100.0, 500.0), -TRACK_DRAG_SCROLL_PX_S);
+        assert_eq!(edge_scroll_speed(500.0, 100.0, 500.0), TRACK_DRAG_SCROLL_PX_S);
+        assert_eq!(edge_scroll_speed(600.0, 100.0, 500.0), TRACK_DRAG_SCROLL_PX_S);
+        assert!((edge_scroll_speed(112.0, 100.0, 500.0) + TRACK_DRAG_SCROLL_PX_S / 2.0).abs() < 1e-3);
+        assert!((edge_scroll_speed(488.0, 100.0, 500.0) - TRACK_DRAG_SCROLL_PX_S / 2.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn track_rename_is_one_undo_step() {
+        let mut s = Session::new(false);
+        run(&mut s, "add_track", json!({"kind": "instrument", "name": "Bass"}));
+        let id = track_id(&s, "Bass");
+        let name = rename_commit("Bass", "  Bass DI ").unwrap();
+        assert_eq!(name, "Bass DI");
+        run(&mut s, "rename_track", json!({"track_id": id, "name": name}));
+        assert_eq!(track_names(&s), ["Bass DI"]);
+        run(&mut s, "undo", json!({}));
+        assert_eq!(track_names(&s), ["Bass"]);
+        assert_eq!(rename_commit("Bass", " Bass "), None);
+        assert_eq!(rename_commit("Bass", ""), None);
     }
 }

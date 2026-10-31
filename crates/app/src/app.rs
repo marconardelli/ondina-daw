@@ -107,6 +107,12 @@ pub enum Drag {
         orig_len: f64,
         cur_len: f64,
     },
+    /// Dragging a track header to reorder tracks; `gap` is where it would drop
+    /// (0 = above the first track, the track count = below the last).
+    MoveTrack {
+        id: Id,
+        gap: usize,
+    },
     Notes {
         region: Id,
         orig: Vec<Note>,
@@ -186,7 +192,8 @@ pub struct OndinaApp {
     pub show_about: bool,
     pub mix_report: Option<Value>,
     pub rename_buf: String,
-    pub marker_rename: Option<crate::arrange::MarkerRename>,
+    pub marker_rename: Option<crate::arrange::InPlaceRename>,
+    pub track_rename: Option<crate::arrange::InPlaceRename>,
     pub vst_filter: String,
     pub api_key_buf: String,
     pub devices_cache: Option<Value>,
@@ -275,6 +282,7 @@ impl OndinaApp {
             mix_report: None,
             rename_buf: String::new(),
             marker_rename: None,
+            track_rename: None,
             vst_filter: String::new(),
             devices_cache: None,
             midi_inputs_cache: vec![],
