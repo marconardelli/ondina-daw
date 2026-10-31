@@ -7,6 +7,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-31
+
+### Changed
+
+- Assistant: everything the built-in assistant does for one request is now a single undo step. One Ctrl+Z, or
+  **Undo AI edit**, puts the project back as it was before the request, and the Edit menu shows which request you
+  are undoing.
+- Assistant: **Undo AI edit** is active only when the last change came from the assistant. If you move a note or a
+  fader after the answer, the button turns off and Ctrl+Z undoes your own change first.
+- Arrange window: Ctrl+Shift+wheel makes the tracks taller or shorter around the track under the pointer. The View
+  menu has Zoom In, Zoom Out, Zoom to Fit, Taller Tracks and Shorter Tracks.
+- Arrange window: on short tracks the M/S/R buttons move next to the track name and the volume is set from the
+  mixer.
+
+### Fixed
+
+- Arrange window: Ctrl+wheel zooms time around the pointer again, and Shift+wheel (or a horizontal wheel) scrolls
+  time again.
+
 ## [0.5.0] - 2026-10-31
 
 ### Added
@@ -167,7 +186,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/marconardelli/ondina-daw/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/marconardelli/ondina-daw/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/marconardelli/ondina-daw/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/marconardelli/ondina-daw/compare/v0.3.0...v0.4.0
