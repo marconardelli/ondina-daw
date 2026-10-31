@@ -299,7 +299,8 @@ fn parse_step_string(s: &str, steps: usize) -> Vec<u8> {
     v
 }
 
-/// Resolve chord symbols (or roman numerals) for generators. If `chords` is None, read the chord track.
+/// Resolve chords for generators: chord symbols or roman numerals, from `chords` or the chord track (when `chords`
+/// is None). Roman numerals on the chord track are read in the current project key.
 pub fn resolve_chords(project: &Project, start: f64, bars: u32, chords: &Option<Vec<String>>, beats_per_chord: Option<f64>) -> Result<Vec<TimedChord>, String> {
     let bpb = project.time_signature.beats_per_bar();
     let total = bars as f64 * bpb;
@@ -328,7 +329,7 @@ pub fn resolve_chords(project: &Project, start: f64, bars: u32, chords: &Option<
         .filter_map(|c| {
             let s = c.beat.max(start);
             let e = (c.beat + c.length).min(end);
-            Chord::parse(&c.symbol).map(|ch| TimedChord { start: s - start, length: e - s, chord: ch })
+            parse_chord_or_roman(&c.symbol, project.key).ok().map(|ch| TimedChord { start: s - start, length: e - s, chord: ch })
         })
         .collect();
     if out.is_empty() {
@@ -1682,6 +1683,26 @@ mod tests {
             Ok(Outcome::NotHandled) => panic!("not handled"),
             Err(e) => panic!("{e}"),
         }
+    }
+
+    #[test]
+    fn resolve_chords_reads_roman_numerals_saved_on_the_chord_track() {
+        let mut p = Project::new("t");
+        // An older version stored roman numerals on the chord track as typed.
+        let mut c: ChordEvent = serde_json::from_value(json!({"id": 0, "beat": 0.0, "length": 4.0, "symbol": "vi"})).unwrap();
+        c.id = p.alloc_id();
+        p.chords.push(c);
+        let tc = resolve_chords(&p, 0.0, 1, &None, None).unwrap();
+        assert_eq!(tc.len(), 1);
+        assert_eq!(tc[0].chord.root, 9);
+        assert_eq!(tc[0].chord.intervals, vec![0, 3, 7]);
+
+        let mut bad: ChordEvent = serde_json::from_value(json!({"id": 0, "beat": 4.0, "length": 4.0, "symbol": "zz"})).unwrap();
+        bad.id = p.alloc_id();
+        p.chords.push(bad);
+        let tc = resolve_chords(&p, 0.0, 2, &None, None).unwrap();
+        assert_eq!(tc.len(), 1, "an unreadable symbol is skipped");
+        assert_eq!(tc[0].chord.root, 9);
     }
 
     #[test]
