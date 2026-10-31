@@ -55,12 +55,12 @@ Every row is available both in the GUI and as MCP tools (full list in [`MCP_TOOL
 | Area | What Ondina does | Main MCP tools |
 |---|---|---|
 | Projects, tempo, meter, key | `.ondina` files, tempo changes, count-in, notes and lyrics | `new_project` `save_project` `set_tempo` `add_tempo_change` `set_key` |
-| Transport, cycle, metronome | sample-accurate transport, cycle, click, count-in | `play` `stop` `set_cycle` `set_metronome` `set_count_in` |
+| Transport, cycle, metronome | sample-accurate transport, cycle (drag, resize and toggle it on the ruler), click, count-in | `play` `stop` `set_cycle` `set_metronome` `set_count_in` |
 | Tracks and library | instrument, audio and aux bus tracks, 23 patches | `add_track` `apply_patch` `list_patches` |
 | Audio and MIDI recording | WASAPI inputs, MIDI ports, Musical Typing | `record` `set_record_arm` `connect_midi_input` `send_live_midi` |
 | Comping | cycle recording creates one take per pass; comp by segments | `list_takes` `comp_takes` |
 | Arrangement | drag/copy/resize/split/join/loop regions, fades, chord track (type chords or roman numerals in place, drag to move and resize), section markers | `move_region` `split_region` `copy_section` `set_chord_progression` `update_chord` |
-| Piano roll and step sequencer | note editing, box selection, quantize / humanize / snap to key on the selection, velocity lane | `add_notes` `quantize_notes` `set_pattern_row` |
+| Piano roll and step sequencer | note editing, box selection, copy / cut / paste and arrow-key moves, quantize / humanize / snap to key on the selection, velocity lane | `add_notes` `quantize_notes` `set_pattern_row` |
 | MIDI transform and routing | conditional transforms; split/layer of MIDI input | `transform_notes` `set_midi_routes` |
 | Session players | drums (13 styles), bass, chords, arpeggios, melodies | `generate_drums` `generate_bass` `generate_chords` … |
 | Time and pitch | WSOLA time-stretch, pitch shift, varispeed, key-aware pitch correction, audio→MIDI (YIN) | `time_stretch_region` `pitch_shift_region` `varispeed_region` `pitch_correct_region` `audio_to_midi` |
