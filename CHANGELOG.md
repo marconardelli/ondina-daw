@@ -7,6 +7,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-31
+
+### Added
+
+- Chord track: double-click an empty spot to type a chord in place, as a symbol (`Am7`, `F#m`, `G/B`) or as a
+  Roman numeral in the project key (`I`, `vi`, `IV`, `V7`). A numeral becomes the matching chord: `IV` in C major
+  is `F`.
+- Chord track: double-click a chord (or right-click and **Edit chord**) to change it, drag it to move it, drag its
+  right edge to change its length, and right-click **Remove chord** to delete it. Every change is a single undo
+  step.
+- Chord track: the label on the left shows the project key, and an invalid chord keeps the field open with a red
+  outline so you can retype it.
+- Session players (Bassist, Keys, Arpeggio, Melody) follow the chord track when they get no progression of their
+  own, and Roman numerals saved on the chord track are read in the current project key.
+- MCP: new `update_chord` tool to change a chord's symbol, start or length; `add_chord` also accepts Roman
+  numerals.
+
+### Changed
+
+- Local AI model: the ✨ buttons now work with the offline assistant. It gets the tools their requests need
+  (continue or improve notes in the piano roll, write a groove in the step sequencer, design a sound in the plug-in
+  editors, fill the Live Loops grid, the mix report and the arrange window menus).
+- Local AI model: when notes are selected in the piano roll, the assistant edits only those notes.
+
 ## [0.5.1] - 2026-10-31
 
 ### Changed
@@ -186,7 +210,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/marconardelli/ondina-daw/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/marconardelli/ondina-daw/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/marconardelli/ondina-daw/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/marconardelli/ondina-daw/compare/v0.4.0...v0.4.1
