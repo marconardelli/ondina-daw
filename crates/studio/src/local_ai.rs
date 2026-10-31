@@ -27,6 +27,17 @@ pub const LOCAL_TOOLS: &[&str] = &[
 
 const SYSTEM: &str = "You are the assistant inside Ondina DAW. You control the DAW only by calling the provided tools. Positions are in beats (quarter notes); bar N starts at beat (N-1)*4 in 4/4. MIDI pitch 60 = C4. Call get_project to learn track ids before editing existing tracks; add_track returns the new track_id. Prefer library patches (e.g. \"Pop Drum Kit\", \"Deep Sub Bass\", \"Lush Pad\", \"Stage Electric Piano\") and the generate_* tools. After finishing, answer briefly in the user's language.";
 
+/// Context size the bundled server is started with; the history budget is derived from it.
+const CONTEXT_TOKENS: usize = 16384;
+/// Longest answer requested from the model per step.
+const MAX_TOKENS: usize = 1024;
+/// Conservative characters-per-token ratio (JSON and tool output tokenise worse than prose).
+const CHARS_PER_TOKEN: usize = 3;
+/// Never shrink the history below this, even with a very large tool list.
+const MIN_HISTORY_CHARS: usize = 6000;
+/// Appended once to the system message when older turns are dropped.
+const OMITTED_NOTE: &str = "(earlier conversation omitted)";
+
 fn local_tools() -> Value {
     Value::Array(
         mcp::tools()
@@ -35,6 +46,47 @@ fn local_tools() -> Value {
             .map(|t| json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.input_schema}}))
             .collect(),
     )
+}
+
+/// Characters of history that fit next to the tool list and the answer in the server context.
+fn history_budget(tools_chars: usize) -> usize {
+    ((CONTEXT_TOKENS - MAX_TOKENS) * CHARS_PER_TOKEN * 4 / 5).saturating_sub(tools_chars).max(MIN_HISTORY_CHARS)
+}
+
+/// Drops the oldest turns so the history fits `budget` characters (serialized JSON length).
+/// The system message is kept. A turn runs from a `user` message to the next one, so cutting at turn
+/// boundaries never separates an assistant `tool_calls` message from its `tool` results. If the last turn
+/// alone is too long, whole steps (an assistant message plus its tool results) are dropped from its start,
+/// keeping the user request and the latest step. The result fits whenever system + note + that user
+/// message + the latest step fit. Returns whether anything was removed.
+fn trim_history(messages: &mut Vec<Value>, budget: usize) -> bool {
+    let size = |ms: &[Value]| ms.iter().map(|m| m.to_string().len()).sum::<usize>();
+    if messages.len() < 2 || size(messages) <= budget {
+        return false;
+    }
+    if let Some(content) = messages[0]["content"].as_str() {
+        if !content.contains(OMITTED_NOTE) {
+            messages[0]["content"] = Value::String(format!("{content}\n{OMITTED_NOTE}"));
+        }
+    }
+    // whole turns, oldest first, while at least one more turn follows
+    while size(messages) > budget {
+        let users: Vec<usize> = (1..messages.len()).filter(|&i| messages[i]["role"] == "user").collect();
+        if users.len() < 2 {
+            break;
+        }
+        messages.drain(1..users[1]);
+    }
+    // whole steps inside the last turn, keeping its user request and its latest step
+    let start = (1..messages.len()).rev().find(|&i| messages[i]["role"] == "user").unwrap_or(1);
+    while size(messages) > budget {
+        let assistants: Vec<usize> = (start + 1..messages.len()).filter(|&i| messages[i]["role"] == "assistant").collect();
+        if assistants.len() < 2 {
+            break;
+        }
+        messages.drain(assistants[0]..assistants[1]);
+    }
+    true
 }
 
 /// Bundled llama.cpp server and model, looked up next to the executable or in ./tools/llm.
@@ -78,7 +130,7 @@ pub fn ensure_server(settings: &Settings, events: Option<&Sender<AiEvent>>) -> R
     let port = base.rsplit(':').next().and_then(|p| p.split('/').next()).and_then(|p| p.parse::<u16>().ok()).unwrap_or(8080);
     let threads = std::thread::available_parallelism().map(|n| n.get().max(2) - 1).unwrap_or(4).to_string();
     let mut cmd = std::process::Command::new(server);
-    cmd.args(["-m", &model.display().to_string(), "--jinja", "-c", "16384", "--port", &port.to_string(), "--host", "127.0.0.1", "-t", &threads])
+    cmd.args(["-m", &model.display().to_string(), "--jinja", "-c", &CONTEXT_TOKENS.to_string(), "--port", &port.to_string(), "--host", "127.0.0.1", "-t", &threads])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     #[cfg(windows)]
@@ -126,13 +178,15 @@ impl LocalAssistant {
         };
         self.messages.push(json!({"role": "user", "content": format!("{user_text}\n\n[Ondina context] {gui_context} Project: {summary}")}));
         let tools = local_tools();
+        let budget = history_budget(tools.to_string().len());
         let url = format!("{}/chat/completions", base_url(settings));
         for _ in 0..20 {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
             let _ = events.send(AiEvent::Status("Thinking (local model)…".into()));
-            let body = json!({"model": settings.local_model, "messages": self.messages, "tools": tools, "tool_choice": "auto", "temperature": 0.2, "max_tokens": 1024});
+            trim_history(&mut self.messages, budget);
+            let body = json!({"model": settings.local_model, "messages": self.messages, "tools": tools, "tool_choice": "auto", "temperature": 0.2, "max_tokens": MAX_TOKENS});
             let resp: Value = match ureq::post(&url).timeout(Duration::from_secs(600)).set("content-type", "application/json").send_string(&body.to_string()) {
                 Ok(r) => match r.into_string().ok().and_then(|t| serde_json::from_str(&t).ok()) {
                     Some(v) => v,
@@ -185,5 +239,139 @@ impl LocalAssistant {
             }
         }
         let _ = events.send(AiEvent::Done);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One user request, `steps` tool-calling steps with `payload` characters of tool output each, a final answer.
+    fn turn(tag: &str, steps: usize, payload: usize) -> Vec<Value> {
+        let mut ms = vec![json!({"role": "user", "content": format!("request {tag}")})];
+        for s in 0..steps {
+            let id = format!("{tag}-{s}");
+            ms.push(json!({"role": "assistant", "content": "", "tool_calls": [{"id": id, "type": "function", "function": {"name": "set_tempo", "arguments": "{\"bpm\":90}"}}]}));
+            ms.push(json!({"role": "tool", "tool_call_id": id, "content": "x".repeat(payload)}));
+        }
+        ms.push(json!({"role": "assistant", "content": format!("ok {tag}")}));
+        ms
+    }
+
+    fn history(turns: &[Vec<Value>]) -> Vec<Value> {
+        let mut ms = LocalAssistant::default().messages;
+        for t in turns {
+            ms.extend(t.iter().cloned());
+        }
+        ms
+    }
+
+    fn size(ms: &[Value]) -> usize {
+        ms.iter().map(|m| m.to_string().len()).sum()
+    }
+
+    /// Serialized length the system message gains with the note ("\n" is two characters in JSON).
+    fn note_len() -> usize {
+        OMITTED_NOTE.len() + 2
+    }
+
+    fn assert_pairs(ms: &[Value]) {
+        for (i, m) in ms.iter().enumerate() {
+            if m["role"] == "assistant" {
+                if let Some(calls) = m["tool_calls"].as_array() {
+                    for (k, c) in calls.iter().enumerate() {
+                        let t = ms.get(i + 1 + k).unwrap_or_else(|| panic!("missing tool result {k} after message {i}"));
+                        assert_eq!(t["role"], "tool", "message {} should be a tool result", i + 1 + k);
+                        assert_eq!(t["tool_call_id"], c["id"]);
+                    }
+                }
+            }
+            if m["role"] == "tool" {
+                let mut j = i;
+                while j > 0 && ms[j - 1]["role"] == "tool" {
+                    j -= 1;
+                }
+                assert!(j > 0, "tool message {i} without an assistant");
+                let a = &ms[j - 1];
+                assert_eq!(a["role"], "assistant", "tool message {i} without an assistant");
+                let ids: Vec<&Value> = a["tool_calls"].as_array().map(|c| c.iter().map(|c| &c["id"]).collect()).unwrap_or_default();
+                assert!(ids.contains(&&m["tool_call_id"]), "tool message {i} does not answer its assistant");
+            }
+        }
+    }
+
+    #[test]
+    fn trim_history_leaves_a_short_history_unchanged() {
+        let mut ms = history(&[turn("a", 1, 100)]);
+        let before = ms.clone();
+        let budget = size(&ms) + 1;
+        assert!(!trim_history(&mut ms, budget));
+        assert_eq!(ms, before);
+        assert!(!ms[0]["content"].as_str().unwrap().contains(OMITTED_NOTE));
+    }
+
+    #[test]
+    fn trim_history_drops_the_oldest_turns_first() {
+        let turns: Vec<Vec<Value>> = (0..5).map(|i| turn(&format!("t{i}"), 2, 2000)).collect();
+        let mut ms = history(&turns);
+        let budget = size(&ms[..1]) + note_len() + size(&turns[3]) + size(&turns[4]);
+        assert!(trim_history(&mut ms, budget));
+        assert_eq!(ms[0]["role"], "system");
+        assert_eq!(ms[0]["content"].as_str().unwrap().matches(OMITTED_NOTE).count(), 1);
+        assert_eq!(ms[1]["role"], "user");
+        assert_eq!(ms[1]["content"], "request t3");
+        assert_eq!(ms.last().unwrap()["content"], "ok t4");
+        let text = Value::Array(ms.clone()).to_string();
+        for old in ["t0", "t1", "t2"] {
+            assert!(!text.contains(&format!("request {old}")) && !text.contains(&format!("\"{old}-")), "{old} should be gone");
+        }
+        assert_pairs(&ms);
+        assert!(size(&ms) <= budget);
+    }
+
+    #[test]
+    fn trim_history_never_splits_tool_calls_from_results() {
+        let turns: Vec<Vec<Value>> = (0..6).map(|i| turn(&format!("h{i}"), 1 + i % 4, 500 + i * 500)).collect();
+        let full = history(&turns);
+        for budget in (2000..60000).step_by(1500) {
+            let mut ms = full.clone();
+            trim_history(&mut ms, budget);
+            assert_pairs(&ms);
+            assert_eq!(ms[0]["role"], "system");
+            let last_user = turns[5][0].clone();
+            let last_assistant = full.iter().rposition(|m| m["role"] == "assistant").unwrap();
+            let floor = size(&full[..1]) + note_len() + size(&[last_user]) + size(&full[last_assistant..]);
+            if floor <= budget {
+                assert!(size(&ms) <= budget, "budget {budget}: size {}", size(&ms));
+            }
+        }
+    }
+
+    #[test]
+    fn trim_history_drops_steps_inside_one_long_turn() {
+        let mut ms = history(&[turn("long", 12, 3000)]);
+        assert!(trim_history(&mut ms, 12000));
+        assert_eq!(ms[1]["role"], "user");
+        assert_eq!(ms[1]["content"], "request long");
+        assert_eq!(ms.last().unwrap()["content"], "ok long");
+        assert!(ms.iter().any(|m| m["tool_call_id"] == "long-11"), "the latest step is kept");
+        assert!(!ms.iter().any(|m| m["tool_call_id"] == "long-0"), "the oldest step is dropped");
+        assert_pairs(&ms);
+        assert!(size(&ms) <= 12000);
+    }
+
+    #[test]
+    fn trim_history_adds_the_note_only_once() {
+        let turns: Vec<Vec<Value>> = (0..4).map(|i| turn(&format!("n{i}"), 2, 1000)).collect();
+        let mut ms = history(&turns);
+        trim_history(&mut ms, 3000);
+        trim_history(&mut ms, 2500);
+        assert_eq!(ms[0]["content"].as_str().unwrap().matches(OMITTED_NOTE).count(), 1);
+    }
+
+    #[test]
+    fn history_budget_leaves_room_for_the_local_tools() {
+        assert!(history_budget(local_tools().to_string().len()) > MIN_HISTORY_CHARS);
+        assert_eq!(history_budget(usize::MAX / 2), MIN_HISTORY_CHARS);
     }
 }
