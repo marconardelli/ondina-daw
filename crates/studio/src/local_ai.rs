@@ -41,6 +41,17 @@ const CHARS_PER_TOKEN: usize = 3;
 const MIN_HISTORY_CHARS: usize = 6000;
 /// Appended once to the system message when older turns are dropped.
 const OMITTED_NOTE: &str = "(earlier conversation omitted)";
+/// Characters of a tool result the model sees.
+const TOOL_RESULT_CHARS: usize = 1500;
+/// The reads the ✨ requests depend on (a synth has about 3000 characters of parameters) get more room.
+const READ_RESULT_CHARS: usize = 4000;
+const LONG_READS: &[&str] = &["get_region", "get_plugin"];
+
+/// The part of a tool result that goes back to the model.
+fn result_for_model(name: &str, out: &str) -> String {
+    let limit = if LONG_READS.contains(&name) { READ_RESULT_CHARS } else { TOOL_RESULT_CHARS };
+    out.chars().take(limit).collect()
+}
 
 fn local_tools() -> Value {
     Value::Array(
@@ -346,7 +357,7 @@ impl LocalAssistant {
                         Err(e) => (false, format!("Error: {e}")),
                     }
                 };
-                let short: String = out.chars().take(1500).collect();
+                let short = result_for_model(&name, &out);
                 let _ = events.send(AiEvent::ToolCall { name: name.clone(), input: args.clone(), ok, result: short.chars().take(300).collect() });
                 self.messages.push(json!({"role": "tool", "tool_call_id": id, "content": short}));
             }
@@ -493,6 +504,17 @@ mod tests {
         let budget = history_budget(local_tools().to_string().len());
         assert!(budget >= 2 * MIN_HISTORY_CHARS, "only {budget} characters left for the conversation");
         assert_eq!(history_budget(usize::MAX / 2), MIN_HISTORY_CHARS);
+    }
+
+    #[test]
+    fn long_reads_reach_the_local_model_whole() {
+        let big = "x".repeat(3000);
+        assert_eq!(result_for_model("get_plugin", &big).len(), 3000);
+        assert_eq!(result_for_model("get_region", &big).len(), 3000);
+        assert_eq!(result_for_model("set_tempo", &big).len(), TOOL_RESULT_CHARS);
+        assert_eq!(result_for_model("get_plugin", &"y".repeat(9000)).len(), READ_RESULT_CHARS);
+        // characters, not bytes
+        assert_eq!(result_for_model("set_tempo", &"é".repeat(2000)).chars().count(), TOOL_RESULT_CHARS);
     }
 
     #[test]
