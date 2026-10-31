@@ -108,7 +108,7 @@ fn set_param(inst: &mut PluginInstance, param: &str, value: f32) -> Result<f32, 
     Ok(v)
 }
 
-pub fn apply_patch(project: &mut Project, track_id: Id, patch_name: &str) -> Result<(), String> {
+pub fn apply_patch(project: &mut Project, track_id: Id, patch_name: &str) -> Result<usize, String> {
     let patch = plugins::find_patch(patch_name).ok_or_else(|| format!("unknown patch '{patch_name}' (see list_patches)"))?;
     let instrument = match patch.instrument {
         Some((k, pr)) => Some(new_plugin(project, k, Some(pr))?),
@@ -119,13 +119,15 @@ pub fn apply_patch(project: &mut Project, track_id: Id, patch_name: &str) -> Res
         fx.push(new_plugin(project, k, Some(pr))?);
     }
     let t = project.track_mut(track_id).ok_or("track not found")?;
-    if t.kind == TrackKind::Instrument {
-        if instrument.is_some() {
-            t.instrument = instrument;
-        }
+    // the replaced plug-ins take their automation lanes with them, as remove_plugin does
+    let mut replaced: Vec<Id> = t.channel.inserts.iter().map(|p| p.id).collect();
+    let replaces_instrument = t.kind == TrackKind::Instrument && instrument.is_some();
+    if replaces_instrument {
+        replaced.extend(t.instrument.as_ref().map(|p| p.id));
+        t.instrument = instrument;
     }
     t.channel.inserts = fx;
-    Ok(())
+    Ok(remove_plugin_lanes(project, &replaced))
 }
 
 pub fn add_track(project: &mut Project, kind: TrackKind, name: Option<String>, patch: Option<&str>, instrument: Option<&str>, preset: Option<&str>, index: Option<usize>) -> Result<Id, String> {
@@ -829,8 +831,10 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             ok(track_detail(project, t))
         }
         ApplyPatch { track_id, patch } => {
-            apply_patch(project, *track_id, patch)?;
-            ok(track_detail(project, project.track(*track_id).unwrap()))
+            let lanes = apply_patch(project, *track_id, patch)?;
+            let mut v = track_detail(project, project.track(*track_id).unwrap());
+            v["removed_automation_lanes"] = json!(lanes);
+            ok(v)
         }
 
         // plug-ins
@@ -872,8 +876,9 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             if t.kind != TrackKind::Instrument {
                 return err("not an instrument track");
             }
-            t.instrument = Some(inst);
-            ok(json!({"plugin_id": id}))
+            let old = t.instrument.replace(inst).map(|p| p.id);
+            let lanes = remove_plugin_lanes(project, old.as_slice());
+            ok(json!({"plugin_id": id, "removed_automation_lanes": lanes}))
         }
         AddEffect { track_id, kind, preset, index } => {
             if plugins::find(kind).map(|p| p.category) != Some(PluginCategory::Effect) {
@@ -1953,5 +1958,69 @@ mod tests {
         // the original and the lanes of the other track are untouched
         assert_eq!(serde_json::to_value(p.track(src).unwrap()).unwrap(), src_before);
         assert_eq!(serde_json::to_value(&p.track(other).unwrap().automation).unwrap(), other_before);
+    }
+
+    #[test]
+    fn set_instrument_drops_lanes_of_the_old_instrument() {
+        let mut p = Project::new("t");
+        let src = add_track_named(&mut p, TrackKind::Instrument, "src");
+        let other = add_track_named(&mut p, TrackKind::Instrument, "other");
+        let inst = p.track(src).unwrap().instrument.as_ref().unwrap().id;
+        let fx = run(&mut p, Command::AddEffect { track_id: src, kind: "reverb".into(), preset: None, index: None })["plugin_id"].as_u64().unwrap();
+        set_lane(&mut p, src, "volume", -6.0);
+        set_lane(&mut p, src, &format!("plugin:{inst}:cutoff"), 800.0);
+        set_lane(&mut p, src, &format!("plugin:{fx}:mix"), 0.3);
+        set_lane(&mut p, other, &format!("plugin:{inst}:cutoff"), 900.0);
+        let kept = vec![lane("volume", -6.0), lane(&format!("plugin:{fx}:mix"), 0.3)];
+
+        // errors leave everything alone
+        assert_eq!(apply(&mut p, &Command::SetInstrument { track_id: src, kind: "reverb".into(), preset: None }).err().as_deref(), Some("'reverb' is not an instrument"));
+        let audio = add_track_named(&mut p, TrackKind::Audio, "audio");
+        assert_eq!(apply(&mut p, &Command::SetInstrument { track_id: audio, kind: "organ".into(), preset: None }).err().as_deref(), Some("not an instrument track"));
+        assert_eq!(lanes_of(&p, src).len(), 3);
+        assert_eq!(lanes_of(&p, other).len(), 1);
+
+        let r = run(&mut p, Command::SetInstrument { track_id: src, kind: "fm_synth".into(), preset: None });
+        let new = r["plugin_id"].as_u64().unwrap();
+        assert_eq!(r, json!({"plugin_id": new, "removed_automation_lanes": 2}));
+        assert_eq!(lanes_of(&p, src), kept);
+        assert!(lanes_of(&p, other).is_empty());
+
+        // a track without an instrument has nothing to remove
+        run(&mut p, Command::RemovePlugin { plugin_id: new });
+        let r = run(&mut p, Command::SetInstrument { track_id: src, kind: "organ".into(), preset: None });
+        assert_eq!(r["removed_automation_lanes"], json!(0));
+        assert_eq!(lanes_of(&p, src), kept);
+    }
+
+    #[test]
+    fn apply_patch_drops_lanes_of_the_replaced_plugins() {
+        let mut p = Project::new("t");
+        let src = add_track_named(&mut p, TrackKind::Instrument, "src");
+        let other = add_track_named(&mut p, TrackKind::Instrument, "other");
+        let inst = p.track(src).unwrap().instrument.as_ref().unwrap().id;
+        let arp = run(&mut p, Command::AddMidiEffect { track_id: src, kind: "arpeggiator".into(), preset: None })["plugin_id"].as_u64().unwrap();
+        let fx = run(&mut p, Command::AddEffect { track_id: src, kind: "reverb".into(), preset: None, index: None })["plugin_id"].as_u64().unwrap();
+        set_lane(&mut p, src, "volume", -6.0);
+        set_lane(&mut p, src, "pan", 0.5);
+        set_lane(&mut p, src, &format!("plugin:{inst}:cutoff"), 800.0);
+        set_lane(&mut p, src, &format!("plugin:{fx}:mix"), 0.3);
+        set_lane(&mut p, src, &format!("plugin:{arp}:gate"), 0.3);
+        set_lane(&mut p, other, &format!("plugin:{fx}:mix"), 0.4);
+        set_lane(&mut p, other, "volume", -3.0);
+        let mut audio_patch = p.clone();
+
+        let r = run(&mut p, Command::ApplyPatch { track_id: src, patch: "Lush Pad".into() });
+        assert_eq!(r["id"], json!(src));
+        assert_eq!(r["removed_automation_lanes"], json!(3));
+        assert_ne!(p.track(src).unwrap().instrument.as_ref().unwrap().id, inst);
+        assert_eq!(lanes_of(&p, src), vec![lane("volume", -6.0), lane("pan", 0.5), lane(&format!("plugin:{arp}:gate"), 0.3)]);
+        assert_eq!(lanes_of(&p, other), vec![lane("volume", -3.0)]);
+
+        // a patch without an instrument keeps the instrument and its lanes; only the inserts go
+        let r = run(&mut audio_patch, Command::ApplyPatch { track_id: src, patch: "Clean Audio".into() });
+        assert_eq!(r["removed_automation_lanes"], json!(2));
+        assert_eq!(audio_patch.track(src).unwrap().instrument.as_ref().unwrap().id, inst);
+        assert_eq!(lanes_of(&audio_patch, src), vec![lane("volume", -6.0), lane("pan", 0.5), lane(&format!("plugin:{inst}:cutoff"), 800.0), lane(&format!("plugin:{arp}:gate"), 0.3)]);
     }
 }
