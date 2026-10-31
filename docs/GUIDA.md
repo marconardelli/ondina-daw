@@ -135,7 +135,8 @@ compatibile OpenAI all'indirizzo scelto in **Settings ⚙** (di default `http://
   mano) viene usato così com'è e resta acceso.
 - La conversazione tiene le richieste più recenti entro il contesto del modello. Quando si allunga,
   le richieste più vecchie vengono dimenticate; **New chat** ricomincia da capo.
-- **⏹ Stop** interrompe subito l'attesa. Le modifiche già fatte restano e si annullano con Ctrl+Z.
+- **⏹ Stop** interrompe subito l'attesa. Le modifiche già fatte restano e si annullano tutte insieme
+  con Ctrl+Z.
   Il modello può finire di scrivere la risposta interrotta in sottofondo: la richiesta successiva
   può partire con qualche secondo di ritardo.
 - Se Ondina si chiude in modo anomalo, `llama-server.exe` può restare acceso. Al riavvio Ondina lo
@@ -144,6 +145,15 @@ compatibile OpenAI all'indirizzo scelto in **Settings ⚙** (di default `http://
 ## Annulla e ripeti
 
 - Ctrl+Z annulla l'ultima modifica, Ctrl+Y la ripete.
+- Tutto quello che l'assistente fa per una richiesta è un solo passo: Ctrl+Z, o **↶ Undo AI edit**
+  nel pannello dell'assistente, riporta il progetto a com'era prima della richiesta. Il menu Edit
+  mostra l'inizio della richiesta, per esempio *Undo assistant: Add drums*.
+- **↶ Undo AI edit** è attivo solo quando l'ultima modifica è dell'assistente e l'assistente ha
+  finito: se dopo la risposta sposti una nota o un fader, il pulsante si spegne e Ctrl+Z annulla
+  prima la tua modifica.
+- Se mentre l'assistente lavora modifichi il progetto, o lo modifica un client MCP, la richiesta si
+  divide in due passi con la modifica in mezzo. Le modifiche fatte da un client MCP restano un passo
+  per ogni tool.
 - Dopo **Nuovo** (Ctrl+N) o **Apri** (Ctrl+O) la cronologia riparte da zero: Ctrl+Z non riporta
   indietro il progetto precedente.
 - Un progetto appena aperto non risulta modificato: Ondina non chiede di salvare finché non
