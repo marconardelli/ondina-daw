@@ -98,7 +98,7 @@ impl OndinaApp {
                 }
             }
             if ui.button(RichText::new("✨ AI: fill the grid").color(theme::AI)).clicked() {
-                self.ask_ai("Fill the Live Loops grid: for each track create cells in 4 scenes (intro, groove, build, drop) with musical variations, using create_live_cell with notes.".into());
+                self.ask_ai(ondina_studio::prompts::FILL_GRID.into());
             }
         });
         ui.separator();

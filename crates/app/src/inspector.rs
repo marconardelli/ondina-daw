@@ -568,7 +568,7 @@ impl OndinaApp {
             });
             ui.horizontal(|ui| {
                 if ui.button(RichText::new("✨ AI: design a sound").color(theme::AI)).clicked() {
-                    self.ask_ai(format!("Adjust the parameters of plug-in {} ({}) to get a great sound for this track's role in the song. Explain briefly.", pid, info.name));
+                    self.ask_ai(ondina_studio::prompts::design_sound(pid, info.name));
                 }
             });
         });
