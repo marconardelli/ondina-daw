@@ -7,6 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-31
+
+### Added
+
+- Arrange window: drag a track header up or down to reorder the tracks. A line shows where the track will land, the
+  view scrolls when you reach the top or bottom edge, and Esc cancels. The mixer follows the same order.
+- Arrange window: double-click a track's name to rename it in place. Enter or a click outside confirms, Esc cancels.
+- Moving or renaming a track is undone with a single Ctrl+Z.
+
+### Fixed
+
+- Deleting a track also removes the sends that fed it and their automation, the automation of its plug-ins on other
+  tracks, its Live Loops cells and the MIDI input routes to it, instead of leaving them attached to another track.
+- Deleting a send or a plug-in also removes its automation lane, and the automation of the remaining sends stays on
+  the right send. Undo brings everything back.
+
 ## [0.3.0] - 2026-10-31
 
 ### Changed
@@ -114,7 +130,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/marconardelli/ondina-daw/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/marconardelli/ondina-daw/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/marconardelli/ondina-daw/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/marconardelli/ondina-daw/compare/v0.2.0...v0.2.1
