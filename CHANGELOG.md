@@ -7,6 +7,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-31
+
+### Added
+
+- Piano roll: Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste the selected notes. Pasted notes land at the playhead
+  when it is inside the region, otherwise at the position they were copied from, and stay selected. Each paste is
+  a single undo step.
+- Piano roll: copied notes also go to the system clipboard as text, so you can paste them into the assistant chat.
+- Piano roll: Ctrl+A selects every note.
+- Piano roll: the arrow keys move the selected notes: left and right by the snap step, up and down by a semitone,
+  Shift+up and down by an octave. Chords keep their shape at the edges of the region and of the MIDI range.
+
+### Changed
+
+- Ruler: the top strip is now a cycle strip. Drag the cycle to move it, drag either edge to resize it, click it to
+  turn cycle on or off, and drag on the empty strip to draw a new one. The lower half, with the bar numbers, moves
+  the playhead. Shift+drag anywhere on the ruler still draws a cycle, and every gesture is a single undo step.
+
 ## [0.6.0] - 2026-10-31
 
 ### Added
@@ -210,7 +228,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/marconardelli/ondina-daw/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/marconardelli/ondina-daw/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/marconardelli/ondina-daw/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/marconardelli/ondina-daw/compare/v0.4.1...v0.5.0
