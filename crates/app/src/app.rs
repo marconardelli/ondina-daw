@@ -21,6 +21,7 @@ use parking_lot::Mutex;
 use serde_json::Value;
 
 use crate::theme;
+use crate::doc_guard::{self, Answer, CloseStep, DocAction, Step};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BottomTab {
@@ -175,6 +176,10 @@ pub struct AuroraApp {
     pub bounce_bits: u16,
     pub extra: crate::extra_ui::ExtraState,
     pub last_playhead: f64,
+    /// Action waiting for the answer to the "Save changes?" prompt; `Some` while the prompt is open.
+    doc_prompt: Option<DocAction>,
+    /// Set once the user chose to quit, so our own close request is not cancelled again.
+    allow_close: bool,
 }
 
 impl AuroraApp {
@@ -256,6 +261,8 @@ impl AuroraApp {
             bounce_bits: 24,
             extra: crate::extra_ui::ExtraState::new(),
             last_playhead: 0.0,
+            doc_prompt: None,
+            allow_close: false,
         }
     }
 
@@ -504,7 +511,65 @@ impl AuroraApp {
 
     // ---------------------------------------------------------------- file actions
 
-    pub fn new_project(&mut self) {
+    /// Whether replacing the document now would lose work. Runs the GUI edits queued in this frame first and
+    /// ends a recording, so a take in progress becomes part of the project (and of the question) instead of
+    /// being dropped with it.
+    fn has_unsaved_work(&mut self) -> bool {
+        self.sync();
+        if self.recording() {
+            self.exec(Command::Stop {});
+        }
+        self.view.dirty || self.recording()
+    }
+
+    /// Entry point for every action that replaces the document (menu, shortcuts, recent files).
+    pub fn request_doc_action(&mut self, ctx: &egui::Context, action: DocAction) {
+        if self.doc_prompt.is_some() {
+            return;
+        }
+        let unsaved = self.has_unsaved_work();
+        match doc_guard::on_request(action, unsaved) {
+            Step::Proceed(a) => self.run_doc_action(ctx, a),
+            Step::Ask(a) => self.open_doc_prompt(ctx, a),
+        }
+    }
+
+    fn open_doc_prompt(&mut self, ctx: &egui::Context, action: DocAction) {
+        // A focused text field (assistant input, rename box) would otherwise keep Enter and Esc.
+        ctx.memory_mut(|m| m.stop_text_input());
+        self.doc_prompt = Some(action);
+    }
+
+    fn run_doc_action(&mut self, ctx: &egui::Context, action: DocAction) {
+        match action {
+            DocAction::Close => {
+                // eframe turns this into a close request on the next frame; allow_close lets it through.
+                self.allow_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            DocAction::New => self.new_project_now(),
+            DocAction::Open(None) => self.open_dialog_now(),
+            DocAction::Open(Some(path)) => self.open_path_now(path),
+        }
+    }
+
+    /// Must run inside `update` in the same frame as the close request: eframe only honours a
+    /// `CancelClose` sent from that frame.
+    fn handle_close_request(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        let unsaved = !self.allow_close && self.has_unsaved_work();
+        match doc_guard::on_close_requested(self.allow_close, self.doc_prompt.is_some(), unsaved) {
+            CloseStep::Allow => {}
+            CloseStep::CancelAndAsk => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.open_doc_prompt(ctx, DocAction::Close);
+            }
+        }
+    }
+
+    fn new_project_now(&mut self) {
         self.exec(Command::NewProject {
             name: None,
             tempo: None,
@@ -516,16 +581,16 @@ impl AuroraApp {
         self.waveforms.clear();
     }
 
-    pub fn open_dialog(&mut self) {
+    fn open_dialog_now(&mut self) {
         if let Some(p) = rfd::FileDialog::new()
             .add_filter("Aurora Project", &["aurora"])
             .pick_file()
         {
-            self.open_path(p.display().to_string());
+            self.open_path_now(p.display().to_string());
         }
     }
 
-    pub fn open_path(&mut self, path: String) {
+    fn open_path_now(&mut self, path: String) {
         if self
             .exec(Command::OpenProject { path: path.clone() })
             .is_some()
@@ -537,7 +602,7 @@ impl AuroraApp {
         }
     }
 
-    pub fn save(&mut self, save_as: bool) {
+    pub fn save(&mut self, save_as: bool) -> bool {
         let path = if save_as || self.view.path.is_none() {
             let name = format!("{}.aurora", self.view.project.name);
             match rfd::FileDialog::new()
@@ -546,17 +611,21 @@ impl AuroraApp {
                 .save_file()
             {
                 Some(p) => Some(p.display().to_string()),
-                None => return,
+                None => return false,
             }
         } else {
             None
         };
-        if let Some(v) = self.exec(Command::SaveProject { path: path.clone() }) {
-            if let Some(p) = v["saved"].as_str() {
-                self.settings.add_recent(p);
-                self.settings.save();
-                self.status = format!("Saved {p}");
+        match self.exec(Command::SaveProject { path: path.clone() }) {
+            Some(v) => {
+                if let Some(p) = v["saved"].as_str() {
+                    self.settings.add_recent(p);
+                    self.settings.save();
+                    self.status = format!("Saved {p}");
+                }
+                true
             }
+            None => false,
         }
     }
 
@@ -810,10 +879,10 @@ impl AuroraApp {
             self.save(false);
         }
         if n_ctrl {
-            self.new_project();
+            self.request_doc_action(ctx, DocAction::New);
         }
         if o_ctrl {
-            self.open_dialog();
+            self.request_doc_action(ctx, DocAction::Open(None));
         }
         if b_ctrl {
             self.bounce_dialog();
@@ -825,19 +894,20 @@ impl AuroraApp {
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::menu::bar(ui, |ui| {
             ui.menu_button("File", |ui| {
+                let ctx = ui.ctx().clone();
                 if ui.button("New Project      Ctrl+N").clicked() {
-                    self.new_project();
                     ui.close_menu();
+                    self.request_doc_action(&ctx, DocAction::New);
                 }
                 if ui.button("Open…            Ctrl+O").clicked() {
                     ui.close_menu();
-                    self.open_dialog();
+                    self.request_doc_action(&ctx, DocAction::Open(None));
                 }
                 ui.menu_button("Open Recent", |ui| {
                     for p in self.settings.recent_projects.clone() {
                         if ui.button(&p).clicked() {
                             ui.close_menu();
-                            self.open_path(p);
+                            self.request_doc_action(&ctx, DocAction::Open(Some(p)));
                         }
                     }
                 });
@@ -1709,6 +1779,69 @@ impl AuroraApp {
             }
         }
     }
+
+    fn doc_prompt_ui(&mut self, ctx: &egui::Context) {
+        let Some(action) = self.doc_prompt.clone() else {
+            return;
+        };
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("doc_prompt_backdrop"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(150));
+                ui.allocate_rect(screen, egui::Sense::click_and_drag());
+            });
+        let question = doc_guard::prompt_question(&self.view.project.name, &action);
+        let mut answer = None;
+        let shown = egui::Window::new("Unsaved Changes")
+            .id(egui::Id::new("doc_prompt"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .collapsible(false)
+            .resizable(false)
+            .movable(false)
+            .show(ctx, |ui| {
+                ui.label(RichText::new(question).strong());
+                ui.label(
+                    RichText::new("Your changes will be lost if you don't save them.")
+                        .small()
+                        .color(theme::TEXT_DIM),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let save = egui::Button::new(RichText::new("Save").color(Color32::BLACK)).fill(theme::ACCENT);
+                    if ui.add(save).clicked() {
+                        answer = Some(Answer::Save);
+                    }
+                    if ui.button("Don't Save").clicked() {
+                        answer = Some(Answer::DontSave);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        answer = Some(Answer::Cancel);
+                    }
+                });
+            });
+        if let Some(r) = shown {
+            ctx.move_to_top(r.response.layer_id);
+        }
+        ctx.input_mut(|i| {
+            if i.consume_key(egui::Modifiers::NONE, Key::Escape) {
+                answer.get_or_insert(Answer::Cancel);
+            }
+            if i.consume_key(egui::Modifiers::NONE, Key::Enter) {
+                answer.get_or_insert(Answer::Save);
+            }
+        });
+        let Some(answer) = answer else {
+            return;
+        };
+        self.doc_prompt = None;
+        let saved = answer == Answer::Save && self.save(false);
+        if let Some(next) = doc_guard::on_answer(action, answer, saved) {
+            self.run_doc_action(ctx, next);
+        }
+    }
 }
 
 fn snap_label(s: f64) -> &'static str {
@@ -1748,7 +1881,10 @@ impl eframe::App for AuroraApp {
         self.sync();
         self.poll_ai();
         self.update_meters();
-        self.handle_keys(ctx);
+        self.handle_close_request(ctx);
+        if self.doc_prompt.is_none() {
+            self.handle_keys(ctx);
+        }
 
         let title = format!(
             "Aurora DAW — {}{}",
@@ -1813,6 +1949,7 @@ impl eframe::App for AuroraApp {
             .show(ctx, |ui| self.arrange_ui(ui));
         self.windows(ctx);
         self.extra_windows(ctx);
+        self.doc_prompt_ui(ctx);
         self.sync();
         ctx.request_repaint_after(Duration::from_millis(if self.playing() || self.ai.busy {
             16
