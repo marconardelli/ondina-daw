@@ -18,6 +18,8 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::session_ext::{checked_output_path, is_aurora_project_file, MIDI_EXTENSIONS, PROJECT_EXTENSIONS, WAV_EXTENSIONS};
+
 pub type SharedSession = Arc<Mutex<Session>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -198,7 +200,7 @@ impl Session {
         // with the new file path and audio pool, so they start a fresh history instead.
         let replaces_project = matches!(cmd, Command::OpenProject { .. } | Command::NewProject { .. });
         let before = if mutating { Some(self.project.clone()) } else { None };
-        let result = self.dispatch(cmd);
+        let result = self.dispatch(cmd, source);
         match &result {
             Ok(v) => {
                 if let Some(b) = before {
@@ -240,7 +242,7 @@ impl Session {
         self.redo.last().map(|x| x.1.as_str())
     }
 
-    fn dispatch(&mut self, cmd: Command) -> Result<Value, String> {
+    fn dispatch(&mut self, cmd: Command, source: Source) -> Result<Value, String> {
         use Command::*;
         match cmd {
             Undo {} => {
@@ -275,6 +277,10 @@ impl Session {
                     Some(p) => PathBuf::from(p),
                     None => self.path.clone().ok_or("project has never been saved: give a path")?,
                 };
+                let p = checked_output_path(source, &p.to_string_lossy(), PROJECT_EXTENSIONS, aurora_core::PROJECT_EXTENSION)?;
+                if matches!(source, Source::Mcp | Source::Ai) && p.exists() && (p.is_dir() || !is_aurora_project_file(&p)?) {
+                    return Err(format!("output path refused: {} already exists and is not an Aurora project: choose another name", p.display()));
+                }
                 self.save(&p)
             }
 
@@ -347,11 +353,13 @@ impl Session {
                 Ok(json!({"track_ids": ids}))
             }
             ExportMidi { path, track_ids } => {
+                let p = checked_output_path(source, &path, MIDI_EXTENSIONS, "mid")?;
                 let bytes = midi_io::export_midi(&self.project, track_ids.as_deref())?;
-                std::fs::write(&path, bytes).map_err(|e| format!("cannot write {path}: {e}"))?;
-                Ok(json!({"path": path}))
+                std::fs::write(&p, bytes).map_err(|e| format!("cannot write {}: {e}", p.display()))?;
+                Ok(json!({"path": p.display().to_string()}))
             }
             Bounce { path, start, end, bit_depth, normalize, track_ids, tail_sec } => {
+                let p = checked_output_path(source, &path, WAV_EXTENSIONS, "wav")?;
                 if let Some(t) = tail_sec {
                     if !(0.0..=MAX_FIXED_TAIL_SEC).contains(&t) {
                         return Err(format!("tail_sec must be between 0 and {MAX_FIXED_TAIL_SEC} seconds"));
@@ -374,12 +382,12 @@ impl Session {
                     32 => 32,
                     _ => 24,
                 };
-                write_wav(Path::new(&path), &res.left, &res.right, sr, bits)?;
+                write_wav(&p, &res.left, &res.right, sr, bits)?;
                 let master = res.analysis.as_ref().and_then(|a| a.get(&MASTER_ID)).cloned();
                 let duration = res.left.len() as f64 / sr as f64;
                 let span = self.project.tempo.beat_to_sec(end) - self.project.tempo.beat_to_sec(start);
                 let tail_out = ((duration - span) * 1000.0).round() / 1000.0;
-                Ok(json!({"path": path, "duration_sec": duration, "tail_sec": tail_out, "sample_rate": sr, "bit_depth": bits, "master_analysis": master}))
+                Ok(json!({"path": p.display().to_string(), "duration_sec": duration, "tail_sec": tail_out, "sample_rate": sr, "bit_depth": bits, "master_analysis": master}))
             }
             BounceInPlace { track_id } => {
                 let t = self.project.track(track_id).ok_or("track not found")?.clone();
@@ -451,7 +459,7 @@ impl Session {
                 Ok(json!({"ok": true}))
             }
             other => {
-                if let Some(r) = self.dispatch_ext(&other) {
+                if let Some(r) = self.dispatch_ext(&other, source) {
                     return r;
                 }
                 match ops::apply(&mut self.project, &other)? {
