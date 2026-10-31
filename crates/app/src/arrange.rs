@@ -8,6 +8,8 @@ use eframe::egui::{
 };
 
 use crate::app::{OndinaApp, BottomTab, Drag};
+use crate::arrange_view::{self, apply_step, max_scroll_y, zoom_track_height, ArrangeView, ViewArea};
+use crate::piano_roll_view::{wheel_zoom, zoom_factor};
 use crate::theme;
 
 const HEADER_W: f32 = 210.0;
@@ -34,6 +36,23 @@ impl OndinaApp {
         self.scroll_beat + ((x - origin) / self.px_per_beat) as f64
     }
 
+    /// The arrangement's scroll and zoom, as the View menu and its geometry functions see them.
+    pub fn arrange_view(&self) -> ArrangeView {
+        ArrangeView {
+            scroll_beat: self.scroll_beat,
+            px_per_beat: self.px_per_beat,
+            scroll_y: self.scroll_y,
+            track_height: self.track_height,
+        }
+    }
+
+    fn set_arrange_view(&mut self, v: ArrangeView) {
+        self.scroll_beat = v.scroll_beat;
+        self.px_per_beat = v.px_per_beat;
+        self.scroll_y = v.scroll_y;
+        self.track_height = v.track_height;
+    }
+
     pub fn arrange_ui(&mut self, ui: &mut egui::Ui) {
         let p = self.project();
         let full = ui.available_rect_before_wrap();
@@ -43,35 +62,53 @@ impl OndinaApp {
         let tracks_top = top + RULER_H + LANE_H * 2.0;
         let painter = ui.painter_at(full);
 
+        let view_w = (full.right() - timeline_x).max(1.0);
+        let view_h = (full.bottom() - tracks_top).max(1.0);
         // zoom / scroll input
         if ui.rect_contains_pointer(full) {
-            let (scroll, zoom_mod, shift, hover) = ui.input(|i| {
+            let line_px = ui.ctx().options(|o| o.line_scroll_speed);
+            let (scroll, hover, zoom) = ui.input(|i| {
                 (
                     i.smooth_scroll_delta,
-                    i.modifiers.command,
-                    i.modifiers.shift,
                     i.pointer.hover_pos(),
+                    wheel_zoom(&i.events, line_px, i.screen_rect().height()),
                 )
             });
-            if zoom_mod && scroll.y != 0.0 {
-                let anchor = hover
-                    .map(|h| self.x_to_beat(h.x, timeline_x))
-                    .unwrap_or(self.scroll_beat);
-                let factor = (1.0 + scroll.y * 0.002).clamp(0.5, 2.0);
-                self.px_per_beat = (self.px_per_beat * factor).clamp(2.0, 400.0);
-                if let Some(h) = hover {
-                    self.scroll_beat =
-                        (anchor - ((h.x - timeline_x) / self.px_per_beat) as f64).max(0.0);
-                }
-            } else if shift || scroll.x != 0.0 {
-                let dx = if shift { scroll.y } else { scroll.x };
-                self.scroll_beat = (self.scroll_beat - (dx / self.px_per_beat) as f64).max(0.0);
-            } else if scroll.y != 0.0 {
-                let content_h = p.tracks.len() as f32 * self.track_height + 80.0;
-                self.scroll_y = (self.scroll_y - scroll.y)
-                    .clamp(0.0, (content_h - (full.bottom() - tracks_top)).max(0.0));
+            let hover = hover.unwrap_or(full.center());
+            let dx = (hover.x - timeline_x).clamp(0.0, view_w);
+            let dy = (hover.y - tracks_top).clamp(0.0, view_h);
+            // egui 0.29 gives Ctrl+wheel only to its zoom factor: read the wheel events instead.
+            if zoom.time != 0.0 {
+                (self.scroll_beat, self.px_per_beat) =
+                    arrange_view::zoom_time(self.scroll_beat, self.px_per_beat, dx, zoom_factor(zoom.time));
+            }
+            // Ctrl+Shift+wheel: the piano roll's vertical zoom is the track height here.
+            if zoom.pitch != 0.0 {
+                (self.scroll_y, self.track_height) = zoom_track_height(
+                    self.scroll_y, self.track_height, dy, zoom_factor(zoom.pitch), p.tracks.len(), view_h,
+                );
+            }
+            // egui already turns Shift+wheel into horizontal scrolling.
+            if scroll.x != 0.0 {
+                self.scroll_beat = (self.scroll_beat - (scroll.x / self.px_per_beat) as f64).max(0.0);
+            }
+            if scroll.y != 0.0 {
+                self.scroll_y -= scroll.y;
             }
         }
+        if let Some(step) = self.arrange_step.take() {
+            let area = ViewArea {
+                width: view_w,
+                height: view_h,
+                tracks: p.tracks.len(),
+                content_end: p.content_end(),
+                beats_per_bar: bpb,
+                playhead: self.position(),
+            };
+            self.set_arrange_view(apply_step(step, self.arrange_view(), &area));
+        }
+        // Also after tracks were deleted or made shorter elsewhere: never leave the view below the content.
+        self.scroll_y = self.scroll_y.clamp(0.0, max_scroll_y(p.tracks.len(), self.track_height, view_h));
         // follow playhead
         let pos = self.position();
         let jumped = (pos - self.last_playhead).abs() > 0.5 && !self.playing();
@@ -877,8 +914,8 @@ impl OndinaApp {
                     let v = edge_scroll_speed(pp.y, tracks_top, full.bottom());
                     if v != 0.0 {
                         let dt = ui.input(|i| i.stable_dt).min(0.1);
-                        // same limit as the mouse wheel above
-                        let max = (n as f32 * th + 80.0 - (full.bottom() - tracks_top)).max(0.0);
+                        // same limit as the mouse wheel
+                        let max = max_scroll_y(n, th, full.bottom() - tracks_top);
                         self.scroll_y = (self.scroll_y + v * dt).clamp(0.0, max);
                         // keep scrolling while the pointer rests in the band
                         ui.ctx().request_repaint();
