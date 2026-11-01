@@ -261,6 +261,10 @@ pub struct OndinaApp {
     pub note_len: f64,
     /// Value of the number field in the piano roll's Velocity menu.
     pub pr_velocity: u8,
+    /// Grid of the piano roll's Q button; None follows the snap.
+    pub pr_quantize: Option<f64>,
+    /// How far the piano roll's transpose buttons have moved the current selection.
+    pub pr_transpose_run: crate::pr_toolbar::TransposeRun,
     /// Notes copied or cut in the piano roll (Ctrl+C / Ctrl+X); lives for the whole app session.
     pub note_clipboard: Option<crate::note_clipboard::NoteClip>,
     /// Region copied or cut in the arrangement (Ctrl+C / Ctrl+X); lives for the whole app session.
@@ -362,13 +366,15 @@ impl OndinaApp {
             pr_px_per_beat: 80.0,
             pr_scroll_beat: 0.0,
             pr_top_pitch: 84,
-            pr_key_height: 12.0,
+            pr_key_height: crate::piano_roll_view::DEFAULT_KEY_H,
             pr_pitch_carry: 0.0,
             pr_framing: Default::default(),
             selected_notes: HashSet::new(),
             notes_region: None,
             note_len: 0.25,
             pr_velocity: 100,
+            pr_quantize: None,
+            pr_transpose_run: Default::default(),
             note_clipboard: None,
             region_clipboard: None,
             cc_lane: Default::default(),

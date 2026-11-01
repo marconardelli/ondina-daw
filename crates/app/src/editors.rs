@@ -15,23 +15,21 @@ use crate::arrange::{rename_field, RenameEdit};
 use crate::cc_lane::{self, CcStroke};
 use crate::note_clipboard as nc;
 use crate::note_drag::{self, VelocityStroke};
-use crate::note_menus::{self, VelocityChoice};
 use crate::note_selection;
 use crate::piano_roll_view::{
-    follow_scroll, initial_view, loop_local_beat, playing_pattern_step, scroll_pitch, wheel_zoom, zoom_factor,
-    zoom_pitch, zoom_time,
+    follow_scroll, grid_line, grid_step, initial_view, is_black, key_label, loop_local_beat, note_colors,
+    piano_roll_layout, playing_pattern_step, row_fill, row_line, scroll_pitch, velocity_colors, visible_rows,
+    wheel_zoom, zoom_factor, zoom_pitch, zoom_time, GridLine, BLACK_KEY_INSET, KEY_BLACK, KEY_LABEL, KEY_LINE,
+    KEY_WHITE, RULER_H, VEL_H,
 };
 use crate::step_paint::{self, cell_at, RowFill, RowRename, StepCell, StepStroke, DRUM_SOUNDS, PAINT_VELOCITY};
 use crate::theme;
 
-const KEYS_W: f32 = 54.0;
-
-/// Mouse and keyboard help of the piano roll (hover on "Help" in its toolbar and on the editor header's name).
+/// Mouse and keyboard help of the piano roll (hover on the help entry of its "⋯" menu and on the editor header's
+/// name).
 pub(crate) const PIANO_ROLL_HELP: &str = "Click on empty grid: add a note and select it (Ctrl/Shift: add it to the selection) · Wheel: scroll pitch · Shift+wheel: scroll time · Ctrl+wheel: zoom time · Ctrl+Shift+wheel: zoom pitch · Ctrl+C/X/V: copy/cut/paste · Ctrl+A: select all · Ctrl+D: repeat the selection · ←/→: move by the snap step · ↑/↓: semitone · Shift+↑/↓: octave · Alt+←/→: shorten/lengthen by the snap step · Alt+drag: copy the notes · Controller lane: drag to draw, right-drag to erase";
-const VEL_H: f32 = 56.0;
-
 /// The piano roll's Harmony menu: label, interval and whether the voice goes below the notes.
-const HARMONY_MENU: [(&str, HarmonyInterval, bool); 7] = [
+pub(crate) const HARMONY_MENU: [(&str, HarmonyInterval, bool); 7] = [
     ("3rd above", HarmonyInterval::Third, false),
     ("3rd below", HarmonyInterval::Third, true),
     ("5th above", HarmonyInterval::Fifth, false),
@@ -40,10 +38,6 @@ const HARMONY_MENU: [(&str, HarmonyInterval, bool); 7] = [
     ("Octave above", HarmonyInterval::Octave, false),
     ("Octave below", HarmonyInterval::Octave, true),
 ];
-
-fn is_black(p: i32) -> bool {
-    matches!(p.rem_euclid(12), 1 | 3 | 6 | 8 | 10)
-}
 
 /// Removes the events that match `f` and tells whether there was one.
 pub(crate) fn take_event(events: &mut Vec<egui::Event>, f: impl Fn(&egui::Event) -> bool) -> bool {
@@ -128,113 +122,18 @@ impl OndinaApp {
         m: &MidiContent,
     ) {
         let rid = region.id;
-        // toolbar
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Help").color(theme::TEXT_3)).on_hover_text(PIANO_ROLL_HELP);
-            ui.separator();
-            ui.label("Note length");
-            egui::ComboBox::from_id_salt("notelen").width(60.0).selected_text(len_label(self.note_len)).show_ui(ui, |ui| {
-                for l in [4.0, 2.0, 1.0, 0.5, 0.25, 0.125] {
-                    ui.selectable_value(&mut self.note_len, l, len_label(l));
-                }
-            });
-            let sel: Option<Vec<usize>> = if self.selected_notes.is_empty() { None } else { Some(self.selected_notes.iter().copied().collect()) };
-            if ui.button("Quantize").on_hover_text("Quantize the selected notes to the snap grid (all notes when nothing is selected)").clicked() {
-                let g = if self.snap > 0.0 { self.snap.min(1.0) } else { 0.25 };
-                self.exec_on_selection(Command::QuantizeNotes { region_id: rid, grid: g, strength: Some(1.0), swing: None, quantize_ends: Some(false), indices: sel.clone() });
-            }
-            if ui.button("Humanize").on_hover_text("Humanize the selected notes (all notes when nothing is selected)").clicked() {
-                self.exec_on_selection(Command::HumanizeNotes { region_id: rid, timing: Some(0.015), velocity: Some(10), seed: None, indices: sel.clone() });
-            }
-            if ui.button("↑ st").clicked() {
-                self.cmd(Command::TransposeNotes { region_id: rid, semitones: 1, indices: sel.clone() });
-            }
-            if ui.button("↓ st").clicked() {
-                self.cmd(Command::TransposeNotes { region_id: rid, semitones: -1, indices: sel.clone() });
-            }
-            if ui.button("↑ oct").clicked() {
-                self.cmd(Command::TransposeNotes { region_id: rid, semitones: 12, indices: sel.clone() });
-            }
-            if ui.button("↓ oct").clicked() {
-                self.cmd(Command::TransposeNotes { region_id: rid, semitones: -12, indices: sel.clone() });
-            }
-            if ui.button("Snap to key").on_hover_text("Move the selected notes to the nearest pitch in the project key (all notes when nothing is selected)").clicked() {
-                self.exec_on_selection(Command::SnapNotesToKey { region_id: rid, indices: sel.clone() });
-            }
-            ui.menu_button("Harmony", |ui| {
-                for (label, interval, below) in HARMONY_MENU {
-                    if ui.button(label).clicked() {
-                        self.add_harmony(Command::AddHarmony { region_id: rid, interval, below: Some(below), indices: sel.clone() });
-                        ui.close_menu();
-                    }
-                }
-            })
-            .response
-            .on_hover_text("Add a voice in the project key to the selected notes (all notes when nothing is selected). The new notes become the selection.");
-            ui.menu_button("Length", |ui| {
-                for (label, choice, hint) in note_menus::LENGTH_MENU {
-                    let text = note_menus::length_label(label, choice, len_label(self.note_len));
-                    if ui.button(text).on_hover_text(hint).clicked() {
-                        let c = note_menus::length_command(rid, choice, self.note_len, sel.clone());
-                        if let Some(s) = self.exec_on_selection(c).as_ref().and_then(note_menus::length_status) {
-                            self.status = s;
-                        }
-                        ui.close_menu();
-                    }
-                }
-            })
-            .response
-            .on_hover_text("Change the length of the selected notes (all notes when nothing is selected). Starts and pitches stay.");
-            ui.menu_button("Velocity", |ui| {
-                for (label, choice) in note_menus::VELOCITY_MENU {
-                    if ui.button(label).clicked() {
-                        self.exec_on_selection(note_menus::velocity_command(rid, choice, sel.clone()));
-                        ui.close_menu();
-                    }
-                }
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(&mut self.pr_velocity).range(1..=127));
-                    if ui.button("Set").clicked() {
-                        let c = note_menus::velocity_command(rid, VelocityChoice::Set(self.pr_velocity), sel.clone());
-                        self.exec_on_selection(c);
-                        ui.close_menu();
-                    }
-                });
-            })
-            .response
-            .on_hover_text("Set or scale the velocity of the selected notes (all notes when nothing is selected)");
-            if ui.button("Select all").on_hover_text("Select every note (Ctrl+A)").clicked() {
-                self.selected_notes = nc::select_all(m.notes.len());
-            }
-            ui.separator();
-            let mut tr = m.transpose;
-            if ui.add(egui::DragValue::new(&mut tr).range(-48..=48).prefix("Region transpose ")).changed() {
-                self.cmd_merge(Command::SetRegionProperties { region_id: rid, name: None, muted: None, loop_count: None, transpose: Some(tr), velocity_offset: None, gain_db: None, fade_in: None, fade_out: None, reverse: None, color: None }, format!("tr{rid}"));
-            }
-            ui.separator();
-            if self.ai_button(ui, RichText::new("✨ AI: continue / improve").color(theme::AI)) {
-                self.ask_ai(ondina_studio::prompts::CONTINUE_IMPROVE.into());
-            }
-        });
+        // the toolbar lives in the editor header (pr_toolbar.rs)
         let full = ui.available_rect_before_wrap();
-        let cc_h = cc_lane::lane_height(self.cc_lane.open, full.height(), VEL_H);
-        let grid = Rect::from_min_max(
-            pos2(full.left() + KEYS_W, full.top()),
-            pos2(full.right(), full.bottom() - VEL_H - cc_h),
-        );
-        let vel_rect = Rect::from_min_max(
-            pos2(full.left() + KEYS_W, full.bottom() - VEL_H - cc_h + 2.0),
-            pos2(full.right(), full.bottom() - cc_h),
-        );
-        let cc_rect = Rect::from_min_max(pos2(full.left() + KEYS_W, full.bottom() - cc_h + 2.0), full.max);
-        let cc_gutter = Rect::from_min_max(pos2(full.left(), full.bottom() - cc_h + 2.0), pos2(full.left() + KEYS_W, full.bottom()));
+        let cc_h = cc_lane::lane_height(self.cc_lane.open, full.height(), RULER_H + VEL_H);
+        let lay = piano_roll_layout(full, cc_h);
+        let grid = lay.grid;
+        let vel_rect = lay.vel;
         let painter = ui.painter_at(full);
-        painter.rect_filled(full, Rounding::ZERO, theme::BG);
+        painter.rect_filled(full, Rounding::ZERO, theme::LANE_BG);
         // Frame the region's notes the first time it is shown; before the input so this frame already
         // draws the framed view.
         if self.pr_framing.take(rid) {
-            let rows = ((grid.height() / self.pr_key_height).floor() as i32).max(1);
+            let rows = visible_rows(grid.height(), self.pr_key_height).max(1);
             let (top, beat) = initial_view(&m.notes, rows);
             self.pr_top_pitch = top;
             self.pr_scroll_beat = beat;
@@ -293,55 +192,44 @@ impl OndinaApp {
         let beat_x = |b: f64, sb: f64| grid.left() + ((b - sb) as f32) * pbb;
         let top_pitch = self.pr_top_pitch;
         let sb = self.pr_scroll_beat;
-        // rows
+        // pitch rows and the keyboard
+        let rpainter = painter.with_clip_rect(grid);
+        let kpainter = painter.with_clip_rect(lay.keys);
+        kpainter.rect_filled(lay.keys, Rounding::ZERO, KEY_WHITE);
         for k in 0..=rows {
             let pitch = top_pitch - k;
             let y = pitch_y(pitch, top_pitch);
             let row = Rect::from_min_max(pos2(grid.left(), y), pos2(grid.right(), y + kh));
             let in_key = p.key.contains(pitch.clamp(0, 127) as u8);
-            painter.rect_filled(
-                row,
-                Rounding::ZERO,
-                if is_black(pitch) {
-                    theme::LANE_ALT
-                } else if in_key {
-                    Color32::from_rgb(46, 50, 56)
-                } else {
-                    theme::LANE
-                },
-            );
-            painter.line_segment(
-                [pos2(grid.left(), y + kh), pos2(grid.right(), y + kh)],
-                Stroke::new(0.5_f32, theme::BG),
-            );
-            // keyboard
-            let key = Rect::from_min_max(pos2(full.left(), y), pos2(full.left() + KEYS_W, y + kh));
-            painter.rect_filled(
-                key,
-                Rounding::ZERO,
-                if is_black(pitch) {
-                    Color32::from_gray(30)
-                } else {
-                    Color32::from_gray(215)
-                },
-            );
-            painter.line_segment(
-                [
-                    pos2(full.left(), y + kh),
-                    pos2(full.left() + KEYS_W, y + kh),
-                ],
-                Stroke::new(0.5_f32, Color32::from_gray(120)),
-            );
-            if pitch.rem_euclid(12) == 0 {
-                painter.text(
-                    pos2(full.left() + KEYS_W - 3.0, y + kh / 2.0),
+            rpainter.rect_filled(row, Rounding::ZERO, row_fill(pitch, in_key));
+            rpainter.hline(grid.x_range(), y + kh - 0.5, Stroke::new(1.0_f32, row_line(pitch)));
+            // keyboard: white keys across, black keys shorter on top of them, the C of every octave labelled
+            let key = Rect::from_min_max(pos2(lay.keys.left(), y), pos2(lay.keys.right(), y + kh));
+            let kresp = ui.interact(key.intersect(lay.keys), ui.id().with(("pk", pitch)), Sense::click_and_drag());
+            let black = is_black(pitch);
+            let face = if black {
+                Rect::from_min_max(key.min, pos2(key.right() - BLACK_KEY_INSET, key.bottom()))
+            } else {
+                key
+            };
+            if black {
+                kpainter.rect_filled(face, Rounding { ne: 2.0, se: 2.0, ..Rounding::ZERO }, KEY_BLACK);
+            } else {
+                kpainter.hline(key.x_range(), key.bottom() - 0.5, Stroke::new(1.0_f32, KEY_LINE));
+            }
+            if kresp.hovered() || kresp.is_pointer_button_down_on() {
+                let a = if kresp.is_pointer_button_down_on() { 120 } else { 60 };
+                kpainter.rect_filled(face, Rounding::ZERO, theme::ACCENT.gamma_multiply(a as f32 / 255.0));
+            }
+            if let Some(label) = key_label(pitch, kh) {
+                kpainter.text(
+                    pos2(key.right() - 4.0, y + kh / 2.0),
                     Align2::RIGHT_CENTER,
-                    note_name(pitch.clamp(0, 127) as u8),
-                    FontId::proportional(9.5),
-                    Color32::from_gray(40),
+                    label,
+                    FontId::monospace(9.0),
+                    KEY_LABEL,
                 );
             }
-            let kresp = ui.interact(key, ui.id().with(("pk", pitch)), Sense::click_and_drag());
             if kresp.drag_started() || kresp.clicked() {
                 self.live_note(
                     track.id,
@@ -360,52 +248,47 @@ impl OndinaApp {
                 );
             }
         }
-        // beat grid
+        painter.vline(lay.keys.right() - 0.5, lay.keys.y_range(), Stroke::new(1.0_f32, theme::SEPARATOR));
+        // ruler (bar numbers of the song) and the grid lines: bars, beats and divisions
+        let ruler_band = Rect::from_min_max(pos2(full.left(), full.top()), lay.ruler.max);
+        painter.rect_filled(ruler_band, Rounding::ZERO, theme::PANEL_BG);
+        painter.hline(ruler_band.x_range(), ruler_band.bottom() - 0.5, Stroke::new(1.0_f32, theme::HAIRLINE));
+        let rulp = painter.with_clip_rect(lay.ruler);
         let bpb = p.time_signature.beats_per_bar();
-        let step = if pbb > 160.0 {
-            0.25
-        } else if pbb > 50.0 {
-            0.5
-        } else {
-            1.0
-        };
-        let mut b = (sb / step).floor() * step;
+        let step = grid_step(pbb, bpb);
         let visible = (grid.width() / pbb) as f64;
-        while b <= sb + visible {
+        // count the lines in song beats, so the bar lines land on the song's bars whatever the region's start
+        let mut song_b = ((sb + region.start) / step).floor() * step;
+        while song_b - region.start <= sb + visible {
+            let b = song_b - region.start;
             let x = beat_x(b, sb);
-            let bar = (b / bpb).fract().abs() < 1e-6;
-            let beat = b.fract().abs() < 1e-6;
-            painter.line_segment(
-                [pos2(x, grid.top()), pos2(x, full.bottom())],
-                Stroke::new(
-                    if bar { 1.2 } else { 0.6_f32 },
-                    if bar {
-                        theme::GRID_BAR
-                    } else if beat {
-                        theme::GRID
-                    } else {
-                        Color32::from_rgb(48, 51, 58)
-                    },
-                ),
-            );
-            if bar {
-                painter.text(
-                    pos2(x + 2.0, grid.top() + 1.0),
-                    Align2::LEFT_TOP,
-                    format!("{}", ((region.start + b) / bpb).floor() as i64 + 1),
-                    FontId::proportional(9.5),
-                    theme::TEXT_DIM,
-                );
+            let kind = grid_line(b, region.start, bpb);
+            rpainter.vline(x, grid.y_range(), Stroke::new(1.0_f32, kind.color()));
+            match kind {
+                GridLine::Bar => {
+                    rulp.vline(x, lay.ruler.top() + 3.0..=lay.ruler.bottom(), Stroke::new(1.0_f32, theme::RULER_TICK));
+                    rulp.text(
+                        pos2(x + 4.0, lay.ruler.center().y),
+                        Align2::LEFT_CENTER,
+                        format!("{}", (song_b / bpb).round() as i64 + 1),
+                        theme::number_font(),
+                        theme::TEXT_2,
+                    );
+                }
+                GridLine::Beat => {
+                    rulp.vline(x, lay.ruler.bottom() - 5.0..=lay.ruler.bottom(), Stroke::new(1.0_f32, theme::RULER_BEAT_TICK));
+                }
+                GridLine::Division => {}
             }
-            b += step;
+            song_b += step;
         }
         // region end shading
         let end_x = beat_x(region.length, sb);
         if end_x < grid.right() {
             painter.rect_filled(
                 Rect::from_min_max(
-                    pos2(end_x.max(grid.left()), grid.top()),
-                    pos2(grid.right(), full.bottom()),
+                    pos2(end_x.max(grid.left()), lay.ruler.top()),
+                    pos2(grid.right(), grid.bottom()),
                 ),
                 Rounding::ZERO,
                 Color32::from_black_alpha(110),
@@ -475,32 +358,18 @@ impl OndinaApp {
             }
             let r = Rect::from_min_max(pos2(x0, y + 1.0), pos2(x1, y + kh - 1.0));
             let sel = preview_sel.as_ref().map_or_else(|| self.selected_notes.contains(&i), |s| s.contains(&i));
-            // selected notes: light fill + thick white outline + outer glow, readable even during playback
-            let fill = if sel {
-                theme::velocity_color(base, n.velocity).lerp_to_gamma(Color32::WHITE, 0.55)
-            } else {
-                theme::velocity_color(base, n.velocity)
-            };
+            // track color with a darker border; selected: lighter with a white border and a soft glow, readable
+            // even during playback
+            let (fill, border) = note_colors(base, sel);
             if sel {
                 gpainter.rect_stroke(
                     r.expand(2.0),
-                    Rounding::same(3.0_f32),
-                    Stroke::new(2.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 90)),
+                    Rounding::same(3.5_f32),
+                    Stroke::new(2.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 70)),
                 );
             }
-            gpainter.rect_filled(r, Rounding::same(2.0_f32), fill);
-            gpainter.rect_stroke(
-                r,
-                Rounding::same(2.0_f32),
-                Stroke::new(
-                    if sel { 2.2 } else { 0.8_f32 },
-                    if sel {
-                        Color32::WHITE
-                    } else {
-                        Color32::from_black_alpha(170)
-                    },
-                ),
-            );
+            gpainter.rect_filled(r, Rounding::same(2.5_f32), fill);
+            gpainter.rect_stroke(r.shrink(0.5), Rounding::same(2.0_f32), Stroke::new(if sel { 1.5 } else { 1.0_f32 }, border));
             if previewing {
                 continue;
             }
@@ -673,41 +542,36 @@ impl OndinaApp {
                 gpainter.rect_stroke(r, Rounding::ZERO, Stroke::new(1.2_f32, Color32::from_rgb(140, 185, 255)));
             }
         }
-        // velocity lane
-        painter.rect_filled(vel_rect, Rounding::ZERO, theme::PANEL);
+        // velocity lane: a stem with a round head per note, in the track color
+        let vel_band = Rect::from_min_max(lay.vel_label.min, vel_rect.max);
+        painter.rect_filled(vel_band, Rounding::ZERO, theme::HEADER_BG);
+        painter.hline(vel_band.x_range(), vel_band.top() + 0.5, Stroke::new(1.0_f32, theme::HAIRLINE));
+        painter.vline(lay.vel_label.right() - 0.5, lay.vel_label.y_range(), Stroke::new(1.0_f32, theme::SEPARATOR));
         painter.text(
-            pos2(full.left() + 4.0, vel_rect.center().y),
-            Align2::LEFT_CENTER,
+            lay.vel_label.left_top() + vec2(6.0, 5.0),
+            Align2::LEFT_TOP,
             "Velocity",
-            FontId::proportional(10.0),
-            theme::TEXT_DIM,
+            theme::label_font(),
+            theme::TEXT_3,
         );
         let vpainter = painter.with_clip_rect(vel_rect);
+        // stems stand on `vel_base` and reach `vel_span` above it at 127, leaving room for the heads
+        let vel_base = vel_rect.bottom() - 4.0;
+        let vel_span = (vel_rect.height() - 10.0).max(1.0);
         for (i, n) in notes.iter().enumerate() {
-            let x = beat_x(n.start, sb);
-            if x < vel_rect.left() || x > vel_rect.right() {
+            let x = beat_x(n.start, sb) + 2.0;
+            if x < vel_rect.left() - 4.0 || x > vel_rect.right() + 4.0 {
                 continue;
             }
-            let h = (n.velocity as f32 / 127.0) * (vel_rect.height() - 4.0);
+            let top = vel_base - (n.velocity as f32 / 127.0) * vel_span;
             let sel = preview_sel.as_ref().map_or_else(|| self.selected_notes.contains(&i), |s| s.contains(&i));
-            vpainter.line_segment(
-                [
-                    pos2(x + 1.0, vel_rect.bottom() - 2.0),
-                    pos2(x + 1.0, vel_rect.bottom() - 2.0 - h),
-                ],
-                Stroke::new(
-                    3.0_f32,
-                    if sel {
-                        Color32::WHITE
-                    } else {
-                        theme::velocity_color(base, n.velocity)
-                    },
-                ),
-            );
+            let (stem, head) = velocity_colors(base, sel);
+            vpainter.line_segment([pos2(x, vel_base), pos2(x, top)], Stroke::new(2.0_f32, stem));
+            vpainter.circle_filled(pos2(x, top), 3.0, head);
         }
         let vresp = ui.interact(vel_rect, ui.id().with(("vel", rid)), Sense::drag());
         let vel_tol = f64::from(4.0 / pbb);
-        let vel_at = |y: f32| note_drag::velocity_from_y(y, vel_rect.bottom(), vel_rect.height() - 4.0);
+        let vel_at = |y: f32| note_drag::velocity_from_y(y, vel_base, vel_span);
         if vresp.drag_started() {
             let mut stroke = VelocityStroke::new(m.notes.clone());
             // egui reports the drag a few pixels after the press: start the stroke where the button went down.
@@ -722,42 +586,54 @@ impl OndinaApp {
                 stroke.add(x_to_beat(pp.x), vel_at(pp.y), vel_tol, &self.selected_notes);
             }
         }
-        // controller lane
-        painter.rect_filled(cc_rect, Rounding::ZERO, theme::PANEL);
-        let cresp = ui.interact(cc_rect, ui.id().with(("cc", rid)), Sense::click_and_drag());
+        // controller lane: a header across the editor (open / close, controller, hints), the drawing area under it
         let ctrl = self.cc_lane.controller;
-        let cc_value_at = |y: f32| cc_lane::value_from_y(y, cc_rect.top() + 3.0, cc_rect.bottom() - 3.0);
-        if self.cc_lane.open {
+        let cc_band = Rect::from_min_max(lay.cc_label.min, lay.cc.max);
+        let cc_head = Rect::from_min_max(cc_band.min, pos2(cc_band.right(), (cc_band.top() + cc_lane::HEADER_H).min(cc_band.bottom())));
+        painter.rect_filled(cc_band, Rounding::ZERO, theme::LANE_BG);
+        painter.rect_filled(cc_head, Rounding::ZERO, theme::HEADER_BG);
+        painter.hline(cc_band.x_range(), cc_band.top() + 0.5, Stroke::new(1.0_f32, theme::HAIRLINE));
+        painter.vline(lay.cc_label.right() - 0.5, lay.cc_label.y_range(), Stroke::new(1.0_f32, theme::SEPARATOR));
+        let cc_body = if self.cc_lane.open { cc_lane::body_rect(lay.cc) } else { None };
+        let events = m.cc.iter().filter(|e| e.controller == ctrl).count();
+        let mut stroke_value: Option<u8> = None;
+        // a stroke keeps drawing if the lane closes or shrinks under it
+        let cc_area = cc_body.unwrap_or(lay.cc);
+        let cc_value_at = |y: f32| cc_lane::value_from_y(y, cc_area.top() + 3.0, cc_area.bottom() - 3.0);
+        if let Some(body) = cc_body {
+            painter.hline(cc_band.x_range(), body.top() - 0.5, Stroke::new(1.0_f32, theme::HAIRLINE));
+            let cresp = ui.interact(body, ui.id().with(("cc", rid)), Sense::click_and_drag());
             let stroke = match &self.drag {
                 Some(Drag::CcStroke { region, stroke }) if *region == rid => Some(stroke.clone()),
                 _ => None,
             };
             let shown = stroke.as_ref().map_or_else(|| m.cc.clone(), |s| s.preview(&m.cc));
             let segs = cc_lane::segments(&shown, ctrl, region.length);
-            let cpainter = painter.with_clip_rect(cc_rect);
-            cc_lane::paint(&cpainter, cc_rect, &segs, ctrl, base, &|b| beat_x(b, sb));
-            let small = FontId::proportional(9.5);
+            let cpainter = painter.with_clip_rect(body);
+            cc_lane::paint(&cpainter, body, &segs, ctrl, base, &|b| beat_x(b, sb));
             match &stroke {
                 Some(s) if s.erase => {
                     if let Some((from, to)) = s.range() {
-                        let r = Rect::from_min_max(pos2(beat_x(from, sb), cc_rect.top()), pos2(beat_x(to, sb), cc_rect.bottom()));
+                        let r = Rect::from_min_max(pos2(beat_x(from, sb), body.top()), pos2(beat_x(to, sb), body.bottom()));
                         cpainter.rect_filled(r, Rounding::ZERO, Color32::from_rgba_unmultiplied(220, 60, 60, 40));
                     }
                 }
-                Some(s) => {
-                    if let Some(v) = s.last_value() {
-                        painter.text(pos2(cc_rect.right() - 4.0, cc_rect.top() + 2.0), Align2::RIGHT_TOP, cc_lane::value_label(ctrl, v), small.clone(), theme::TEXT_DIM);
-                    }
-                }
+                Some(s) => stroke_value = s.last_value(),
                 None => {}
             }
             if segs.is_empty() && stroke.is_none() {
-                painter.text(pos2(cc_rect.left() + 6.0, cc_rect.center().y), Align2::LEFT_CENTER, format!("No {} events: drag to draw", cc_lane::short_name(ctrl)), FontId::proportional(10.0), theme::TEXT_DIM);
+                painter.text(
+                    pos2(body.left() + 8.0, body.center().y),
+                    Align2::LEFT_CENTER,
+                    format!("No {} events: drag to draw", cc_lane::short_name(ctrl)),
+                    theme::body_font(),
+                    theme::TEXT_3,
+                );
             }
-            let kind = track.instrument.as_ref().map(|pl| pl.kind.as_str());
-            if let Some(hint) = cc_lane::ignored_hint(kind, ctrl) {
-                painter.text(pos2(cc_rect.right() - 4.0, cc_rect.bottom() - 2.0), Align2::RIGHT_BOTTOM, hint, small, theme::TEXT_DIM);
-            }
+            // the gutter shows the lane's range
+            let small = theme::label_font();
+            painter.text(pos2(lay.cc_label.right() - 6.0, body.top() + 2.0), Align2::RIGHT_TOP, "127", small.clone(), theme::TEXT_DISABLED);
+            painter.text(pos2(lay.cc_label.right() - 6.0, body.bottom() - 2.0), Align2::RIGHT_BOTTOM, "0", small, theme::TEXT_DISABLED);
             if self.drag.is_none() {
                 let erase_drag = cresp.drag_started_by(PointerButton::Secondary);
                 let start = if erase_drag || cresp.drag_started_by(PointerButton::Primary) {
@@ -779,30 +655,68 @@ impl OndinaApp {
             }
             let _ = cresp.on_hover_text("Controller lane · drag: draw · right-drag: erase · click: one point");
         }
-        let mut g = ui.new_child(egui::UiBuilder::new().max_rect(cc_gutter.shrink(2.0)).layout(egui::Layout::top_down(egui::Align::LEFT)));
-        if g.selectable_label(self.cc_lane.open, "CC").on_hover_text("Show or hide the controller lane").clicked() {
+        // header: the open / close toggle in the gutter, then the controller and what the lane tells
+        let toggle_rect = Rect::from_min_max(cc_head.min, pos2(lay.cc_label.right(), cc_head.bottom()));
+        let tresp = ui
+            .interact(toggle_rect, ui.id().with(("cc-toggle", rid)), Sense::click())
+            .on_hover_text(if self.cc_lane.open { "Hide the controller lane" } else { "Show the controller lane" });
+        if tresp.hovered() {
+            painter.rect_filled(toggle_rect.shrink(1.0), Rounding::same(theme::R_SM), theme::HOVER);
+        }
+        painter.text(
+            pos2(toggle_rect.left() + 6.0, toggle_rect.center().y),
+            Align2::LEFT_CENTER,
+            format!("{} CC", if self.cc_lane.open { "\u{25BE}" } else { "\u{25B8}" }),
+            theme::label_font(),
+            if tresp.hovered() { theme::TEXT } else { theme::TEXT_2 },
+        );
+        if tresp.clicked() {
             self.cc_lane.open = !self.cc_lane.open;
         }
-        if self.cc_lane.open {
-            let _ = egui::ComboBox::from_id_salt("cc_ctrl")
-                .width(KEYS_W - 6.0)
-                .selected_text(cc_lane::short_name(ctrl))
-                .show_ui(&mut g, |ui| {
-                    for (c, n) in cc_lane::lane_choices(&m.cc) {
-                        let label = if n > 0 { format!("{} · {n}", cc_lane::controller_name(c)) } else { cc_lane::controller_name(c) };
-                        ui.selectable_value(&mut self.cc_lane.controller, c, label);
-                    }
-                })
-                .response
-                .on_hover_text("Controller shown and drawn in this lane. The built-in instruments respond only to Sustain (64), the Drum Synth to none; VST3 instruments receive every controller.");
-        }
+        let head_rest = Rect::from_min_max(pos2(lay.cc.left() + theme::SP_2, cc_head.top()), pos2(cc_head.right() - theme::SP_2, cc_head.bottom()));
+        let mut g = ui.new_child(egui::UiBuilder::new().max_rect(head_rest).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        g.spacing_mut().interact_size.y = cc_lane::HEADER_H - 4.0;
+        g.spacing_mut().button_padding.y = 0.0;
+        let _ = egui::ComboBox::from_id_salt("cc_ctrl")
+            .width(130.0)
+            .selected_text(RichText::new(cc_lane::controller_name(ctrl)).size(theme::SIZE_LABEL + 1.0))
+            .show_ui(&mut g, |ui| {
+                for (c, n) in cc_lane::lane_choices(&m.cc) {
+                    let label = if n > 0 { format!("{} · {n}", cc_lane::controller_name(c)) } else { cc_lane::controller_name(c) };
+                    ui.selectable_value(&mut self.cc_lane.controller, c, label);
+                }
+            })
+            .response
+            .on_hover_text("Controller shown and drawn in this lane. The built-in instruments respond only to Sustain (64), the Drum Synth to none; VST3 instruments receive every controller.");
+        let count = match events {
+            0 => "no events".to_string(),
+            1 => "1 event".to_string(),
+            n => format!("{n} events"),
+        };
+        g.label(RichText::new(count).size(theme::SIZE_LABEL).color(theme::TEXT_3));
+        g.with_layout(egui::Layout::right_to_left(egui::Align::Center), |g| {
+            let kind = track.instrument.as_ref().map(|pl| pl.kind.as_str());
+            if let Some(v) = stroke_value {
+                g.label(RichText::new(cc_lane::value_label(ctrl, v)).font(theme::number_font()).color(theme::TEXT));
+            } else if let Some(hint) = cc_lane::ignored_hint(kind, ctrl) {
+                g.label(RichText::new(hint).size(theme::SIZE_LABEL).color(theme::MONITOR));
+            } else if self.cc_lane.open {
+                g.label(RichText::new("drag: draw · right-drag: erase").size(theme::SIZE_LABEL).color(theme::TEXT_DISABLED));
+            }
+        });
         // playhead (inside a looped region it is drawn in the repeat being played)
         let px = beat_x(local, sb);
         if px >= grid.left() && px <= grid.right() {
             painter.line_segment(
-                [pos2(px, grid.top()), pos2(px, full.bottom())],
-                Stroke::new(1.2_f32, theme::PLAYHEAD),
+                [pos2(px, lay.ruler.top()), pos2(px, full.bottom())],
+                Stroke::new(1.0_f32, theme::PLAYHEAD),
             );
+            let t = lay.ruler.top();
+            painter.add(egui::Shape::convex_polygon(
+                vec![pos2(px - 4.0, t), pos2(px + 4.0, t), pos2(px, t + 6.0)],
+                theme::PLAYHEAD,
+                Stroke::NONE,
+            ));
         }
         // drag updates / commit
         let released = ui.input(|i| crate::drag_cancel::drag_finished(&i.pointer, self.drag.as_ref()));
@@ -920,7 +834,7 @@ impl OndinaApp {
 
     /// Run a note command on the current selection and keep the same notes selected: Quantize and
     /// Humanize re-sort the region, and the result says where the selected notes went.
-    fn exec_on_selection(&mut self, c: Command) -> Option<serde_json::Value> {
+    pub(crate) fn exec_on_selection(&mut self, c: Command) -> Option<serde_json::Value> {
         let had_selection = !self.selected_notes.is_empty();
         let v = self.exec(c)?;
         if had_selection {
@@ -932,7 +846,7 @@ impl OndinaApp {
     }
 
     /// Run add_harmony and select the notes it added, so the new voice can be moved or deleted at once.
-    fn add_harmony(&mut self, c: Command) {
+    pub(crate) fn add_harmony(&mut self, c: Command) {
         let Some(v) = self.exec(c) else { return };
         self.selected_notes = note_selection::select_added(&self.selected_notes, &v);
         if note_selection::result_indices(&v).is_empty() {
@@ -1380,7 +1294,7 @@ impl OndinaApp {
     }
 }
 
-fn len_label(l: f64) -> &'static str {
+pub(crate) fn len_label(l: f64) -> &'static str {
     match l {
         x if x == 4.0 => "1/1",
         x if x == 2.0 => "1/2",

@@ -1,5 +1,5 @@
 //! Header of the bottom Editor panel: the editors the selected region can open (Piano Roll, Step, Score, Audio)
-//! as tabs, the region's color and "Track / Region", and MIDI Transform on the right.
+//! as tabs, the region's color and "Track / Region", and on the right the piano roll's toolbar or MIDI Transform.
 
 use eframe::egui::{self, RichText};
 use ondina_core::model::{Region, RegionContent, Track};
@@ -104,7 +104,10 @@ impl OndinaApp {
                 name.on_hover_text(crate::editors::PIANO_ROLL_HELP);
                 region_label.on_hover_text(crate::editors::PIANO_ROLL_HELP);
             }
-            if kind != ContentKind::Audio {
+            if let (EditorTab::PianoRoll, RegionContent::Midi(m)) = (shown, &region.content) {
+                // the piano roll's tools take the rest of the header; MIDI Transform is in their "⋯" menu
+                self.piano_roll_toolbar(ui, region, m);
+            } else if kind != ContentKind::Audio {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("MIDI Transform…").clicked() {
                         self.extra.show_transform = true;

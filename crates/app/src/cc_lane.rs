@@ -11,11 +11,13 @@ pub const SUSTAIN: u8 = 64;
 pub const PITCH_BEND: u8 = 128;
 /// The controllers the lane always offers, in menu order.
 pub const STANDARD: [u8; 6] = [64, 1, 11, 7, 10, 128];
-/// Height of the open lane and of the closed strip (points).
-pub const OPEN_H: f32 = 60.0;
-pub const CLOSED_H: f32 = 18.0;
-/// The note grid never gets shorter than this because of the lane.
-pub const MIN_GRID_H: f32 = 80.0;
+/// Height of the lane's header (open / close, controller selector, hints); a closed lane is only its header.
+pub const HEADER_H: f32 = 20.0;
+/// Height of the open lane (header and drawing area) and of the closed one (points).
+pub const OPEN_H: f32 = HEADER_H + 56.0;
+pub const CLOSED_H: f32 = HEADER_H;
+/// The note grid never gets shorter than this (eight 12-point rows) because of the lane.
+pub const MIN_GRID_H: f32 = 96.0;
 /// Drawing step with snap off: a 1/32 note.
 pub const FREE_STEP: f64 = 0.125;
 
@@ -82,12 +84,19 @@ pub fn draw_step(snap: f64) -> f64 {
 }
 
 /// Height of the lane for the space the editor has: CLOSED_H when closed; OPEN_H when open, shrunk (never below
-/// CLOSED_H) so that the note grid keeps MIN_GRID_H above the velocity lane of height `vel_h`.
-pub fn lane_height(open: bool, full_h: f32, vel_h: f32) -> f32 {
+/// CLOSED_H) so that the note grid keeps MIN_GRID_H next to the other fixed parts (ruler and velocity lane,
+/// `fixed_h` together).
+pub fn lane_height(open: bool, full_h: f32, fixed_h: f32) -> f32 {
     if !open {
         return CLOSED_H;
     }
-    (full_h - vel_h - MIN_GRID_H).clamp(CLOSED_H, OPEN_H)
+    (full_h - fixed_h - MIN_GRID_H).clamp(CLOSED_H, OPEN_H)
+}
+
+/// The drawing area of a lane laid out in `lane` (its header taken off the top); None when too short to draw in.
+pub fn body_rect(lane: Rect) -> Option<Rect> {
+    let body = Rect::from_min_max(pos2(lane.left(), lane.top() + HEADER_H), lane.max);
+    (body.height() >= 12.0).then_some(body)
 }
 
 /// Value 0..127 for a pointer height: `bottom` is 0, `top` is 127, clamped.
@@ -350,10 +359,19 @@ mod tests {
     fn lane_height_shrinks_for_small_editors() {
         assert_eq!(lane_height(false, 600.0, 56.0), CLOSED_H);
         assert_eq!(lane_height(true, 600.0, 56.0), OPEN_H);
-        let h = lane_height(true, 170.0, 56.0);
+        let h = lane_height(true, 200.0, 56.0);
         assert!((CLOSED_H..OPEN_H).contains(&h));
-        assert!(170.0 - 56.0 - h >= MIN_GRID_H - 1e-3, "the grid keeps its minimum height");
+        assert!(200.0 - 56.0 - h >= MIN_GRID_H - 1e-3, "the grid keeps its minimum height");
         assert_eq!(lane_height(true, 100.0, 56.0), CLOSED_H);
+    }
+
+    #[test]
+    fn the_header_is_never_drawn_on() {
+        let lane = Rect::from_min_size(pos2(0.0, 100.0), egui::vec2(400.0, OPEN_H));
+        let body = body_rect(lane).expect("an open lane has room to draw");
+        assert_eq!(body.top(), lane.top() + HEADER_H);
+        assert_eq!(body.bottom(), lane.bottom());
+        assert_eq!(body_rect(Rect::from_min_size(lane.min, egui::vec2(400.0, CLOSED_H))), None);
     }
 
     #[test]
