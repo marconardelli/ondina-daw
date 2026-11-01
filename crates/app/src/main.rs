@@ -39,7 +39,7 @@ mod step_paint;
 mod transport_keys;
 
 // The look (tokens, fonts, hand-drawn controls) lives in the crate's library so later views can share it.
-pub(crate) use ondina_app::{theme, widgets};
+pub(crate) use ondina_app::{chrome, theme, widgets};
 use ondina_studio::{Session, Settings, Source};
 
 fn main() -> eframe::Result<()> {
