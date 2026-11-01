@@ -1300,3 +1300,68 @@ fn replace_cc_is_a_mutating_tool_with_optional_range() {
         assert!(!req.iter().any(|r| r == name), "{name} must be optional: {req:?}");
     }
 }
+
+#[test]
+fn add_vst3_refuses_network_and_non_vst3_paths() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
+    let before = ok(&mut s, "get_project_json", json!({}));
+    let undo = s.can_undo().map(str::to_string);
+    for path in ["\\\\server\\share\\Evil.vst3", "C:\\plugins\\evil.dll"] {
+        let e = call(&mut s, "add_vst3", json!({"track_id": t, "path": path})).unwrap_err();
+        assert!(e.contains("plug-in path refused"), "{e}");
+        let e = s.execute(Command::AddVst3 { track_id: t, path: path.into(), as_instrument: None, index: None }, Source::Script).unwrap_err();
+        assert!(e.contains("plug-in path refused"), "{e}");
+    }
+    assert_eq!(ok(&mut s, "get_project_json", json!({})), before);
+    assert_eq!(s.can_undo().map(str::to_string), undo);
+}
+
+#[test]
+fn opened_project_with_network_vst3_reports_blocked_plugins_and_still_renders() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
+    ok(&mut s, "create_midi_region", json!({"track_id": t, "start": 0, "length": 4, "notes": [{"pitch": 60, "velocity": 100, "start": 0, "length": 2}]}));
+    let clean = tmp("blocked_vst3_clean.ondina");
+    ok(&mut s, "save_project", json!({"path": clean.display().to_string()}));
+    let v = ok(&mut s, "open_project", json!({"path": clean.display().to_string()}));
+    assert!(v.get("blocked_plugins").is_none(), "{v}");
+
+    // the same project edited by hand: a VST3 instrument on a share and a .dll insert on the master
+    let mut doc: Value = serde_json::from_str(&std::fs::read_to_string(&clean).unwrap()).unwrap();
+    let track = doc["project"]["tracks"].as_array_mut().unwrap().iter_mut().find(|x| x["id"] == json!(t)).unwrap();
+    track["instrument"] = json!({"id": 900001, "kind": "vst3", "params": {}, "bypass": false, "vst3_path": "\\\\server\\share\\Evil.vst3"});
+    doc["project"]["master"]["inserts"].as_array_mut().unwrap().push(json!({"id": 900002, "kind": "vst3", "params": {}, "bypass": false, "vst3_path": "C:\\plugins\\evil.dll"}));
+    let evil = tmp("blocked_vst3.ondina");
+    std::fs::write(&evil, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+
+    let mut s2 = Session::new(false);
+    let v = ok(&mut s2, "open_project", json!({"path": evil.display().to_string()}));
+    let blocked = v["blocked_plugins"].as_array().unwrap_or_else(|| panic!("{v}"));
+    assert_eq!(blocked.len(), 2, "{v}");
+    // master first, then tracks
+    assert_eq!(blocked[0]["track_id"], 0);
+    assert_eq!(blocked[0]["plugin_id"], 900002);
+    assert_eq!(blocked[0]["path"], "C:\\plugins\\evil.dll");
+    assert_eq!(blocked[1]["track_id"], json!(t));
+    assert_eq!(blocked[1]["plugin_id"], 900001);
+    assert_eq!(blocked[1]["path"], "\\\\server\\share\\Evil.vst3");
+    assert!(blocked.iter().all(|b| !b["reason"].as_str().unwrap().is_empty()));
+    // the plug-ins stay in the project
+    assert!(s2.project.find_plugin(900001).is_some() && s2.project.find_plugin(900002).is_some());
+    let wav = tmp("blocked_vst3.wav");
+    let _ = std::fs::remove_file(&wav);
+    ok(&mut s2, "bounce", json!({"path": wav.display().to_string(), "start": 0, "end": 4, "tail_sec": 0}));
+    assert!(std::fs::metadata(&wav).unwrap().len() > 44);
+}
+
+#[test]
+fn scan_vst3_skips_network_folders() {
+    let mut s = Session::new(false);
+    let v = ok(&mut s, "scan_vst3", json!({"extra_paths": ["\\\\server\\vst"]}));
+    let skipped = v["skipped_paths"].as_array().unwrap_or_else(|| panic!("{v}"));
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0]["path"], "\\\\server\\vst");
+    assert!(!skipped[0]["reason"].as_str().unwrap().is_empty());
+    assert!(v["plugins"].is_array());
+}

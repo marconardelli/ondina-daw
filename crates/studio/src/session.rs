@@ -609,6 +609,7 @@ impl Session {
     fn open(&mut self, path: &Path) -> Result<Value, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         let project = load_project_str(&text)?;
+        let blocked = crate::session_ext::blocked_plugins(&project);
         let mut pool = AudioPool::new();
         let mut missing = vec![];
         for f in &project.audio_files {
@@ -628,7 +629,11 @@ impl Session {
         self.selected_track = None;
         self.selected_region = None;
         self.selected_notes.clear();
-        Ok(json!({"opened": path.display().to_string(), "missing_audio_files": missing, "summary": ops::project_summary(&self.project)}))
+        let mut v = json!({"opened": path.display().to_string(), "missing_audio_files": missing, "summary": ops::project_summary(&self.project)});
+        if !blocked.is_empty() {
+            v["blocked_plugins"] = json!(blocked);
+        }
+        Ok(v)
     }
 
     fn save(&mut self, path: &Path) -> Result<Value, String> {
