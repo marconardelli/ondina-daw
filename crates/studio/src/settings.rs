@@ -223,9 +223,7 @@ mod tests {
     fn save_to_writes_a_file_load_from_reads_back() {
         let dir = test_dir("round_trip");
         let p = dir.join("settings.json");
-        let mut s = Settings::default();
-        s.mcp_port = 4100;
-        s.vst3_folders = vec!["C:\\Plugins".into()];
+        let s = Settings { mcp_port: 4100, vst3_folders: vec!["C:\\Plugins".into()], ..Default::default() };
         s.save_to(&p).unwrap();
         let (back, notice) = Settings::load_from(&p);
         assert_eq!(notice, None);
