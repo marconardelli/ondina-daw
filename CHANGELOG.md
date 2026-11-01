@@ -7,6 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-31
+
+### Added
+
+- Track keys: Up and Down select the track above or below and scroll it into view, M mutes the selected track and
+  S solos it (press again to undo), and Shift+M adds a marker at the playhead, even during playback. Each one
+  undoes with a single Ctrl+Z, and the same actions are in the Track and Edit menus. With notes selected in the
+  piano roll the arrows still move the notes; with Musical Typing on, S and M play notes as before.
+
+### Changed
+
+- The Bassist, Keys and Melody session players follow the project time signature: their rhythms start again at
+  every bar. 3/4 and 6/8 get rhythms of their own, and in 6/8 the melody accents the first and fourth eighth note.
+  In other meters such as 5/4 or 7/8 the 4/4 rhythm repeats every four beats and stops at the bar line. In 4/4,
+  with the same seed, the parts are identical to previous versions.
+
 ## [0.10.2] - 2026-10-31
 
 ### Changed
@@ -354,7 +370,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/marconardelli/ondina-daw/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/marconardelli/ondina-daw/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/marconardelli/ondina-daw/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/marconardelli/ondina-daw/compare/v0.9.0...v0.10.0
