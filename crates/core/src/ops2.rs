@@ -1,5 +1,5 @@
 //! Model-level execution for the extended command set: comping, score/MusicXML, lyrics,
-//! Live Loops grid editing, surround settings, movie settings, MIDI Transform, routing and region paste.
+//! Clip Grid editing, surround settings, movie settings, MIDI Transform, routing and region paste.
 
 use serde_json::{json, Value};
 
@@ -132,11 +132,11 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             ok(json!({"lyric_count": m.lyrics.len()}))
         }
 
-        // ---------------------------------------------------------------- live loops (grid editing)
+        // ---------------------------------------------------------------- clip grid (grid editing)
         AddScene { name } => {
             let n = project.live.scenes.len();
             if n >= MAX_SCENES {
-                return Err(format!("the Live Loops grid already has the most scenes it can have ({MAX_SCENES})"));
+                return Err(format!("the Clip Grid already has the most scenes it can have ({MAX_SCENES})"));
             }
             project.live.scenes.push(name.clone().unwrap_or_else(|| format!("Scene {}", n + 1)));
             ok(json!({"scene": n}))
@@ -164,7 +164,7 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
                 return Err("cells need an instrument or audio track".into());
             }
             if *scene >= MAX_SCENES {
-                return Err(format!("scene {scene} is out of range: the Live Loops grid has at most {MAX_SCENES} scenes (0..{})", MAX_SCENES - 1));
+                return Err(format!("scene {scene} is out of range: the Clip Grid has at most {MAX_SCENES} scenes (0..{})", MAX_SCENES - 1));
             }
             while project.live.scenes.len() <= *scene {
                 let n = project.live.scenes.len();
@@ -346,11 +346,11 @@ pub fn check_loaded_project(p: &mut Project) -> Result<(), String> {
     }
     for c in &mut p.live.cells {
         if !c.length.is_finite() {
-            return Err(format!("Live Loops cell {} has a length that is not a number", c.id));
+            return Err(format!("Clip Grid cell {} has a length that is not a number", c.id));
         }
         c.length = c.length.max(0.0625);
         if let RegionContent::Pattern(pc) = &mut c.content {
-            check_loaded_pattern(pc).map_err(|e| format!("Live Loops cell {}: {e}", c.id))?;
+            check_loaded_pattern(pc).map_err(|e| format!("Clip Grid cell {}: {e}", c.id))?;
         }
     }
     Ok(())
@@ -899,7 +899,7 @@ mod tests {
         assert_eq!(comp["comp_region_ids"].as_array().unwrap().len(), 2);
         let tr = p.track(t).unwrap();
         assert!(tr.regions.iter().filter(|r| r.id == a || r.id == b).all(|r| r.muted));
-        // live loops
+        // clip grid
         let c = run(&mut p, Command::CreateLiveCell { track_id: t, scene: 5, length: Some(4.0), notes: None, from_region_id: Some(rid), name: None })["cell_id"].as_u64().unwrap();
         assert!(p.live.scenes.len() >= 6);
         run(&mut p, Command::SetLiveCellNotes { cell_id: c, notes: vec![Note { pitch: 50, velocity: 100, start: 0.0, length: 1.0 }] });

@@ -1,5 +1,5 @@
 //! GUI for the extended features: Clip Grid, Score view, surround panner, video window,
-//! VST3 browser, Flex/Stem audio tools, comping, MIDI Transform and Environment routing.
+//! VST3 browser, Time Warp, Pitch Edit and Stem audio tools, comping, MIDI Transform and Environment routing.
 
 use std::sync::mpsc::Receiver;
 
@@ -677,11 +677,11 @@ impl OndinaApp {
             });
     }
 
-    // ============================================================== audio tools (Flex / Stems)
+    // ============================================================== audio tools (Time Warp, Pitch Edit, Stems)
     pub fn audio_tools(&mut self, ui: &mut egui::Ui, region: &Region) {
         let rid = region.id;
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("Flex").strong());
+            ui.label(RichText::new("Time Warp").strong());
             ui.add(
                 egui::DragValue::new(&mut self.extra.stretch)
                     .range(0.25..=4.0)
@@ -695,6 +695,7 @@ impl OndinaApp {
                     target_length: None,
                 });
             }
+            ui.label(RichText::new("Pitch Edit").strong());
             ui.add(
                 egui::DragValue::new(&mut self.extra.semis)
                     .range(-24.0..=24.0)
@@ -724,7 +725,7 @@ impl OndinaApp {
                     strength: Some(1.0),
                 });
             }
-            if ui.button("→ MIDI").clicked() {
+            if ui.button("To MIDI").on_hover_text("Pitch Edit to MIDI: transcribe a monophonic part into a MIDI region").clicked() {
                 self.exec(Command::AudioToMidi {
                     region_id: rid,
                     track_id: None,

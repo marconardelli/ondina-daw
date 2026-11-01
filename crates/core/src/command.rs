@@ -27,7 +27,7 @@ pub enum Command {
     GetProject {},
     /// Get the complete raw project document as JSON (large). Prefer get_project / get_track / get_region.
     GetProjectJson {},
-    /// Create a new empty project, replacing the current one. The transport stops (Live Loops cells too) and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). Refused when the current project has unsaved changes, unless discard_unsaved is true.
+    /// Create a new empty project, replacing the current one. The transport stops (Clip Grid cells too) and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). Refused when the current project has unsaved changes, unless discard_unsaved is true.
     NewProject {
         name: Option<String>,
         /// Tempo in BPM (default 120).
@@ -122,7 +122,7 @@ pub enum Command {
         /// Insert position (0-based). Default: end.
         index: Option<usize>,
     },
-    /// Delete a track and everything on it. Sends to it from other tracks are removed with their send automation (later send:<i> lanes are renumbered so they stay on the same sends), automation lanes elsewhere that target its plug-ins are removed, and its Live Loops cells and the MIDI input routes to it are deleted, not moved to another track. Returns how many lanes, cells and routes were removed.
+    /// Delete a track and everything on it. Sends to it from other tracks are removed with their send automation (later send:<i> lanes are renumbered so they stay on the same sends), automation lanes elsewhere that target its plug-ins are removed, and its Clip Grid cells and the MIDI input routes to it are deleted, not moved to another track. Returns how many lanes, cells and routes were removed.
     RemoveTrack { track_id: Id },
     /// Duplicate a track with its plug-ins, regions and automation. In the copy, plugin:<id>:<param> lanes point at the copy's own plug-ins; volume, pan, send and surround lanes are copied as they are. Returns the new track id.
     DuplicateTrack { track_id: Id },
@@ -420,16 +420,16 @@ pub enum Command {
     /// Send real-time MIDI events to a track's instrument (play it live from an agent). Events run immediately in order; use `delay_ms` for timing.
     SendLiveMidi { track_id: Id, events: Vec<LiveMidiEvent> },
 
-    // ------------------------------------------------------------------ flex time / pitch (audio editing)
-    /// Flex Time: time-stretch an audio region without changing pitch (WSOLA). Give a ratio (2.0 = twice as long) or a target length in beats. Renders a new audio file.
+    // ------------------------------------------------------------------ time warp / pitch edit (audio editing)
+    /// Time Warp: time-stretch an audio region without changing pitch (WSOLA). Give a ratio (2.0 = twice as long) or a target length in beats. Renders a new audio file.
     TimeStretchRegion { region_id: Id, ratio: Option<f64>, target_length: Option<f64> },
-    /// Flex Pitch: transpose an audio region without changing its duration.
+    /// Pitch Edit: transpose an audio region without changing its duration.
     PitchShiftRegion { region_id: Id, semitones: f64 },
     /// Varispeed: change speed and pitch together like tape (percent: 100 = unchanged, 200 = double speed and one octave up).
     VarispeedRegion { region_id: Id, percent: f64 },
     /// Pitch correction: detect the pitch of a monophonic audio region (vocal, bass, lead) and pull every note toward the nearest note of the project key. strength 0..1 (default 1).
     PitchCorrectRegion { region_id: Id, strength: Option<f32> },
-    /// Flex Pitch to MIDI: transcribe a monophonic audio region to a MIDI region (pitch tracking). Creates an instrument track unless track_id is given.
+    /// Pitch Edit to MIDI: transcribe a monophonic audio region to a MIDI region (pitch tracking). Creates an instrument track unless track_id is given.
     AudioToMidi { region_id: Id, track_id: Option<Id> },
     /// Smart Tempo: estimate the tempo (BPM) of an audio region; apply=true sets the project tempo.
     DetectTempo { region_id: Id, apply: Option<bool> },
@@ -452,20 +452,20 @@ pub enum Command {
     /// Attach lyrics to a MIDI region: syllables in `text` (split by spaces; use a hyphen inside words like sun-shine) are assigned to the melody notes in order. Or give explicit `lyrics`.
     SetLyrics { region_id: Id, text: Option<String>, lyrics: Option<Vec<LyricEvent>> },
 
-    // ------------------------------------------------------------------ live loops
-    /// Get the Live Loops grid: scenes, cells (per track/scene) and which cells are playing or queued.
+    // ------------------------------------------------------------------ clip grid
+    /// Get the Clip Grid: scenes, cells (per track/scene) and which cells are playing or queued.
     GetLiveLoops {},
-    /// Add a scene (row) to the Live Loops grid. At most 256 scenes.
+    /// Add a scene (row) to the Clip Grid. At most 256 scenes.
     AddScene { name: Option<String> },
     /// Rename a scene.
     RenameScene { scene: usize, name: String },
     /// Remove a scene and its cells.
     RemoveScene { scene: usize },
-    /// Create a Live Loops cell on a track and scene: empty MIDI (length in beats), with notes, or copied from an existing region. scene 0..255; missing scenes are added.
+    /// Create a Clip Grid cell on a track and scene: empty MIDI (length in beats), with notes, or copied from an existing region. scene 0..255; missing scenes are added.
     CreateLiveCell { track_id: Id, scene: usize, length: Option<f64>, notes: Option<Vec<Note>>, from_region_id: Option<Id>, name: Option<String> },
-    /// Delete a Live Loops cell.
+    /// Delete a Clip Grid cell.
     DeleteLiveCell { cell_id: Id },
-    /// Replace the notes of a MIDI Live Loops cell.
+    /// Replace the notes of a MIDI Clip Grid cell.
     SetLiveCellNotes { cell_id: Id, notes: Vec<Note> },
     /// Launch a cell (quantized to the live quantize grid). Starts playback if stopped.
     LaunchCell { cell_id: Id },
@@ -475,7 +475,7 @@ pub enum Command {
     StopLiveCells { track_id: Option<Id> },
     /// Set live launch quantization in beats (0 = immediate, 4 = one bar in 4/4).
     SetLiveQuantize { beats: f64 },
-    /// Record what the Live Loops performance played so far into regular timeline regions.
+    /// Record what the Clip Grid performance played so far into regular timeline regions.
     CommitLivePerformance {},
 
     // ------------------------------------------------------------------ surround & spatial audio

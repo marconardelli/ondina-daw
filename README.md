@@ -67,7 +67,7 @@ Every row is available both in the GUI and as MCP tools (full list in [`MCP_TOOL
 | Tempo and key detection | BPM estimation from audio; key of the MIDI parts (major/minor, with confidence and close alternatives), set as the project key from **Detect from MIDI** in the key menu | `detect_tempo` `detect_key` |
 | Stem splitter | neural network (Spleeter, ONNX Runtime) for vocals/accompaniment plus spectral drums/bass/other; DSP-only fallback | `split_stems` |
 | Mixer, sends, automation | channel strips with meters, routing, volume/pan/send/parameter automation | `set_volume` `add_send` `set_automation` |
-| Live loops | cell × scene grid, quantized launching, record the performance to the timeline | `create_live_cell` `launch_cell` `launch_scene` `commit_live_performance` |
+| Clip Grid | cell × scene grid, quantized launching, record the performance to the timeline | `create_live_cell` `launch_cell` `launch_scene` `commit_live_performance` |
 | Score | notation view (staff, values, ties, lyrics), MusicXML export | `get_score` `set_lyrics` `export_music_xml` |
 | Surround and spatial audio | 5.1, 7.1, 7.1.4, 3D VBAP panner, automated trajectories, binaural monitoring and bounce | `set_surround_format` `set_surround_pan` `bounce_surround` `bounce_binaural` |
 | Object-based mixing | tracks as audio objects, ADM BWF export (ITU-R BS.2076 + BS.2088): 7.1.2 bed + objects | `set_surround_pan` `export_adm` |
@@ -221,7 +221,7 @@ request is a single undo step, and **↶ Undo AI edit** reverts it only when the
    server (llama.cpp, Ollama, LM Studio…). Ondina starts the bundled llama.cpp server automatically when it finds a
    `.gguf` model in `tools\llm` and stops it when Ondina closes. No account, nothing leaves your machine; small
    models get a curated subset of 46 tools, enough for the ✨ buttons of the piano roll, step sequencer, plug-in
-   editors and Live Loops.
+   editors and the Clip Grid.
 3. **Claude (optional)** — with an Anthropic API key (Settings ⚙ or `ANTHROPIC_API_KEY`) the panel uses Claude with
    all tools.
 
@@ -271,8 +271,8 @@ region start, MIDI pitch 60 = C4, `track_id` 0 = master.
 | Crate | Responsibility |
 |---|---|
 | `ondina-core` | project model, the `Command` enum (= the API), music theory, generators, MIDI I/O |
-| `ondina-dsp` | instruments (6), effects (17), MIDI effects (4), flex/stem/tempo audio operations, spatial audio, VST3 host |
-| `ondina-engine` | renderer, real-time `cpal`/WASAPI engine, live loops, recording, stereo/surround bounce, LUFS analysis, ADM |
+| `ondina-dsp` | instruments (6), effects (17), MIDI effects (4), time warp, pitch edit, stem and tempo audio operations, spatial audio, VST3 host |
+| `ondina-engine` | renderer, real-time `cpal`/WASAPI engine, clip grid, recording, stereo/surround bounce, LUFS analysis, ADM |
 | `ondina-studio` | `Session` (executes commands, undo/redo), MCP server (HTTP + stdio + bridge), AI assistant (Claude and local) |
 | `ondina-app` | egui GUI: `ondina.exe` (desktop) and `ondina-mcp.exe` (console, for stdio MCP clients) |
 

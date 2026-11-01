@@ -13,7 +13,7 @@ Get the complete raw project document as JSON (large). Prefer get_project / get_
 Parameters: none
 
 ### `new_project`
-Create a new empty project, replacing the current one. The transport stops (Live Loops cells too) and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). Refused when the current project has unsaved changes, unless discard_unsaved is true.
+Create a new empty project, replacing the current one. The transport stops (Clip Grid cells too) and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). Refused when the current project has unsaved changes, unless discard_unsaved is true.
 
 Parameters: `discard_unsaved, key, name, tempo, time_signature`
 
@@ -138,7 +138,7 @@ Add a track. For instrument tracks give a `patch` (see list_patches) or an `inst
 Parameters: `index, instrument, kind, name, patch, preset`
 
 ### `remove_track`
-Delete a track and everything on it. Sends to it from other tracks are removed with their send automation (later send:<i> lanes are renumbered so they stay on the same sends), automation lanes elsewhere that target its plug-ins are removed, and its Live Loops cells and the MIDI input routes to it are deleted, not moved to another track. Returns how many lanes, cells and routes were removed.
+Delete a track and everything on it. Sends to it from other tracks are removed with their send automation (later send:<i> lanes are renumbered so they stay on the same sends), automation lanes elsewhere that target its plug-ins are removed, and its Clip Grid cells and the MIDI input routes to it are deleted, not moved to another track. Returns how many lanes, cells and routes were removed.
 
 Parameters: `track_id`
 
@@ -608,12 +608,12 @@ Send real-time MIDI events to a track's instrument (play it live from an agent).
 Parameters: `events, track_id`
 
 ### `time_stretch_region`
-Flex Time: time-stretch an audio region without changing pitch (WSOLA). Give a ratio (2.0 = twice as long) or a target length in beats. Renders a new audio file.
+Time Warp: time-stretch an audio region without changing pitch (WSOLA). Give a ratio (2.0 = twice as long) or a target length in beats. Renders a new audio file.
 
 Parameters: `ratio, region_id, target_length`
 
 ### `pitch_shift_region`
-Flex Pitch: transpose an audio region without changing its duration.
+Pitch Edit: transpose an audio region without changing its duration.
 
 Parameters: `region_id, semitones`
 
@@ -628,7 +628,7 @@ Pitch correction: detect the pitch of a monophonic audio region (vocal, bass, le
 Parameters: `region_id, strength`
 
 ### `audio_to_midi`
-Flex Pitch to MIDI: transcribe a monophonic audio region to a MIDI region (pitch tracking). Creates an instrument track unless track_id is given.
+Pitch Edit to MIDI: transcribe a monophonic audio region to a MIDI region (pitch tracking). Creates an instrument track unless track_id is given.
 
 Parameters: `region_id, track_id`
 
@@ -673,12 +673,12 @@ Attach lyrics to a MIDI region: syllables in `text` (split by spaces; use a hyph
 Parameters: `lyrics, region_id, text`
 
 ### `get_live_loops` · read-only
-Get the Live Loops grid: scenes, cells (per track/scene) and which cells are playing or queued.
+Get the Clip Grid: scenes, cells (per track/scene) and which cells are playing or queued.
 
 Parameters: none
 
 ### `add_scene`
-Add a scene (row) to the Live Loops grid. At most 256 scenes.
+Add a scene (row) to the Clip Grid. At most 256 scenes.
 
 Parameters: `name`
 
@@ -693,17 +693,17 @@ Remove a scene and its cells.
 Parameters: `scene`
 
 ### `create_live_cell`
-Create a Live Loops cell on a track and scene: empty MIDI (length in beats), with notes, or copied from an existing region. scene 0..255; missing scenes are added.
+Create a Clip Grid cell on a track and scene: empty MIDI (length in beats), with notes, or copied from an existing region. scene 0..255; missing scenes are added.
 
 Parameters: `from_region_id, length, name, notes, scene, track_id`
 
 ### `delete_live_cell`
-Delete a Live Loops cell.
+Delete a Clip Grid cell.
 
 Parameters: `cell_id`
 
 ### `set_live_cell_notes`
-Replace the notes of a MIDI Live Loops cell.
+Replace the notes of a MIDI Clip Grid cell.
 
 Parameters: `cell_id, notes`
 
@@ -728,7 +728,7 @@ Set live launch quantization in beats (0 = immediate, 4 = one bar in 4/4).
 Parameters: `beats`
 
 ### `commit_live_performance`
-Record what the Live Loops performance played so far into regular timeline regions.
+Record what the Clip Grid performance played so far into regular timeline regions.
 
 Parameters: none
 

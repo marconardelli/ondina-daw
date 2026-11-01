@@ -52,7 +52,7 @@ fn make_instrument(p: &PluginInstance, sr: f32) -> Option<Box<dyn Instrument>> {
     }
 }
 
-/// A Live Loops cell currently playing on a track.
+/// A Clip Grid cell currently playing on a track.
 pub struct LivePlay {
     pub cell_id: Id,
     pub start: f64,
@@ -286,7 +286,7 @@ impl Renderer {
         }
         self.tracks.retain(|id, _| keep.contains(id));
         Self::sync_fx(&mut self.master_fx, &project.master.inserts, sr);
-        // refresh Live Loops overrides from the new cell contents
+        // refresh Clip Grid overrides from the new cell contents
         let ids: Vec<Id> = self.live_playing.keys().copied().collect();
         for tid in ids {
             let cell_id = self.live_playing[&tid].cell_id;
@@ -339,7 +339,7 @@ impl Renderer {
         self.beat = beat.max(0.0);
     }
 
-    /// Build a virtual track whose single looping region plays a Live Loops cell from `start`.
+    /// Build a virtual track whose single looping region plays a Clip Grid cell from `start`.
     fn cell_track(project: &Project, cell_id: Id, start: f64) -> Option<(Track, Id)> {
         let cell = project.live.cells.iter().find(|c| c.id == cell_id)?;
         let mut t = project.track(cell.track_id)?.clone();
@@ -650,7 +650,7 @@ impl Renderer {
 
         for tid in order {
             let Some(track) = project.track(tid) else { continue };
-            // a playing Live Loops cell replaces the track's timeline regions
+            // a playing Clip Grid cell replaces the track's timeline regions
             let live_track: Option<Track> = self.live_playing.get(&tid).map(|lp| lp.track.clone());
             let content_track: &Track = live_track.as_ref().unwrap_or(track);
             let audible = match &self.solo_override {

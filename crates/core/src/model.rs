@@ -41,7 +41,7 @@ pub struct Project {
     #[serde(default)]
     pub notes: String,
     pub next_id: Id,
-    /// Live Loops grid (cells × scenes).
+    /// Clip Grid (cells × scenes).
     #[serde(default)]
     pub live: LiveLoops,
     /// Output format for surround / spatial mixing.
@@ -72,7 +72,7 @@ fn default_metronome_level_db() -> f32 {
     METRONOME_DEFAULT_DB
 }
 
-/// Most scenes the Live Loops grid can have (`add_scene`, `create_live_cell`).
+/// Most scenes the Clip Grid can have (`add_scene`, `create_live_cell`).
 pub const MAX_SCENES: usize = 256;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
