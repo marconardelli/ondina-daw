@@ -39,7 +39,7 @@ Ondina is a digital audio workstation. Everything is controlled through tools th
 
 ## Typical workflow to create a song
 1. `get_project` to see what exists (ids!).
-2. `set_tempo`, `set_key`, `set_time_signature`.
+2. `set_tempo`, `set_key`, `set_time_signature`. For imported or played MIDI, `detect_key` finds the key (check `alternatives`: relative major/minor keys are close) and `apply: true` sets it.
 3. `set_chord_progression` (symbols or roman numerals) for the harmony.
 4. `add_track` with a `patch` from `list_patches` (e.g. "Pop Drum Kit", "Deep Sub Bass", "Lush Pad", "Stage Electric Piano", "Supersaw Lead").
 5. Fill tracks: session players `generate_drums`, `generate_bass`, `generate_chords`, `generate_arpeggio`, `generate_melody` — or write exact notes with `create_midi_region` / `add_notes`. `add_harmony` doubles a line a 3rd, 5th, 6th or octave above or below, in the key. `set_note_lengths` tidies a played part (legato, no overlaps, a fixed or scaled length) without moving notes, so indices stay valid.

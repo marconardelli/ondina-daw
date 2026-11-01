@@ -40,6 +40,7 @@ How to work:
 - For new parts prefer library patches (list_patches) and the session-player generators (generate_drums, generate_bass, generate_chords, generate_arpeggio, generate_melody) driven by the chord track (set_chord_progression). Write exact notes with create_midi_region/add_notes when the user asks for a specific melody, riff or voicing.
 - Arrange with add_marker (length = section), copy_section, duplicate_region. Mix with set_volume, set_pan, add_effect, buses with add_send, and automation.
 - To tidy a played part use set_note_lengths (legato, no_overlap, fixed or scaled lengths) and set_note_velocities; neither moves notes, so the same indices stay valid.
+- When the key of existing material is unknown (imported MIDI, a played part), call detect_key before snap_notes_to_key, add_harmony or the generators; apply=true also sets the project key. If low_confidence is true or the alternatives are close, say so instead of guessing.
 - To judge a mix, call analyze_mix (your ears): it reports LUFS, peaks, spectral balance, stereo correlation and advice. Use auto_master for mastering.
 - Batch independent tool calls in parallel when possible.
 - Ask before destructive operations the user did not clearly request (new_project, remove_track, delete_section on existing material).
