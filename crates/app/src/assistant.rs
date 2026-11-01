@@ -164,7 +164,8 @@ impl OndinaApp {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
                     for (label, prompt) in QUICK {
-                        let b = egui::Button::new(RichText::new(*label).size(theme::SIZE_BODY))
+                        let fg = if controls.ask { theme::TEXT } else { theme::TEXT_DISABLED };
+                        let b = egui::Button::new(RichText::new(*label).size(theme::SIZE_BODY).color(fg))
                             .fill(Color32::TRANSPARENT)
                             .stroke(Stroke::new(1.0_f32, theme::BORDER))
                             .rounding(Rounding::same(13.0))
