@@ -1,6 +1,6 @@
 //! Persistent user settings (%APPDATA%\OndinaDAW\settings.json).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -27,11 +27,14 @@ pub struct Settings {
     pub vst3_folders: Vec<String>,
     /// Minutes between recovery copies of unsaved work (0 turns autosave off).
     pub autosave_minutes: u32,
+    /// Before Save replaces a project file, its previous version is kept next to it as `<file>.bak`
+    /// (one copy, replaced at every save).
+    pub keep_save_backup: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { api_key: None, model: crate::ai::DEFAULT_MODEL.into(), effort: "medium".into(), mcp_enabled: true, mcp_port: 3917, audio_output: None, recent_projects: vec![], ui_scale: 1.0, provider: "auto".into(), local_url: "http://127.0.0.1:8080/v1".into(), local_model: "local".into(), vst3_folders: vec![], autosave_minutes: 3 }
+        Settings { api_key: None, model: crate::ai::DEFAULT_MODEL.into(), effort: "medium".into(), mcp_enabled: true, mcp_port: 3917, audio_output: None, recent_projects: vec![], ui_scale: 1.0, provider: "auto".into(), local_url: "http://127.0.0.1:8080/v1".into(), local_model: "local".into(), vst3_folders: vec![], autosave_minutes: 3, keep_save_backup: true }
     }
 }
 
@@ -46,19 +49,53 @@ impl Settings {
         Self::path().parent().map(|d| d.join("Autosave")).unwrap_or_else(|| std::env::temp_dir().join("OndinaDAW").join("Autosave"))
     }
 
-    pub fn load() -> Settings {
+    /// Reads the settings at `path`. A missing file gives the defaults silently. A file that exists but does not
+    /// parse is renamed to `<name>.broken`, so the next save does not write over it, and the second value says so.
+    pub fn load_from(path: &Path) -> (Settings, Option<String>) {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Settings::default(), None),
+            Err(e) => return (Settings::default(), Some(format!("⚠ Settings could not be read ({e}): default settings are in use"))),
+        };
+        if let Ok(s) = serde_json::from_slice::<Settings>(&bytes) {
+            return (s, None);
+        }
+        let broken = crate::fs_safe::sibling(path, ".broken");
+        let notice = match std::fs::rename(path, &broken) {
+            Ok(()) => format!("⚠ Settings could not be read: the file was kept as {} and default settings are in use", broken.display()),
+            Err(e) => format!("⚠ Settings could not be read and could not be set aside ({e}): default settings are in use"),
+        };
+        (Settings::default(), Some(notice))
+    }
+
+    /// The settings and, when the file could not be used, the line for the status bar.
+    pub fn load_reporting() -> (Settings, Option<String>) {
         // Before the rename the settings lived in %APPDATA%\AuroraDAW: they are read from there until the first save writes the new file.
         let legacy = Self::path().parent().and_then(|d| d.parent()).map(|b| b.join("AuroraDAW").join("settings.json"));
         let path = Some(Self::path()).filter(|p| p.exists()).or(legacy).unwrap_or_else(Self::path);
-        std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        Self::load_from(&path)
+    }
+
+    pub fn load() -> Settings {
+        Self::load_reporting().0
+    }
+
+    /// Writes the settings to `path` through `fs_safe::write_replace`: a failure leaves the previous file as it was.
+    pub fn save_to(&self, path: &Path) -> Result<(), String> {
+        if let Some(d) = path.parent() {
+            std::fs::create_dir_all(d).map_err(|e| format!("cannot create {}: {e}", d.display()))?;
+        }
+        let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        crate::fs_safe::write_replace(path, text.as_bytes())
+    }
+
+    /// `save_to` on the usual file.
+    pub fn try_save(&self) -> Result<(), String> {
+        self.save_to(&Self::path())
     }
 
     pub fn save(&self) {
-        let p = Self::path();
-        if let Some(d) = p.parent() {
-            let _ = std::fs::create_dir_all(d);
-        }
-        let _ = std::fs::write(p, serde_json::to_string_pretty(self).unwrap_or_default());
+        let _ = self.try_save();
     }
 
     pub fn api_key(&self) -> Option<String> {
@@ -157,5 +194,82 @@ mod tests {
         s.add_vst3_folder("C:\\Plugins");
         s.remove_vst3_folder("c:\\PLUGINS");
         assert!(s.vst3_folders.is_empty());
+    }
+
+    fn test_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join("ondina_settings_tests").join(name);
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn settings_without_keep_save_backup_default_to_on() {
+        let s: Settings = serde_json::from_str(r#"{"model":"x"}"#).unwrap();
+        assert!(s.keep_save_backup);
+        let off: Settings = serde_json::from_str(r#"{"keep_save_backup":false}"#).unwrap();
+        assert!(!off.keep_save_backup);
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
+        assert!(!back.keep_save_backup);
+    }
+
+    #[test]
+    fn save_to_writes_a_file_load_from_reads_back() {
+        let dir = test_dir("round_trip");
+        let p = dir.join("settings.json");
+        let mut s = Settings::default();
+        s.mcp_port = 4100;
+        s.vst3_folders = vec!["C:\\Plugins".into()];
+        s.save_to(&p).unwrap();
+        let (back, notice) = Settings::load_from(&p);
+        assert_eq!(notice, None);
+        assert_eq!(back.mcp_port, 4100);
+        assert_eq!(back.vst3_folders, vec!["C:\\Plugins".to_string()]);
+        assert_eq!(names(&dir), vec!["settings.json"]);
+    }
+
+    #[test]
+    fn missing_settings_file_gives_defaults_without_a_notice() {
+        let dir = test_dir("missing");
+        let (s, notice) = Settings::load_from(&dir.join("settings.json"));
+        assert_eq!(s.mcp_port, 3917);
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn unreadable_settings_are_kept_as_broken() {
+        let dir = test_dir("broken");
+        let p = dir.join("settings.json");
+        let broken = dir.join("settings.json.broken");
+        let truncated = r#"{"api_key": "sk-ant-"#;
+        std::fs::write(&p, truncated).unwrap();
+        let (s, notice) = Settings::load_from(&p);
+        assert_eq!(s.mcp_port, 3917);
+        let n = notice.expect("a notice for the status bar");
+        assert!(n.contains("settings.json.broken"), "{n}");
+        assert!(!p.exists());
+        assert_eq!(std::fs::read_to_string(&broken).unwrap(), truncated);
+        Settings::default().save_to(&p).unwrap();
+        assert_eq!(std::fs::read_to_string(&broken).unwrap(), truncated);
+        let (_, again) = Settings::load_from(&p);
+        assert_eq!(again, None);
+    }
+
+    #[test]
+    fn empty_settings_file_is_kept_as_broken_too() {
+        let dir = test_dir("empty");
+        let p = dir.join("settings.json");
+        std::fs::write(&p, b"").unwrap();
+        let (s, notice) = Settings::load_from(&p);
+        assert_eq!(s.mcp_port, 3917);
+        assert!(notice.is_some());
+        assert!(!p.exists());
+        assert!(dir.join("settings.json.broken").is_file());
     }
 }
