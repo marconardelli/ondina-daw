@@ -327,6 +327,23 @@ pub fn check_loaded_project(p: &mut Project) -> Result<(), String> {
             }
         }
     }
+    // Automation values go to the mix as they are: keep them in the range the commands keep them in. A lane
+    // whose target is no longer valid stays as it is (it plays nothing), and a value that is not a number is
+    // dropped (the renderer skips it too).
+    let ranges: Vec<Vec<Option<crate::ops::AutomationRange>>> = p
+        .tracks
+        .iter()
+        .map(|t| t.automation.iter().map(|l| crate::ops::validate_target(p, t.id, &l.target).ok()).collect())
+        .collect();
+    for (t, lane_ranges) in p.tracks.iter_mut().zip(ranges) {
+        for (lane, range) in t.automation.iter_mut().zip(lane_ranges) {
+            lane.points.retain(|pt| pt.beat.is_finite() && pt.value.is_finite());
+            if let Some(range) = range {
+                lane.points.iter_mut().for_each(|pt| pt.value = range.clamp(pt.value));
+            }
+            lane.points.sort_by(|a, b| a.beat.total_cmp(&b.beat));
+        }
+    }
     for c in &mut p.live.cells {
         if !c.length.is_finite() {
             return Err(format!("Live Loops cell {} has a length that is not a number", c.id));

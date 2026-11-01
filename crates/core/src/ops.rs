@@ -1716,16 +1716,26 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
 
         // automation
         SetAutomation { track_id, target, points } => {
-            validate_target(project, *track_id, target)?;
+            let range = validate_target(project, *track_id, target)?;
+            if points.iter().any(|p| !p.beat.is_finite() || !p.value.is_finite()) {
+                return err("automation beats and values must be finite numbers");
+            }
             let lanes = automation_lanes_mut(project, *track_id)?;
             let mut pts = points.clone();
-            pts.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
+            for p in &mut pts {
+                p.value = range.clamp(p.value);
+            }
+            pts.sort_by(|a, b| a.beat.total_cmp(&b.beat));
             lanes.retain(|l| l.target != *target);
-            lanes.push(AutomationLane { target: target.clone(), points: pts, enabled: true });
-            ok(json!({"ok": true}))
+            lanes.push(AutomationLane { target: target.clone(), points: pts.clone(), enabled: true });
+            ok(json!({"ok": true, "points": pts}))
         }
         AddAutomationPoint { track_id, target, beat, value } => {
-            validate_target(project, *track_id, target)?;
+            let range = validate_target(project, *track_id, target)?;
+            if !beat.is_finite() || !value.is_finite() {
+                return err("automation beat and value must be finite numbers");
+            }
+            let value = range.clamp(*value);
             let lanes = automation_lanes_mut(project, *track_id)?;
             let lane = match lanes.iter_mut().position(|l| l.target == *target) {
                 Some(i) => &mut lanes[i],
@@ -1735,9 +1745,9 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
                 }
             };
             lane.points.retain(|p| (p.beat - beat).abs() > 1e-6);
-            lane.points.push(AutomationPoint { beat: *beat, value: *value });
-            lane.points.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
-            ok(json!({"points": lane.points.len()}))
+            lane.points.push(AutomationPoint { beat: *beat, value });
+            lane.points.sort_by(|a, b| a.beat.total_cmp(&b.beat));
+            ok(json!({"points": lane.points.len(), "value": value}))
         }
         ClearAutomation { track_id, target } => {
             let lanes = automation_lanes_mut(project, *track_id)?;
@@ -1829,21 +1839,55 @@ fn automation_lanes_mut(project: &mut Project, track_id: Id) -> Result<&mut Vec<
     Ok(&mut project.track_mut(track_id).ok_or("track not found")?.automation)
 }
 
-fn validate_target(project: &Project, track_id: Id, target: &str) -> Result<(), String> {
-    if matches!(target, "volume" | "pan" | "surround:azimuth" | "surround:elevation" | "surround:spread") {
-        return Ok(());
+/// The values an automation lane may hold: the same ranges the commands that set the parameter directly use
+/// (set_volume, set_pan, set_send_level, set_surround_pan, set_plugin_param).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutomationRange {
+    pub min: f32,
+    pub max: f32,
+    /// A selector parameter: values are whole numbers.
+    pub stepped: bool,
+}
+
+impl AutomationRange {
+    const fn new(min: f32, max: f32) -> Self {
+        Self { min, max, stepped: false }
+    }
+
+    /// `v` in range (rounded for a selector). `v` must be finite.
+    pub fn clamp(&self, v: f32) -> f32 {
+        let v = v.clamp(self.min, self.max);
+        if self.stepped { v.round() } else { v }
+    }
+}
+
+/// Fader and send levels in dB, as set_volume and set_send_level keep them.
+const LEVEL_RANGE: AutomationRange = AutomationRange::new(-96.0, 6.0);
+
+/// Checks an automation target of a track and returns the range of its values.
+pub fn validate_target(project: &Project, track_id: Id, target: &str) -> Result<AutomationRange, String> {
+    match target {
+        "volume" => return Ok(LEVEL_RANGE),
+        "pan" => return Ok(AutomationRange::new(-1.0, 1.0)),
+        "surround:azimuth" => return Ok(AutomationRange::new(-180.0, 180.0)),
+        "surround:elevation" => return Ok(AutomationRange::new(-30.0, 90.0)),
+        "surround:spread" => return Ok(AutomationRange::new(0.0, 1.0)),
+        _ => {}
     }
     if let Some(rest) = target.strip_prefix("send:") {
         let idx: usize = rest.parse().map_err(|_| "send target must be send:<index>")?;
         let t = project.track(track_id).ok_or("track not found")?;
-        return if idx < t.channel.sends.len() { Ok(()) } else { err("send index out of range") };
+        return if idx < t.channel.sends.len() { Ok(LEVEL_RANGE) } else { err("send index out of range") };
     }
     if let Some(rest) = target.strip_prefix("plugin:") {
         let (pid, param) = rest.split_once(':').ok_or("plugin target must be plugin:<id>:<param>")?;
         let pid: Id = pid.parse().map_err(|_| "invalid plugin id")?;
         let p = project.find_plugin(pid).ok_or("plug-in not found")?;
         let info = plugins::find(&p.kind).ok_or("unknown plug-in")?;
-        return if info.params.iter().any(|x| x.id == param) { Ok(()) } else { err(format!("{} has no parameter {param}", p.kind)) };
+        return match info.params.iter().find(|x| x.id == param) {
+            Some(x) => Ok(AutomationRange { min: x.min, max: x.max, stepped: !x.choices.is_empty() }),
+            None => err(format!("{} has no parameter {param}", p.kind)),
+        };
     }
     err("target must be volume, pan, surround:azimuth, surround:elevation, surround:spread, send:<i> or plugin:<id>:<param>")
 }
