@@ -886,7 +886,10 @@ impl Renderer {
 
         // ---- metronome (not printed into analysis)
         let counting_in = self.playing && self.count_in_beats > 0.0;
-        if self.playing && (project.metronome || counting_in) && self.solo_override.is_none() && self.analyzers.is_none() {
+        // "only while recording" silences plain playback; the count-in always clicks
+        let click_on = project.metronome && (self.recording || !project.metronome_only_recording);
+        if self.playing && (click_on || counting_in) && self.solo_override.is_none() && self.analyzers.is_none() {
+            let click_gain = project.metronome_gain();
             let beat_len = 4.0 / project.time_signature.denominator as f64;
             let bar_len = project.time_signature.beats_per_bar();
             let start = if counting_in { -self.count_in_beats } else { b0 };
@@ -900,7 +903,7 @@ impl Renderer {
                 }
                 if self.click_env > 1e-3 {
                     self.click_phase = (self.click_phase + self.click_freq / self.sr).fract();
-                    let s = (self.click_phase * std::f32::consts::TAU).sin() * self.click_env * 0.35;
+                    let s = (self.click_phase * std::f32::consts::TAU).sin() * self.click_env * click_gain;
                     self.click_env *= 0.9985;
                     out_l[i] += s;
                     out_r[i] += s;
@@ -1034,5 +1037,53 @@ mod tests {
         q.track_mut(copy).unwrap().automation.clear();
         let e_free = energy(&q);
         assert!(e_free > 0.5 * open, "the copy should play without its lane: open {open}, free {e_free}");
+    }
+
+    /// Left-channel peak of the first half second of a fresh renderer playing an empty `p` from beat 0, so the
+    /// output is the click alone.
+    fn click_peak(p: &Project, recording: bool, count_in_beats: f64) -> f32 {
+        let mut r = Renderer::new(48000.0, Arc::new(p.clone()), Arc::new(AudioPool::new()));
+        r.recording = recording;
+        r.count_in_beats = count_in_beats;
+        r.play();
+        let mut l = vec![0.0; 512];
+        let mut rr = vec![0.0; 512];
+        let mut peak = 0.0f32;
+        for _ in 0..(48000 / 2 / 512) {
+            r.render(&mut l, &mut rr);
+            assert!(l.iter().chain(&rr).all(|x| x.is_finite()));
+            peak = l.iter().fold(peak, |m, x| m.max(x.abs()));
+        }
+        peak
+    }
+
+    #[test]
+    fn metronome_level_scales_the_click() {
+        let mut p = Project::new("t");
+        p.metronome = true;
+        p.metronome_level_db = 0.0;
+        let p0 = click_peak(&p, false, 0.0);
+        p.metronome_level_db = -20.0;
+        let p20 = click_peak(&p, false, 0.0);
+        p.metronome_level_db = ondina_core::model::METRONOME_DEFAULT_DB;
+        let pd = click_peak(&p, false, 0.0);
+        assert!(p0 > 0.5, "full-scale click too quiet: {p0}");
+        assert!((p20 / p0 - 0.1).abs() < 0.001, "-20 dB: {p20} vs {p0}");
+        assert!((pd / p0 - 0.35).abs() < 0.001, "default: {pd} vs {p0}");
+    }
+
+    #[test]
+    fn click_only_while_recording_is_silent_in_plain_playback() {
+        let mut p = Project::new("t");
+        p.metronome = true;
+        p.metronome_only_recording = true;
+        assert_eq!(click_peak(&p, false, 0.0), 0.0, "plain playback must not click");
+        assert!(click_peak(&p, true, 0.0) > 0.1, "recording must click");
+        assert!(click_peak(&p, false, 4.0) > 0.1, "the count-in always clicks");
+        p.metronome = false;
+        assert_eq!(click_peak(&p, true, 0.0), 0.0, "the mode does not turn the metronome on");
+        p.metronome = true;
+        p.metronome_only_recording = false;
+        assert!(click_peak(&p, false, 0.0) > 0.1, "by default the click sounds in every playback");
     }
 }
