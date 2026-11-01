@@ -63,15 +63,20 @@ pub struct BarFit {
     pub smpte: bool,
     /// The TIME field of the LCD.
     pub time: bool,
+    /// The bottom panel choices as icons instead of words.
+    pub icon_tabs: bool,
+    /// The back and forward one bar buttons (the , and . keys do the same).
+    pub seek: bool,
     /// The bottom panel choices at all (they are also in the View menu).
     pub tabs: bool,
 }
 
 /// How many steps of [`bar_fit`] there are after the full bar.
-pub const BAR_FIT_STEPS: usize = 9;
+pub const BAR_FIT_STEPS: usize = 11;
 
 /// The bar after `level` steps of compacting, least important first: the Typing word, the DSP meter, the Snap
-/// caption, the assistant's text, the short panel labels, SMPTE, TIME, the Typing indicator, the panel choices.
+/// caption, the assistant's text, the short panel labels, SMPTE, TIME, panel icons instead of labels, the bar
+/// buttons, the Typing indicator, the panel choices.
 pub fn bar_fit(level: usize) -> BarFit {
     BarFit {
         typing_word: level < 1,
@@ -81,10 +86,15 @@ pub fn bar_fit(level: usize) -> BarFit {
         short_tabs: level >= 5,
         smpte: level < 6,
         time: level < 7,
-        typing: level < 8,
-        tabs: level < 9,
+        icon_tabs: level >= 8,
+        seek: level < 9,
+        typing: level < 10,
+        tabs: level < 11,
     }
 }
+
+/// Icons of the bottom panel choices, in the order of [`BOTTOM_CHOICES`].
+pub const BOTTOM_ICONS: [Icon; 4] = [Icon::Piano, Icon::Mixer, Icon::ClipGrid, Icon::ChevronDown];
 
 /// The first level whose bar needs no more than `avail` points (`need` measures a bar); the last level when even that
 /// does not fit.
@@ -260,12 +270,14 @@ impl OndinaApp {
         ui.set_height(BAR_HEIGHT - 2.0 * theme::SP_2);
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = theme::SP_2;
+            let level = fit_level(ui.available_width(), |f| {
+                left_width(f) + self.lcd_width(&p, f) + self.right_width(ui, f)
+            });
+            let fit = bar_fit(level);
             self.side_toggles(ui);
             bar_divider(ui);
-            self.transport_buttons(ui, &p);
+            self.transport_buttons(ui, &p, fit);
             ui.add_space(theme::SP_4);
-            let level = fit_level(ui.available_width(), |f| self.lcd_width(&p, f) + self.right_width(ui, f));
-            let fit = bar_fit(level);
             self.lcd(ui, &p, fit);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = RIGHT_GAP;
@@ -283,11 +295,12 @@ impl OndinaApp {
                 }
                 if fit.tabs {
                     let mut choice = self.bottom.index();
-                    let labels = bottom_labels(fit);
-                    if widgets::segmented(ui, &mut choice, &labels)
-                        .on_hover_text("Bottom panel: Editor, Mixer, Clip Grid, or hidden")
-                        .changed()
-                    {
+                    let resp = if fit.icon_tabs {
+                        widgets::segmented_icons(ui, &mut choice, &BOTTOM_ICONS)
+                    } else {
+                        widgets::segmented(ui, &mut choice, &bottom_labels(fit))
+                    };
+                    if resp.on_hover_text("Bottom panel: Editor, Mixer, Clip Grid, or hidden").changed() {
                         self.bottom = pick_bottom(self.bottom, choice);
                     }
                 }
@@ -332,7 +345,11 @@ impl OndinaApp {
         }
         items.push(if fit.assistant_text { 10.0 + 14.0 + theme::SP_3 + text_w("Assistant") + 10.0 } else { 34.0 });
         if fit.tabs {
-            items.push(bottom_labels(fit).iter().map(|l| text_w(l) + 2.0 * theme::SP_5).sum::<f32>() + 4.0);
+            items.push(if fit.icon_tabs {
+                BOTTOM_ICONS.len() as f32 * widgets::ICON_SEGMENT_W + 4.0
+            } else {
+                bottom_labels(fit).iter().map(|l| text_w(l) + 2.0 * theme::SP_5).sum::<f32>() + 4.0
+            });
         }
         items.push(DIVIDER_W);
         items.push(SNAP_W + 2.0 * ui.spacing().button_padding.x + ui.spacing().icon_width);
@@ -358,17 +375,17 @@ impl OndinaApp {
         }
     }
 
-    fn transport_buttons(&mut self, ui: &mut Ui, p: &Project) {
+    fn transport_buttons(&mut self, ui: &mut Ui, p: &Project, fit: BarFit) {
         ui.spacing_mut().item_spacing.x = 3.0;
         let bpb = p.time_signature.beats_per_bar();
         if ui.add(ToolButton::new(Icon::ToStart).filled()).on_hover_text("Go to start (Home)").clicked() {
             self.exec(Command::SetPlayhead { beat: Some(0.0), bar: None });
         }
-        if ui.add(ToolButton::new(Icon::Rewind).filled()).on_hover_text("Back one bar").clicked() {
+        if fit.seek && ui.add(ToolButton::new(Icon::Rewind).filled()).on_hover_text("Back one bar (,)").clicked() {
             let b = (self.position() - bpb).max(0.0);
             self.exec(Command::SetPlayhead { beat: Some(b), bar: None });
         }
-        if ui.add(ToolButton::new(Icon::Forward).filled()).on_hover_text("Forward one bar").clicked() {
+        if fit.seek && ui.add(ToolButton::new(Icon::Forward).filled()).on_hover_text("Forward one bar (.)").clicked() {
             let b = self.position() + bpb;
             self.exec(Command::SetPlayhead { beat: Some(b), bar: None });
         }
@@ -618,6 +635,17 @@ const RIGHT_GAP: f32 = theme::SP_4;
 /// Least room kept between the LCD and the right side of the bar.
 const MIN_GAP: f32 = theme::SP_5;
 
+/// Width of the bar left of the LCD: the side toggles, a divider and the transport (with the bar buttons when `fit`
+/// keeps them), with the gaps between them.
+pub fn left_width(fit: BarFit) -> f32 {
+    let toggles = 2.0 * 32.0 + 2.0 * theme::SP_2;
+    let divider = DIVIDER_W + theme::SP_2;
+    // to start, stop, record, cycle, metronome; play is wider; 3-point gaps and the space before cycle
+    let buttons = 5.0 * (34.0 + 3.0) + 42.0 + 3.0 + theme::SP_3 + 3.0;
+    let seek = if fit.seek { 2.0 * (34.0 + 3.0) } else { 0.0 };
+    toggles + divider + buttons + seek + theme::SP_4 + theme::SP_2
+}
+
 /// The bottom panel labels the bar shows.
 fn bottom_labels(fit: BarFit) -> Vec<&'static str> {
     if fit.short_tabs {
@@ -765,7 +793,7 @@ mod tests {
         assert!(!full.short_tabs);
         // every step takes one more thing away, and what is gone stays gone
         let score = |f: BarFit| {
-            [f.typing_word, f.dsp, f.snap_label, f.assistant_text, !f.short_tabs, f.smpte, f.time, f.typing, f.tabs]
+            [f.typing_word, f.dsp, f.snap_label, f.assistant_text, !f.short_tabs, f.smpte, f.time, !f.icon_tabs, f.seek, f.typing, f.tabs]
                 .iter()
                 .filter(|x| **x)
                 .count()
@@ -778,21 +806,26 @@ mod tests {
         let dsp_gone = (0..=BAR_FIT_STEPS).find(|l| !bar_fit(*l).dsp).unwrap();
         assert!(dsp_gone < time_gone);
         assert_eq!(BOTTOM_SHORT.len(), BOTTOM_CHOICES.len());
+        assert_eq!(BOTTOM_ICONS.len(), BOTTOM_CHOICES.len());
+        // the bar buttons only go after the panel labels became icons
+        let seek_gone = (0..=BAR_FIT_STEPS).find(|l| !bar_fit(*l).seek).unwrap();
+        assert!(bar_fit(seek_gone).icon_tabs);
+        assert!(left_width(bar_fit(0)) > left_width(bar_fit(BAR_FIT_STEPS)));
     }
 
     #[test]
     fn control_bar_picks_the_fullest_bar_that_fits() {
         // a bar that needs 100 points per item still shown
         let need = |f: BarFit| {
-            100.0 * [f.typing_word, f.dsp, f.snap_label, f.assistant_text, !f.short_tabs, f.smpte, f.time, f.typing, f.tabs]
+            100.0 * [f.typing_word, f.dsp, f.snap_label, f.assistant_text, !f.short_tabs, f.smpte, f.time, !f.icon_tabs, f.seek, f.typing, f.tabs]
                 .iter()
                 .filter(|x| **x)
                 .count() as f32
         };
         assert_eq!(fit_level(10_000.0, need), 0);
-        assert_eq!(fit_level(900.0, need), 0);
-        assert_eq!(fit_level(899.0, need), 1);
-        assert_eq!(fit_level(450.0, need), 5);
+        assert_eq!(fit_level(1100.0, need), 0);
+        assert_eq!(fit_level(1099.0, need), 1);
+        assert_eq!(fit_level(650.0, need), 5);
         // nothing fits: the most compact bar
         assert_eq!(fit_level(10.0, need), BAR_FIT_STEPS);
         for avail in [0.0_f32, 250.0, 520.0, 777.0, 1200.0] {

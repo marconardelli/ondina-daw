@@ -1302,6 +1302,44 @@ pub fn segmented(ui: &mut Ui, selected: &mut usize, options: &[&str]) -> Respons
     resp
 }
 
+/// Width of one segment of [`segmented_icons`].
+pub const ICON_SEGMENT_W: f32 = 32.0;
+
+/// [`segmented`] with an icon in each segment instead of a word (for a narrow bar).
+pub fn segmented_icons(ui: &mut Ui, selected: &mut usize, icons: &[Icon]) -> Response {
+    let pad = 2.0;
+    let seg_h = 22.0;
+    let total = icons.len() as f32 * ICON_SEGMENT_W + 2.0 * pad;
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(total, seg_h + 2.0 * pad), Sense::click());
+    let edges: Vec<f32> = (0..=icons.len()).map(|i| rect.left() + pad + i as f32 * ICON_SEGMENT_W).collect();
+    let hover = resp.hover_pos().and_then(|p| segment_at(p.x, &edges));
+    if resp.clicked() {
+        if let Some(i) = resp.interact_pointer_pos().and_then(|p| segment_at(p.x, &edges)) {
+            if *selected != i {
+                *selected = i;
+                resp.mark_changed();
+            }
+        }
+    }
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        p.rect(rect, Rounding::same(theme::R_LG + 1.0), theme::INSET, Stroke::new(1.0_f32, theme::BORDER));
+        for (i, icon) in icons.iter().enumerate() {
+            let seg = Rect::from_min_size(pos2(edges[i], rect.top() + pad), vec2(ICON_SEGMENT_W, seg_h));
+            let (fill, color) = if i == *selected {
+                (theme::SEGMENT_ON, theme::TEXT)
+            } else if hover == Some(i) {
+                (theme::RAISED, theme::TEXT)
+            } else {
+                (Color32::TRANSPARENT, theme::TEXT_2)
+            };
+            p.rect_filled(seg, Rounding::same(theme::R_MD), fill);
+            paint_icon(p, *icon, Rect::from_center_size(seg.center(), Vec2::splat(13.0)), color);
+        }
+    }
+    resp
+}
+
 // ===================================================================================== effect slot
 
 /// What an insert slot shows.
