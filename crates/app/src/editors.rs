@@ -796,7 +796,7 @@ impl OndinaApp {
                     }
                 })
                 .response
-                .on_hover_text("Controller shown and drawn in this lane. The Analog Synth and FM Synth respond only to Sustain (64); VST3 instruments receive every controller.");
+                .on_hover_text("Controller shown and drawn in this lane. The built-in instruments respond only to Sustain (64), the Drum Synth to none; VST3 instruments receive every controller.");
         }
         // playhead (inside a looped region it is drawn in the repeat being played)
         let px = beat_x(local, sb);
