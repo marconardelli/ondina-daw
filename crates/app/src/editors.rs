@@ -867,15 +867,16 @@ impl OndinaApp {
     }
 
     /// Copy, cut, paste, select all and arrow moves on the piano roll's notes. Runs from `handle_keys` before the
-    /// panels, so no widget sees the keys it uses.
-    pub(crate) fn piano_roll_keys(&mut self, ctx: &egui::Context) {
+    /// panels, so no widget sees the keys it uses. Returns whether the arrow keys belong to the selected notes this
+    /// frame, so the track keys leave them alone.
+    pub(crate) fn piano_roll_keys(&mut self, ctx: &egui::Context) -> bool {
         if !nc::keys_on(self.bottom == BottomTab::Editor, self.extra.show_score, ctx.wants_keyboard_input(), self.drag.is_some()) {
-            return;
+            return false;
         }
         let p = self.project();
-        let Some(rid) = self.selected_region else { return };
-        let Some((_, region)) = p.find_region(rid) else { return };
-        let RegionContent::Midi(m) = &region.content else { return };
+        let Some(rid) = self.selected_region else { return false };
+        let Some((_, region)) = p.find_region(rid) else { return false };
+        let RegionContent::Midi(m) = &region.content else { return false };
         let has_sel = !self.selected_notes.is_empty();
         let has_clip = self.note_clipboard.is_some();
         let arrows = nc::arrows_on(true, self.musical_typing, has_sel);
@@ -889,7 +890,7 @@ impl OndinaApp {
             (cut, copy, paste, all, length, nudge)
         });
         if cut || copy {
-            let Some(clip) = nc::copy(&m.notes, &self.selected_notes) else { return };
+            let Some(clip) = nc::copy(&m.notes, &self.selected_notes) else { return arrows };
             let count = clip.notes.len();
             ctx.copy_text(nc::clip_text(&clip));
             self.note_clipboard = Some(clip);
@@ -903,7 +904,7 @@ impl OndinaApp {
                 self.status = format!("Copied {count} notes");
             }
         } else if paste {
-            let Some(clip) = self.note_clipboard.clone() else { return };
+            let Some(clip) = self.note_clipboard.clone() else { return arrows };
             let at = nc::paste_start(&clip, nc::playhead_in_region(self.position(), region), nc::grid(self.snap));
             let added = nc::pasted_notes(&clip, at, region.length);
             if added.is_empty() {
@@ -927,6 +928,7 @@ impl OndinaApp {
                 self.apply_note_edit(rid, Command::ReplaceNotes { region_id: rid, notes: edit.notes.clone() }, edit);
             }
         }
+        arrows
     }
 
     /// Run a command whose resulting notes and selection were worked out in advance, and select the edited notes.

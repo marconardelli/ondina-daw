@@ -1,4 +1,5 @@
-//! Keyboard moves of the arrangement: the playhead by bars and markers, and the split at the playhead.
+//! Keyboard moves of the arrangement: the playhead by bars and markers, the split at the playhead, and the selected
+//! track (step, mute, solo, marker).
 
 use eframe::egui::{Key, Modifiers};
 use ondina_core::command::Command;
@@ -12,6 +13,8 @@ pub const PLAYING_GRACE: f64 = 0.5;
 
 pub const NO_REGION: &str = "Select a region to split at the playhead";
 pub const OUTSIDE: &str = "Playhead is outside the selected region";
+pub const NO_TRACK_MUTE: &str = "Select a track to mute";
+pub const NO_TRACK_SOLO: &str = "Select a track to solo";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dir {
@@ -23,6 +26,21 @@ pub enum Dir {
 pub enum Jump {
     Bar(Dir),
     Marker(Dir),
+}
+
+/// What a track key edits in the project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackEdit {
+    Mute,
+    Solo,
+    Marker,
+}
+
+/// A track key: the arrows move the selection, the others edit the project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackKey {
+    Step(Dir),
+    Edit(TrackEdit),
 }
 
 /// The playhead and split shortcuts act only with no text field focused, with Musical Typing off (there `,` `.`
@@ -111,6 +129,75 @@ pub fn split_command(project: &Project, selected: Option<Id>, position: f64) -> 
     let region = selected.and_then(|id| project.find_region(id)).map(|(_, r)| r).ok_or(NO_REGION)?;
     let beat = split_target(region, position).ok_or(OUTSIDE)?;
     Ok(Command::SplitRegion { region_id: region.id, beat })
+}
+
+/// Up/Down step through the tracks (key repeat keeps stepping) unless the piano roll owns the arrows this frame
+/// (`arrows_free` false); M mutes, S solos and Shift+M adds a marker, once per press. The logical key decides, as for
+/// the other letter keys: `;` would clash with Shift+, (previous marker) on Italian and German layouts.
+pub fn track_key(key: Key, repeat: bool, mods: Modifiers, arrows_free: bool) -> Option<TrackKey> {
+    if mods.command || mods.ctrl || mods.alt {
+        return None;
+    }
+    match key {
+        Key::ArrowUp if !mods.shift && arrows_free => Some(TrackKey::Step(Dir::Back)),
+        Key::ArrowDown if !mods.shift && arrows_free => Some(TrackKey::Step(Dir::Forward)),
+        Key::M if !repeat => Some(TrackKey::Edit(if mods.shift { TrackEdit::Marker } else { TrackEdit::Mute })),
+        Key::S if !repeat && !mods.shift => Some(TrackKey::Edit(TrackEdit::Solo)),
+        _ => None,
+    }
+}
+
+/// The track a step selects, in project order. It stops on the first and last track; with no selection (or one that
+/// is gone) it starts from the first track. `None` only when there are no tracks.
+pub fn track_step(ids: &[Id], selected: Option<Id>, dir: Dir) -> Option<Id> {
+    let first = *ids.first()?;
+    match selected.and_then(|s| ids.iter().position(|&i| i == s)) {
+        None => Some(first),
+        Some(i) => Some(match dir {
+            Dir::Back => ids[i.saturating_sub(1)],
+            Dir::Forward => ids[(i + 1).min(ids.len() - 1)],
+        }),
+    }
+}
+
+/// The command a track edit sends and the status line that reports it, or why it does nothing. Mute and solo invert
+/// the selected track's current state; the marker goes exactly at the playhead, with no length, named "Marker N"
+/// with the first N not already used.
+pub fn track_command(
+    project: &Project,
+    selected: Option<Id>,
+    position: f64,
+    edit: TrackEdit,
+) -> Result<(Command, String), String> {
+    let track = selected.and_then(|id| project.track(id));
+    match edit {
+        TrackEdit::Mute => {
+            let t = track.ok_or(NO_TRACK_MUTE)?;
+            let mute = !t.channel.mute;
+            let msg = format!("{} {}", if mute { "Muted" } else { "Unmuted" }, t.name);
+            Ok((Command::SetMute { track_id: t.id, mute }, msg))
+        }
+        TrackEdit::Solo => {
+            let t = track.ok_or(NO_TRACK_SOLO)?;
+            let solo = !t.channel.solo;
+            let msg = format!("{} {}", if solo { "Soloed" } else { "Unsoloed" }, t.name);
+            Ok((Command::SetSolo { track_id: t.id, solo }, msg))
+        }
+        TrackEdit::Marker => {
+            let beat = position.max(0.0);
+            let at = project.bar_beat_string(beat);
+            if project.markers.iter().any(|m| (m.beat - beat).abs() < EPS) {
+                return Err(format!("A marker is already at {at}"));
+            }
+            let mut n = project.markers.len() + 1;
+            while project.markers.iter().any(|m| m.name == format!("Marker {n}")) {
+                n += 1;
+            }
+            let name = format!("Marker {n}");
+            let msg = format!("{name} at {at}");
+            Ok((Command::AddMarker { beat, name, length: None }, msg))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -335,5 +422,159 @@ mod tests {
         s.execute(Command::SetPlayhead { beat: Some(to), bar: None }, Source::Gui).unwrap();
         assert_eq!(s.transport_json()["beat"], 12.0);
         assert_eq!(s.can_undo().map(str::to_owned), before);
+    }
+
+    #[test]
+    fn arrows_step_through_tracks_and_repeat() {
+        let n = Modifiers::NONE;
+        assert_eq!(track_key(Key::ArrowUp, false, n, true), Some(TrackKey::Step(Dir::Back)));
+        assert_eq!(track_key(Key::ArrowDown, false, n, true), Some(TrackKey::Step(Dir::Forward)));
+        assert_eq!(track_key(Key::ArrowUp, true, n, true), Some(TrackKey::Step(Dir::Back)));
+        assert_eq!(track_key(Key::ArrowDown, true, n, true), Some(TrackKey::Step(Dir::Forward)));
+    }
+
+    #[test]
+    fn arrows_stay_with_selected_notes() {
+        let n = Modifiers::NONE;
+        assert_eq!(track_key(Key::ArrowUp, false, n, false), None);
+        assert_eq!(track_key(Key::ArrowDown, false, n, false), None);
+        assert_eq!(track_key(Key::M, false, n, false), Some(TrackKey::Edit(TrackEdit::Mute)));
+    }
+
+    #[test]
+    fn m_mutes_s_solos_shift_m_adds_a_marker_once_per_press() {
+        let (n, s) = (Modifiers::NONE, Modifiers::SHIFT);
+        assert_eq!(track_key(Key::M, false, n, true), Some(TrackKey::Edit(TrackEdit::Mute)));
+        assert_eq!(track_key(Key::S, false, n, true), Some(TrackKey::Edit(TrackEdit::Solo)));
+        assert_eq!(track_key(Key::M, false, s, true), Some(TrackKey::Edit(TrackEdit::Marker)));
+        assert_eq!(track_key(Key::M, true, n, true), None);
+        assert_eq!(track_key(Key::S, true, n, true), None);
+        assert_eq!(track_key(Key::M, true, s, true), None);
+        assert_eq!(track_key(Key::S, false, s, true), None);
+    }
+
+    #[test]
+    fn track_keys_ignore_ctrl_alt_and_shifted_arrows() {
+        let ctrl = Modifiers::CTRL | Modifiers::COMMAND;
+        for key in [Key::M, Key::S, Key::ArrowUp] {
+            assert_eq!(track_key(key, false, ctrl, true), None);
+            assert_eq!(track_key(key, false, Modifiers::ALT, true), None);
+        }
+        assert_eq!(track_key(Key::M, false, ctrl | Modifiers::SHIFT, true), None);
+        assert_eq!(track_key(Key::ArrowUp, false, Modifiers::SHIFT, true), None);
+        assert_eq!(track_key(Key::ArrowDown, false, Modifiers::SHIFT, true), None);
+        assert_eq!(track_key(Key::R, false, Modifiers::NONE, true), None);
+        assert_eq!(track_key(Key::Comma, false, Modifiers::NONE, true), None);
+    }
+
+    #[test]
+    fn italian_semicolon_stays_a_marker_jump() {
+        let s = Modifiers::SHIFT;
+        assert_eq!(jump_from_key(Key::Semicolon, Some(Key::Comma), s), Some(Jump::Marker(Dir::Back)));
+        assert_eq!(track_key(Key::Semicolon, false, s, true), None);
+        assert_eq!(track_key(Key::M, false, s, true), Some(TrackKey::Edit(TrackEdit::Marker)));
+    }
+
+    #[test]
+    fn track_step_moves_in_project_order_and_stops_at_the_ends() {
+        let ids = [7, 3, 9];
+        assert_eq!(track_step(&ids, Some(3), Dir::Back), Some(7));
+        assert_eq!(track_step(&ids, Some(3), Dir::Forward), Some(9));
+        assert_eq!(track_step(&ids, Some(7), Dir::Back), Some(7));
+        assert_eq!(track_step(&ids, Some(9), Dir::Forward), Some(9));
+    }
+
+    #[test]
+    fn track_step_starts_from_the_first_track() {
+        let ids = [7, 3, 9];
+        assert_eq!(track_step(&ids, None, Dir::Back), Some(7));
+        assert_eq!(track_step(&ids, None, Dir::Forward), Some(7));
+        assert_eq!(track_step(&ids, Some(42), Dir::Back), Some(7));
+        assert_eq!(track_step(&ids, Some(42), Dir::Forward), Some(7));
+        assert_eq!(track_step(&[], None, Dir::Forward), None);
+        assert_eq!(track_step(&[], Some(7), Dir::Back), None);
+        for (sel, dir) in [(None, Dir::Back), (Some(5), Dir::Back), (Some(5), Dir::Forward)] {
+            assert_eq!(track_step(&[5], sel, dir), Some(5));
+        }
+    }
+
+    #[test]
+    fn track_command_explains_why_it_does_nothing() {
+        let p = Project::new("t");
+        assert_eq!(track_command(&p, None, 0.0, TrackEdit::Mute).unwrap_err(), NO_TRACK_MUTE);
+        assert_eq!(track_command(&p, Some(99), 0.0, TrackEdit::Solo).unwrap_err(), NO_TRACK_SOLO);
+    }
+
+    #[test]
+    fn mute_solo_and_marker_keys_are_one_undo_step_each() {
+        let mut s = Session::new(false);
+        let tid = run(&mut s, "add_track", json!({"kind": "instrument", "name": "Bass"}))["track_id"].as_u64().unwrap();
+        let channel = |s: &Session| {
+            let t = s.project.track(tid).expect("the track is still there");
+            (t.channel.mute, t.channel.solo)
+        };
+
+        let (c, msg) = track_command(&s.project, Some(tid), 0.0, TrackEdit::Mute).unwrap();
+        assert_eq!(msg, "Muted Bass");
+        s.execute(c, Source::Gui).unwrap();
+        assert_eq!(channel(&s), (true, false));
+        let (c, msg) = track_command(&s.project, Some(tid), 0.0, TrackEdit::Mute).unwrap();
+        assert_eq!(msg, "Unmuted Bass");
+        assert!(matches!(c, Command::SetMute { track_id, mute: false } if track_id == tid));
+        run(&mut s, "undo", json!({}));
+        assert_eq!(channel(&s), (false, false));
+
+        let (c, msg) = track_command(&s.project, Some(tid), 0.0, TrackEdit::Solo).unwrap();
+        assert_eq!(msg, "Soloed Bass");
+        s.execute(c, Source::Gui).unwrap();
+        assert_eq!(channel(&s), (false, true));
+        let (c, msg) = track_command(&s.project, Some(tid), 0.0, TrackEdit::Solo).unwrap();
+        assert_eq!(msg, "Unsoloed Bass");
+        assert!(matches!(c, Command::SetSolo { track_id, solo: false } if track_id == tid));
+        run(&mut s, "undo", json!({}));
+        assert_eq!(channel(&s), (false, false));
+
+        let (c, msg) = track_command(&s.project, None, 9.0, TrackEdit::Marker).unwrap();
+        assert_eq!(msg, "Marker 1 at 3.2.000");
+        s.execute(c, Source::Gui).unwrap();
+        let markers: Vec<_> = s.project.markers.iter().map(|m| (m.beat, m.name.clone(), m.length)).collect();
+        assert_eq!(markers, vec![(9.0, "Marker 1".to_string(), None)]);
+        let again = track_command(&s.project, None, 9.0, TrackEdit::Marker).unwrap_err();
+        assert!(again.starts_with("A marker is already at"), "{again}");
+        run(&mut s, "undo", json!({}));
+        assert!(s.project.markers.is_empty());
+    }
+
+    #[test]
+    fn marker_names_skip_names_in_use() {
+        let mut s = Session::new(false);
+        run(&mut s, "add_marker", json!({"beat": 4, "name": "Marker 2"}));
+        let (c, _) = track_command(&s.project, None, 8.0, TrackEdit::Marker).unwrap();
+        assert!(matches!(&c, Command::AddMarker { name, .. } if name == "Marker 3"), "{c:?}");
+
+        let mut p = Project::new("t");
+        p.markers = vec![Marker { id: 1, beat: 4.0, name: "Chorus".into(), length: None }];
+        let (c, _) = track_command(&p, None, 8.0, TrackEdit::Marker).unwrap();
+        assert!(matches!(&c, Command::AddMarker { name, .. } if name == "Marker 2"), "{c:?}");
+    }
+
+    #[test]
+    fn marker_key_never_goes_before_the_start() {
+        let p = Project::new("t");
+        let (c, _) = track_command(&p, None, -1.0, TrackEdit::Marker).unwrap();
+        assert!(matches!(c, Command::AddMarker { beat, length: None, .. } if beat == 0.0), "{c:?}");
+    }
+
+    #[test]
+    fn track_keys_are_off_with_text_musical_typing_or_drag() {
+        let (n, s) = (Modifiers::NONE, Modifiers::SHIFT);
+        let events = [(Key::ArrowUp, n), (Key::ArrowDown, n), (Key::M, n), (Key::S, n), (Key::M, s)];
+        for (key, mods) in events {
+            for (text, mt, drag) in [(true, false, false), (false, true, false), (false, false, true)] {
+                let k = keys_on(text, mt, drag).then(|| track_key(key, false, mods, true)).flatten();
+                assert_eq!(k, None, "{key:?} {mods:?} with {text} {mt} {drag}");
+            }
+            assert!(keys_on(false, false, false).then(|| track_key(key, false, mods, true)).flatten().is_some());
+        }
     }
 }

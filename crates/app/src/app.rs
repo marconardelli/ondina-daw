@@ -218,6 +218,8 @@ pub struct OndinaApp {
     pub track_height: f32,
     /// A View-menu step for the arrangement, applied by `arrange_ui` where the view's size is known.
     pub arrange_step: Option<crate::arrange_view::ViewStep>,
+    /// A track to bring into view, applied by `arrange_ui` where the view's height is known.
+    pub reveal_track: Option<Id>,
     pub snap: f64,
     pub selected_track: Option<Id>,
     pub selected_region: Option<Id>,
@@ -310,6 +312,7 @@ impl OndinaApp {
             scroll_y: 0.0,
             track_height: 58.0,
             arrange_step: None,
+            reveal_track: None,
             snap: 1.0,
             selected_track: None,
             selected_region: None,
@@ -919,8 +922,8 @@ impl OndinaApp {
                 self.pending.push((Command::Redo {}, None));
             }
         });
-        self.piano_roll_keys(ctx);
-        self.transport_keys(ctx);
+        let note_arrows = self.piano_roll_keys(ctx);
+        self.transport_keys(ctx, note_arrows);
         let (space, del, home, r, c, k, d_ctrl, s_ctrl, n_ctrl, o_ctrl, b_ctrl, enter) =
             ctx.input(|i| {
                 (
@@ -1014,13 +1017,15 @@ impl OndinaApp {
     }
 
     /// `,` `.` move the playhead by a bar, with Shift to the previous or next marker; Ctrl+T splits the selected
-    /// region at the playhead. Runs from `handle_keys` after the piano roll keys.
-    fn transport_keys(&mut self, ctx: &egui::Context) {
+    /// region at the playhead. Up/Down select the previous or next track unless the piano roll is moving the
+    /// selected notes (`note_arrows`), M mutes and S solos the selected track, Shift+M adds a marker at the playhead.
+    /// Runs from `handle_keys` after the piano roll keys.
+    fn transport_keys(&mut self, ctx: &egui::Context, note_arrows: bool) {
         if !tk::keys_on(ctx.wants_keyboard_input(), self.musical_typing, self.drag.is_some()) {
             return;
         }
-        let (jump, split) = ctx.input_mut(|i| {
-            let (mut jump, mut split) = (None, false);
+        let (jump, split, track) = ctx.input_mut(|i| {
+            let (mut jump, mut split, mut track) = (None, false, None);
             i.events.retain(|e| {
                 let egui::Event::Key { key, physical_key, pressed: true, repeat, modifiers } = e else {
                     return true;
@@ -1035,9 +1040,15 @@ impl OndinaApp {
                     split = true;
                     return false;
                 }
+                if track.is_none() {
+                    if let Some(k) = tk::track_key(*key, *repeat, *modifiers, !note_arrows) {
+                        track = Some(k);
+                        return false;
+                    }
+                }
                 true
             });
-            (jump, split)
+            (jump, split, track)
         });
         if let Some(j) = jump {
             let pos = self.position();
@@ -1055,6 +1066,35 @@ impl OndinaApp {
                     }
                 }
                 Err(msg) => self.status = msg.into(),
+            }
+        }
+        if let Some(k) = track {
+            self.run_track_key(k);
+        }
+    }
+
+    /// A track key, from the keyboard or the Track and Edit menus. Selecting a track is GUI state, like a click on
+    /// its header; mute, solo and the marker are queued commands, one undo step each.
+    pub(crate) fn run_track_key(&mut self, k: tk::TrackKey) {
+        match k {
+            tk::TrackKey::Step(d) => {
+                let ids: Vec<Id> = self.view.project.tracks.iter().map(|t| t.id).collect();
+                if let Some(id) = tk::track_step(&ids, self.selected_track, d) {
+                    self.selected_track = Some(id);
+                    self.reveal_track = Some(id);
+                    if let Some(t) = self.view.project.track(id) {
+                        self.status = format!("Selected {}", t.name);
+                    }
+                }
+            }
+            tk::TrackKey::Edit(e) => {
+                match tk::track_command(&self.view.project, self.selected_track, self.position(), e) {
+                    Ok((c, msg)) => {
+                        self.cmd(c);
+                        self.status = msg;
+                    }
+                    Err(msg) => self.status = msg,
+                }
             }
         }
     }
@@ -1246,6 +1286,10 @@ impl OndinaApp {
                     }
                     ui.close_menu();
                 }
+                if ui.button("Add Marker at Playhead   Shift+M").clicked() {
+                    self.run_track_key(tk::TrackKey::Edit(tk::TrackEdit::Marker));
+                    ui.close_menu();
+                }
                 if ui
                     .add_enabled(
                         self.selected_region.is_some(),
@@ -1331,6 +1375,36 @@ impl OndinaApp {
                 }
                 ui.separator();
                 let has = self.selected_track.is_some();
+                let any = !self.view.project.tracks.is_empty();
+                let (muted, soloed) = self
+                    .selected_track
+                    .and_then(|t| self.view.project.track(t))
+                    .map_or((false, false), |t| (t.channel.mute, t.channel.solo));
+                if ui
+                    .add_enabled(any, egui::Button::new("Select Previous Track   ↑"))
+                    .clicked()
+                {
+                    self.run_track_key(tk::TrackKey::Step(tk::Dir::Back));
+                    ui.close_menu();
+                }
+                if ui
+                    .add_enabled(any, egui::Button::new("Select Next Track   ↓"))
+                    .clicked()
+                {
+                    self.run_track_key(tk::TrackKey::Step(tk::Dir::Forward));
+                    ui.close_menu();
+                }
+                let mute = if muted { "Unmute Track   M" } else { "Mute Track   M" };
+                if ui.add_enabled(has, egui::Button::new(mute)).clicked() {
+                    self.run_track_key(tk::TrackKey::Edit(tk::TrackEdit::Mute));
+                    ui.close_menu();
+                }
+                let solo = if soloed { "Unsolo Track   S" } else { "Solo Track   S" };
+                if ui.add_enabled(has, egui::Button::new(solo)).clicked() {
+                    self.run_track_key(tk::TrackKey::Edit(tk::TrackEdit::Solo));
+                    ui.close_menu();
+                }
+                ui.separator();
                 if ui
                     .add_enabled(has, egui::Button::new("Duplicate Track"))
                     .clicked()
