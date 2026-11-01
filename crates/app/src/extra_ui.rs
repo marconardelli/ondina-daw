@@ -205,8 +205,7 @@ impl OndinaApp {
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(format!(
-                    "𝄞 Score — {}   {}   {}",
-                    region.name,
+                    "{}   {}",
                     score["time_signature"].as_str().unwrap_or(""),
                     score["key"].as_str().unwrap_or("")
                 ))

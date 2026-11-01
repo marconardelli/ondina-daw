@@ -25,6 +25,9 @@ use crate::step_paint::{self, cell_at, RowFill, RowRename, StepCell, StepStroke,
 use crate::theme;
 
 const KEYS_W: f32 = 54.0;
+
+/// Mouse and keyboard help of the piano roll (hover on "Help" in its toolbar and on the editor header's name).
+pub(crate) const PIANO_ROLL_HELP: &str = "Click on empty grid: add a note and select it (Ctrl/Shift: add it to the selection) · Wheel: scroll pitch · Shift+wheel: scroll time · Ctrl+wheel: zoom time · Ctrl+Shift+wheel: zoom pitch · Ctrl+C/X/V: copy/cut/paste · Ctrl+A: select all · Ctrl+D: repeat the selection · ←/→: move by the snap step · ↑/↓: semitone · Shift+↑/↓: octave · Alt+←/→: shorten/lengthen by the snap step · Alt+drag: copy the notes · Controller lane: drag to draw, right-drag to erase";
 const VEL_H: f32 = 56.0;
 
 /// The piano roll's Harmony menu: label, interval and whether the voice goes below the notes.
@@ -78,11 +81,18 @@ fn consume_arrow(i: &mut egui::InputState) -> Option<nc::Nudge> {
 impl OndinaApp {
     pub fn editor_ui(&mut self, ui: &mut egui::Ui) {
         let p = self.project();
-        let Some((track, region)) = self
+        let found = self
             .selected_region
             .and_then(|id| p.find_region(id))
-            .map(|(t, r)| (t.clone(), r.clone()))
-        else {
+            .map(|(t, r)| (t.clone(), r.clone()));
+        self.editor_header(ui, found.as_ref().map(|(t, r)| (t, r)));
+        egui::Frame::none()
+            .inner_margin(egui::Margin { left: theme::SP_4, right: theme::SP_4, top: theme::SP_2, bottom: theme::SP_2 })
+            .show(ui, |ui| self.editor_body(ui, &p, found));
+    }
+
+    fn editor_body(&mut self, ui: &mut egui::Ui, p: &std::sync::Arc<Project>, found: Option<(Track, Region)>) {
+        let Some((track, region)) = found else {
             ui.centered_and_justified(|ui| {
                 ui.label(RichText::new("Select a region to edit it (double-click an instrument lane to create one)").color(theme::TEXT_DIM));
             });
@@ -92,18 +102,6 @@ impl OndinaApp {
         // the row name field lives only while the step sequencer shows its region
         if self.extra.show_score || self.edits.row_rename.as_ref().is_some_and(|r| r.region != region.id) {
             self.edits.row_rename = None;
-        }
-        if matches!(
-            region.content,
-            RegionContent::Midi(_) | RegionContent::Pattern(_)
-        ) {
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.extra.show_score, false, "🎹 Piano Roll / Step");
-                ui.selectable_value(&mut self.extra.show_score, true, "𝄞 Score");
-                if ui.button("MIDI Transform…").clicked() {
-                    self.extra.show_transform = true;
-                }
-            });
         }
         if self.extra.show_score
             && matches!(
@@ -115,9 +113,9 @@ impl OndinaApp {
             return;
         }
         match &region.content {
-            RegionContent::Midi(m) => self.piano_roll(ui, &p, &track, &region, m),
+            RegionContent::Midi(m) => self.piano_roll(ui, p, &track, &region, m),
             RegionContent::Pattern(pt) => self.step_sequencer(ui, &track, &region, pt),
-            RegionContent::Audio(a) => self.audio_editor(ui, &p, &region, a),
+            RegionContent::Audio(a) => self.audio_editor(ui, p, &region, a),
         }
     }
 
@@ -132,8 +130,7 @@ impl OndinaApp {
         let rid = region.id;
         // toolbar
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("🎹 {} — {}", track.name, region.name)).strong())
-                .on_hover_text("Click on empty grid: add a note and select it (Ctrl/Shift: add it to the selection) · Wheel: scroll pitch · Shift+wheel: scroll time · Ctrl+wheel: zoom time · Ctrl+Shift+wheel: zoom pitch · Ctrl+C/X/V: copy/cut/paste · Ctrl+A: select all · Ctrl+D: repeat the selection · ←/→: move by the snap step · ↑/↓: semitone · Shift+↑/↓: octave · Alt+←/→: shorten/lengthen by the snap step · Alt+drag: copy the notes · Controller lane: drag to draw, right-drag to erase");
+            ui.label(RichText::new("Help").color(theme::TEXT_3)).on_hover_text(PIANO_ROLL_HELP);
             ui.separator();
             ui.label("Note length");
             egui::ComboBox::from_id_salt("notelen").width(60.0).selected_text(len_label(self.note_len)).show_ui(ui, |ui| {
@@ -1063,8 +1060,6 @@ impl OndinaApp {
     ) {
         let rid = region.id;
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("🥁 Step Sequencer — {} / {}", track.name, region.name)).strong());
-            ui.separator();
             let mut swing = pt.swing;
             if ui.add(egui::Slider::new(&mut swing, 0.0..=1.0).text("Swing")).changed() {
                 self.cmd_merge(Command::SetPatternSwing { region_id: rid, swing }, format!("swing{rid}"));
@@ -1293,7 +1288,6 @@ impl OndinaApp {
         let rid = region.id;
         let f = p.audio_file(a.file_id);
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("🎤 {}", region.name)).strong());
             if let Some(f) = f {
                 ui.label(
                     RichText::new(format!(
