@@ -376,7 +376,9 @@ impl OndinaApp {
             }
             _ => {}
         }
-        if ruler_resp.drag_stopped() && matches!(self.drag, Some(Drag::Cycle { .. } | Drag::CycleEdit { .. })) {
+        if matches!(self.drag, Some(Drag::Cycle { .. } | Drag::CycleEdit { .. }))
+            && ui.input(|i| crate::drag_cancel::drag_finished(&i.pointer, self.drag.as_ref()))
+        {
             self.drag = None;
         }
 
@@ -505,7 +507,7 @@ impl OndinaApp {
             }
             let mid = m.id;
             let (mb, ml) = (m.beat, m.length);
-            resp.context_menu(|ui| {
+            crate::drag_cancel::menu_unless_dragging(&resp, self.drag.is_some(), |ui| {
                 if let Some(l) = ml {
                     if ui.button("Set cycle to section").clicked() {
                         self.cmd(Command::SetCycle {
@@ -668,7 +670,7 @@ impl OndinaApp {
             }
             let cid = c.id;
             let symbol = &c.symbol;
-            resp.context_menu(|ui| {
+            crate::drag_cancel::menu_unless_dragging(&resp, self.drag.is_some(), |ui| {
                 if ui.button("Edit chord").clicked() {
                     self.edits.chord_edit = Some(ChordEdit {
                         target: ChordTarget::Existing(cid),
@@ -813,7 +815,7 @@ impl OndinaApp {
             }
             let tid = t.id;
             let tkind = t.kind;
-            lane_resp.context_menu(|ui| {
+            crate::drag_cancel::menu_unless_dragging(&lane_resp, self.drag.is_some(), |ui| {
                 let b = self.snap_floor(self.position());
                 if tkind == TrackKind::Instrument {
                     if ui.button("New empty MIDI region at playhead").clicked() {
@@ -1206,7 +1208,7 @@ impl OndinaApp {
                 let rname = r.name.clone();
                 let rcolor = r.color;
                 let rtid = t.id;
-                body_resp.context_menu(|ui| {
+                crate::drag_cancel::menu_unless_dragging(&body_resp, self.drag.is_some(), |ui| {
                     if ui.button("Rename…").clicked() {
                         self.edits.region_rename = Some(InPlaceRename { id: rid, text: rname.clone(), focus: true });
                         self.selected_region = Some(rid);
@@ -1316,7 +1318,7 @@ impl OndinaApp {
 
         // dragging updates
         let pointer_pos = ui.input(|i| i.pointer.interact_pos());
-        let released = ui.input(|i| i.pointer.any_released());
+        let released = ui.input(|i| crate::drag_cancel::drag_finished(&i.pointer, self.drag.as_ref()));
         let pointer_beat = pointer_pos.map(|pp| self.x_to_beat(pp.x, timeline_x));
         let snap = self.snap;
         match &mut self.drag {
@@ -1769,7 +1771,7 @@ impl OndinaApp {
         } else {
             None
         };
-        resp.context_menu(|ui| {
+        crate::drag_cancel::menu_unless_dragging(&resp, self.drag.is_some(), |ui| {
             if let Some((choices, current)) = &auto_choices {
                 ui.menu_button("Automation lane", |ui| {
                     if let Some(target) = automation_lane_menu(ui, choices, current) {

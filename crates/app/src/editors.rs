@@ -548,7 +548,7 @@ impl OndinaApp {
                     ));
                 });
             }
-            if resp.double_clicked() || resp.secondary_clicked() {
+            if resp.double_clicked() || (resp.secondary_clicked() && self.drag.is_none()) {
                 self.cmd(Command::RemoveNotes {
                     region_id: rid,
                     indices: Some(vec![i]),
@@ -719,8 +719,9 @@ impl OndinaApp {
             }
             self.drag = Some(Drag::Velocity { region: rid, stroke });
         }
-        if vresp.dragged() {
-            if let (Some(pp), Some(Drag::Velocity { stroke, .. })) = (pointer, self.drag.as_mut()) {
+        // follows the app's drag, not egui's: a right click in the middle ends egui's drag but not the stroke
+        if let (Some(pp), Some(Drag::Velocity { region, stroke })) = (pointer, self.drag.as_mut()) {
+            if *region == rid {
                 stroke.add(x_to_beat(pp.x), vel_at(pp.y), vel_tol, &self.selected_notes);
             }
         }
@@ -807,7 +808,7 @@ impl OndinaApp {
             );
         }
         // drag updates / commit
-        let released = ui.input(|i| i.pointer.any_released());
+        let released = ui.input(|i| crate::drag_cancel::drag_finished(&i.pointer, self.drag.as_ref()));
         if let Some(pp) = pointer {
             let snap = if self.snap > 0.0 {
                 self.snap.min(1.0)
@@ -1123,7 +1124,7 @@ impl OndinaApp {
                         if name.clicked() {
                             self.preview_row(track.id, row.pitch);
                         }
-                        name.context_menu(|ui| {
+                        crate::drag_cancel::menu_unless_dragging(&name, self.drag.is_some(), |ui| {
                             ui.label(RichText::new(format!("{} · {} {}", row.name, row.pitch, note_name(row.pitch))).strong());
                             ui.separator();
                             if ui.button("Preview").clicked() {
@@ -1194,7 +1195,7 @@ impl OndinaApp {
                                     velocity: if on { 0 } else { PAINT_VELOCITY },
                                 });
                             }
-                            if resp.secondary_clicked() {
+                            if resp.secondary_clicked() && self.drag.is_none() {
                                 let nv = match *v {
                                     0 => 120,
                                     101..=127 => 90,
@@ -1268,7 +1269,7 @@ impl OndinaApp {
             }
         });
         // the stroke reaches the project on release, as one undo step
-        if ui.input(|i| i.pointer.any_released()) {
+        if ui.input(|i| crate::drag_cancel::drag_finished(&i.pointer, self.drag.as_ref())) {
             match self.drag.take() {
                 Some(Drag::StepPaint { region, stroke }) if region == rid => {
                     let key = step_paint::paint_gesture_key();
