@@ -41,7 +41,7 @@ fn main() -> eframe::Result<()> {
             .and_then(|i| args.get(i + 1))
             .cloned()
     };
-    let settings = Settings::load();
+    let (settings, settings_notice) = Settings::load_reporting();
 
     let session = Session::shared(!has("--no-audio"));
     if let Some(out) = settings.audio_output.clone() {
@@ -88,9 +88,11 @@ fn main() -> eframe::Result<()> {
         "Ondina DAW",
         options,
         Box::new(move |cc| {
-            Ok(Box::new(app::OndinaApp::new(
-                cc, session, settings, mcp, mcp_error,
-            )))
+            let mut app = app::OndinaApp::new(cc, session, settings, mcp, mcp_error);
+            if let Some(n) = settings_notice {
+                app.status = n;
+            }
+            Ok(Box::new(app))
         }),
     )
 }

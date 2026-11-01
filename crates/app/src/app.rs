@@ -833,7 +833,10 @@ impl OndinaApp {
                 if let Some(p) = v["saved"].as_str() {
                     self.settings.add_recent(p);
                     self.settings.save();
-                    self.status = format!("Saved {p}");
+                    self.status = match v["backup_error"].as_str() {
+                        Some(e) => format!("⚠ Saved {p}, but the copy of the previous version was not written: {e}"),
+                        None => format!("Saved {p}"),
+                    };
                 }
                 self.recovered = None;
                 true
@@ -2143,6 +2146,8 @@ impl OndinaApp {
                 ui.add(egui::DragValue::new(&mut self.settings.autosave_minutes).range(0..=60).suffix(" min"));
             });
             ui.label(RichText::new("0 turns autosave off. After a crash Ondina offers the copy back at the next start.").small().color(theme::TEXT_DIM));
+            ui.checkbox(&mut self.settings.keep_save_backup, "Keep a backup of the previous save");
+            ui.label(RichText::new("Before Save replaces a project file, its previous version is kept next to it as <name>.ondina.bak.").small().color(theme::TEXT_DIM));
             ui.horizontal(|ui| {
                 ui.label("UI scale (restart)");
                 ui.add(egui::Slider::new(&mut self.settings.ui_scale, 0.75..=2.0));
@@ -2150,11 +2155,14 @@ impl OndinaApp {
             ui.separator();
             if ui.button("Save settings").clicked() {
                 self.settings.api_key = if self.api_key_buf.trim().is_empty() { None } else { Some(self.api_key_buf.trim().to_string()) };
-                self.settings.save();
+                let saved = self.settings.try_save();
                 if let Some(mut s) = self.session.try_lock_for(Duration::from_millis(300)) {
                     s.settings = self.settings.clone();
                 }
-                self.status = "Settings saved".into();
+                self.status = match saved {
+                    Ok(()) => "Settings saved".into(),
+                    Err(e) => format!("⚠ Settings not saved: {e}"),
+                };
             }
         });
         self.show_settings = open;
