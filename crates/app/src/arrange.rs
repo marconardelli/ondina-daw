@@ -166,6 +166,11 @@ impl OndinaApp {
             };
             self.set_arrange_view(apply_step(step, self.arrange_view(), &area));
         }
+        if let Some(id) = self.reveal_track.take() {
+            if let Some(i) = p.tracks.iter().position(|t| t.id == id) {
+                self.scroll_y = arrange_view::scroll_to_track(self.scroll_y, self.track_height, i, view_h);
+            }
+        }
         // Also after tracks were deleted or made shorter elsewhere: never leave the view below the content.
         self.scroll_y = self.scroll_y.clamp(0.0, max_scroll_y(p.tracks.len(), self.track_height, view_h));
         // follow playhead

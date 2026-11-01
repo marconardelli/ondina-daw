@@ -59,6 +59,20 @@ pub fn max_scroll_y(tracks: usize, track_h: f32, view_h: f32) -> f32 {
     (tracks as f32 * track_h + TRACKS_TAIL_PX - view_h).max(0.0)
 }
 
+/// Scroll that shows the whole row of track `index`: unchanged when it is already in view, otherwise the least
+/// movement that brings it in. A row as tall as the view or taller lines up with the top.
+pub fn scroll_to_track(scroll_y: f32, track_h: f32, index: usize, view_h: f32) -> f32 {
+    let top = index as f32 * track_h;
+    let bottom = top + track_h;
+    if top < scroll_y || track_h >= view_h {
+        top
+    } else if bottom > scroll_y + view_h {
+        bottom - view_h
+    } else {
+        scroll_y
+    }
+}
+
 /// Scales the track height around the pointer (`pointer_dy` points below the top of the track area):
 /// the track under the pointer, and the same point inside it, stays there. When that would scroll past
 /// the content (few tracks, pointer below the last one) the scroll limit wins.
@@ -237,5 +251,25 @@ mod tests {
         for step in [ViewStep::ZoomIn, ViewStep::ZoomOut, ViewStep::Fit, ViewStep::Taller, ViewStep::Shorter] {
             assert!(can_step(step, default), "{step:?}");
         }
+    }
+
+    #[test]
+    fn scroll_to_track_leaves_a_visible_track_alone() {
+        assert_eq!(scroll_to_track(58.0, 58.0, 2, 300.0), 58.0);
+    }
+
+    #[test]
+    fn scroll_to_track_scrolls_up_to_a_track_above() {
+        assert_eq!(scroll_to_track(200.0, 58.0, 1, 300.0), 58.0);
+    }
+
+    #[test]
+    fn scroll_to_track_scrolls_down_just_enough() {
+        assert_eq!(scroll_to_track(0.0, 58.0, 6, 300.0), 7.0 * 58.0 - 300.0);
+    }
+
+    #[test]
+    fn scroll_to_track_puts_a_tall_track_at_the_top() {
+        assert_eq!(scroll_to_track(0.0, 160.0, 3, 100.0), 480.0);
     }
 }
