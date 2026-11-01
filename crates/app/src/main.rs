@@ -33,10 +33,10 @@ mod region_edit;
 mod region_clipboard;
 mod session_players;
 mod step_paint;
-mod theme;
 mod transport_keys;
-mod widgets;
 
+// The look (tokens, fonts, hand-drawn controls) lives in the crate's library so later views can share it.
+pub(crate) use ondina_app::{theme, widgets};
 use ondina_studio::{Session, Settings, Source};
 
 fn main() -> eframe::Result<()> {

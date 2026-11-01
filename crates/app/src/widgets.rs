@@ -5,9 +5,6 @@
 //! The math (value and dB mappings, knob angles, hit tests, peak hold, SVG paths) lives in plain functions that the
 //! tests below cover; the widgets only read input and paint.
 
-// The views adopt these controls one by one during the redesign; until then some are not called yet.
-#![allow(dead_code)]
-
 use std::f32::consts::PI;
 use std::sync::OnceLock;
 
@@ -275,9 +272,10 @@ fn cubic(p0: Pos2, c1: Pos2, c2: Pos2, p1: Pos2, out: &mut Vec<Pos2>) {
 }
 
 /// SVG elliptical arc from `p0` to `p1` (endpoint form, SVG spec F.6.5), flattened; `p0` itself is not pushed.
-#[allow(clippy::too_many_arguments)]
-fn arc(p0: Pos2, rx: f32, ry: f32, phi_deg: f32, large: bool, sweep: bool, p1: Pos2, out: &mut Vec<Pos2>) {
-    let (mut rx, mut ry) = (rx.abs(), ry.abs());
+/// `radii` are (rx, ry); `flags` are (large-arc, sweep).
+fn arc(p0: Pos2, radii: Vec2, phi_deg: f32, flags: (bool, bool), p1: Pos2, out: &mut Vec<Pos2>) {
+    let (large, sweep) = flags;
+    let (mut rx, mut ry) = (radii.x.abs(), radii.y.abs());
     if rx == 0.0 || ry == 0.0 || p0 == p1 {
         out.push(p1);
         return;
@@ -388,7 +386,7 @@ pub fn parse_path(d: &str) -> Vec<SubPath> {
                 else {
                     break;
                 };
-                arc(cur, rx, ry, rot, la != 0.0, sw != 0.0, (base + p).to_pos2(), &mut pts);
+                arc(cur, vec2(rx, ry), rot, (la != 0.0, sw != 0.0), (base + p).to_pos2(), &mut pts);
             }
             b'Z' => {
                 if let Some(mut sp) = current.take() {

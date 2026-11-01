@@ -4,9 +4,6 @@
 //! overlap with the twelve track colors. The older constant names (`BG`, `PANEL`, `LANE`, `TEXT_DIM`, `ACCENT`, ...)
 //! stay as aliases of the new tokens so the views keep compiling while they are redesigned one by one.
 
-// The whole token set is defined up front; the views adopt the remaining tokens in later steps of the redesign.
-#![allow(dead_code)]
-
 use eframe::egui::{self, Color32, FontFamily, FontId, Rounding, Stroke, TextStyle};
 
 const fn hex(rgb: u32) -> Color32 {
