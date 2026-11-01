@@ -6,7 +6,7 @@ use rand::{Rng, SeedableRng};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::model::Note;
+use crate::model::{Note, TimeSignature};
 use crate::theory::{Chord, Key};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -258,6 +258,107 @@ pub fn drums(style: DrumStyle, bars: u32, beats_per_bar: f64, intensity: f32, fi
     out
 }
 
+/// How the session players feel a bar.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Feel {
+    /// Four beats: the patterns were written for this bar and play exactly as before.
+    Common,
+    /// Three quarter beats (3/4).
+    Waltz,
+    /// Eighths grouped in threes (6/8, 9/8, 12/8).
+    Compound,
+    /// Any other bar: the 4/4 pattern repeats every four beats and stops at the bar line.
+    Other,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Meter {
+    beats: f64,
+    feel: Feel,
+}
+
+fn meter(ts: TimeSignature) -> Meter {
+    let b = ts.beats_per_bar();
+    // A hand-edited file can carry a zero numerator; four beats keeps the bar loops finite.
+    let beats = if b.is_finite() && b > 0.0 { b } else { 4.0 };
+    let feel = if ts.denominator == 8 && ts.numerator >= 6 && ts.numerator.is_multiple_of(3) {
+        Feel::Compound
+    } else if (beats - 4.0).abs() < 1e-9 {
+        Feel::Common
+    } else if (beats - 3.0).abs() < 1e-9 {
+        Feel::Waltz
+    } else {
+        Feel::Other
+    };
+    Meter { beats, feel }
+}
+
+/// Bar offsets where the melody lands on a chord tone with an accent.
+fn strong_beats(m: Meter) -> Vec<f64> {
+    match m.feel {
+        Feel::Common => vec![0.0, 2.0],
+        Feel::Compound => (0..).map(|i| i as f64 * 1.5).take_while(|b| *b < m.beats - 1e-9).collect(),
+        Feel::Waltz | Feel::Other => vec![0.0],
+    }
+}
+
+/// Lays a rhythm cell (ascending offsets in beats, all inside `cell`) onto one bar of `bar` beats: the cell
+/// repeats every `cell` beats and stops at the bar line, so no hit spills into the next bar.
+fn lay_cell<T: Copy>(rhythm: &[(f64, T)], cell: f64, bar: f64) -> Vec<(f64, T)> {
+    let mut out = vec![];
+    let mut at = 0.0;
+    while at < bar - 1e-9 {
+        for &(off, x) in rhythm {
+            if at + off < bar - 1e-9 {
+                out.push((at + off, x));
+            }
+        }
+        at += cell;
+    }
+    out
+}
+
+// One-bar rhythm cells: (offset in beats, payload). The common-time cells are the original 4/4 patterns.
+type BassCell = &'static [(f64, (f64, i32))];
+type CompCell = &'static [(f64, (f64, u8))];
+
+/// Syncopated bass: (offset, (length, interval above the root)).
+const SYNCOPATED_COMMON: [(f64, (f64, i32)); 6] = [(0.0, (0.7, 0)), (0.75, (0.25, 0)), (1.5, (0.4, 7)), (2.0, (0.4, 0)), (2.75, (0.5, 12)), (3.5, (0.4, 10))];
+const SYNCOPATED_WALTZ: [(f64, (f64, i32)); 5] = [(0.0, (0.7, 0)), (0.75, (0.25, 0)), (1.5, (0.4, 7)), (2.0, (0.4, 0)), (2.5, (0.4, 10))];
+const SYNCOPATED_COMPOUND: [(f64, (f64, i32)); 4] = [(0.0, (0.9, 0)), (1.0, (0.4, 7)), (1.5, (0.7, 0)), (2.5, (0.4, 12))];
+/// Pop comping: (offset, (length, velocity)).
+const POP_COMMON: [(f64, (f64, u8)); 5] = [(0.0, (0.9, 100)), (1.0, (0.4, 80)), (1.5, (0.9, 88)), (2.5, (0.4, 82)), (3.0, (0.9, 90))];
+const POP_WALTZ: [(f64, (f64, u8)); 4] = [(0.0, (0.9, 100)), (1.0, (0.4, 80)), (1.5, (0.4, 84)), (2.0, (0.9, 88))];
+const POP_COMPOUND: [(f64, (f64, u8)); 4] = [(0.0, (0.9, 100)), (1.0, (0.4, 78)), (1.5, (0.9, 92)), (2.5, (0.4, 80))];
+/// Funk comping hits.
+const FUNK_COMMON: [(f64, ()); 6] = [(0.0, ()), (0.75, ()), (1.5, ()), (2.25, ()), (2.75, ()), (3.5, ())];
+const FUNK_WALTZ: [(f64, ()); 5] = [(0.0, ()), (0.75, ()), (1.5, ()), (2.0, ()), (2.75, ())];
+const FUNK_COMPOUND: [(f64, ()); 5] = [(0.0, ()), (0.5, ()), (1.5, ()), (2.0, ()), (2.5, ())];
+
+fn syncopated_cell(f: Feel) -> (BassCell, f64) {
+    match f {
+        Feel::Waltz => (&SYNCOPATED_WALTZ, 3.0),
+        Feel::Compound => (&SYNCOPATED_COMPOUND, 3.0),
+        Feel::Common | Feel::Other => (&SYNCOPATED_COMMON, 4.0),
+    }
+}
+
+fn pop_cell(f: Feel) -> (CompCell, f64) {
+    match f {
+        Feel::Waltz => (&POP_WALTZ, 3.0),
+        Feel::Compound => (&POP_COMPOUND, 3.0),
+        Feel::Common | Feel::Other => (&POP_COMMON, 4.0),
+    }
+}
+
+fn funk_cell(f: Feel) -> (&'static [(f64, ())], f64) {
+    match f {
+        Feel::Waltz => (&FUNK_WALTZ, 3.0),
+        Feel::Compound => (&FUNK_COMPOUND, 3.0),
+        Feel::Common | Feel::Other => (&FUNK_COMMON, 4.0),
+    }
+}
+
 fn bass_pitch(pc: u8, octave_base: i32) -> u8 {
     // place pitch class in range [octave_base, octave_base+12)
     let mut p = octave_base + ((pc as i32 - octave_base).rem_euclid(12));
@@ -268,8 +369,10 @@ fn bass_pitch(pc: u8, octave_base: i32) -> u8 {
 }
 
 /// Generate a bass line following timed chords. `octave` is the base MIDI octave (1 => E1..D#2 range starts at C1=24).
-pub fn bass(chords: &[TimedChord], style: BassStyle, octave: i32, seed: u64) -> Vec<Note> {
+/// One-bar patterns repeat in bars of the time signature `ts`.
+pub fn bass(chords: &[TimedChord], style: BassStyle, octave: i32, ts: TimeSignature, seed: u64) -> Vec<Note> {
     let mut rng = StdRng::seed_from_u64(seed);
+    let meter = meter(ts);
     let base = (octave + 1) * 12; // C of the octave
     let mut out = vec![];
     for (ci, tc) in chords.iter().enumerate() {
@@ -313,19 +416,21 @@ pub fn bass(chords: &[TimedChord], style: BassStyle, octave: i32, seed: u64) -> 
                 }
             }
             BassStyle::Syncopated => {
-                let rhythm = [(0.0, 0.7, 0), (0.75, 0.25, 0), (1.5, 0.4, 7), (2.0, 0.4, 0), (2.75, 0.5, 12), (3.5, 0.4, 10)];
+                let (rhythm, cell) = syncopated_cell(meter.feel);
+                let cells = lay_cell(rhythm, cell, meter.beats);
+                // the bar restarts at each chord, as before, so 4/4 parts stay the same
                 let mut bar = 0.0;
                 while bar < len - 1e-6 {
-                    for (off, l, iv) in rhythm {
+                    for &(off, (l, iv)) in &cells {
                         let at = bar + off;
                         if at >= len - 1e-6 {
                             break;
                         }
                         let iv = if iv == 10 && !tc.chord.intervals.contains(&10) { 7 } else { iv };
                         let vel = if off == 0.0 { 108 } else { rng.gen_range(80..100) };
-                        out.push(n((root as i32 + iv).min(127) as u8, vel, s + at, l));
+                        out.push(n((root as i32 + iv).min(127) as u8, vel, s + at, l.min(meter.beats - off)));
                     }
-                    bar += 4.0;
+                    bar += meter.beats;
                 }
             }
             BassStyle::Walking => {
@@ -346,11 +451,23 @@ pub fn bass(chords: &[TimedChord], style: BassStyle, octave: i32, seed: u64) -> 
                     out.push(n(p, rng.gen_range(85..105), s + b as f64, 0.9));
                 }
             }
-            BassStyle::Sub808 => {
+            BassStyle::Sub808 if meter.feel == Feel::Common => {
+                // kept as it was so 4/4 projects generate the same bass
                 out.push(n(root, 110, s, (len * 0.6).max(0.5)));
                 if len >= 4.0 {
                     out.push(n(root, 95, s + 2.5, 0.75));
                     out.push(n(if rng.gen_bool(0.5) { root + 12 } else { fifth }, 90, s + 3.5, 0.4));
+                }
+            }
+            BassStyle::Sub808 => {
+                let bar = meter.beats;
+                let pickups = len >= bar - 1e-6 && bar > 1.0 + 1e-9;
+                let (p1, p2) = if bar >= 4.0 { (bar - 1.5, bar - 0.5) } else { (bar - 1.0, bar - 0.5) };
+                let cap = if pickups { p1 } else { len.min(bar) };
+                out.push(n(root, 110, s, (len * 0.6).max(0.5).min(cap)));
+                if pickups {
+                    out.push(n(root, 95, s + p1, (p2 - p1) * 0.75));
+                    out.push(n(if rng.gen_bool(0.5) { root + 12 } else { fifth }, 90, s + p2, 0.4));
                 }
             }
         }
@@ -358,9 +475,14 @@ pub fn bass(chords: &[TimedChord], style: BassStyle, octave: i32, seed: u64) -> 
     out
 }
 
-/// Generate chord comping around `center` pitch (e.g. 60 = C4).
-pub fn comp(chords: &[TimedChord], style: CompStyle, center: u8, seed: u64) -> Vec<Note> {
+/// Generate chord comping around `center` pitch (e.g. 60 = C4). One-bar patterns repeat in bars of `ts`.
+pub fn comp(chords: &[TimedChord], style: CompStyle, center: u8, ts: TimeSignature, seed: u64) -> Vec<Note> {
     let mut rng = StdRng::seed_from_u64(seed);
+    let meter = meter(ts);
+    let (pop_rhythm, pop_len) = pop_cell(meter.feel);
+    let pop = lay_cell(pop_rhythm, pop_len, meter.beats);
+    let (funk_rhythm, funk_len) = funk_cell(meter.feel);
+    let funk = lay_cell(funk_rhythm, funk_len, meter.beats);
     let mut out = vec![];
     let mut prev: Option<Vec<u8>> = None;
     for tc in chords {
@@ -390,15 +512,15 @@ pub fn comp(chords: &[TimedChord], style: CompStyle, center: u8, seed: u64) -> V
         match style {
             CompStyle::Sustained => push_chord(&mut out, 0.0, len * 0.98, 85),
             CompStyle::Pop => {
-                let pattern = [(0.0, 0.9, 100), (1.0, 0.4, 80), (1.5, 0.9, 88), (2.5, 0.4, 82), (3.0, 0.9, 90)];
+                // the bar restarts at each chord, as before, so 4/4 parts stay the same
                 let mut bar = 0.0;
                 while bar < len - 1e-6 {
-                    for (off, l, v) in pattern {
+                    for &(off, (l, v)) in &pop {
                         if bar + off < len - 1e-6 {
-                            push_chord(&mut out, bar + off, l, v);
+                            push_chord(&mut out, bar + off, l.min(meter.beats - off), v);
                         }
                     }
-                    bar += 4.0;
+                    bar += meter.beats;
                 }
             }
             CompStyle::Offbeat => {
@@ -420,15 +542,14 @@ pub fn comp(chords: &[TimedChord], style: CompStyle, center: u8, seed: u64) -> V
                 }
             }
             CompStyle::Funk => {
-                let hits = [0.0, 0.75, 1.5, 2.25, 2.75, 3.5];
                 let mut bar = 0.0;
                 while bar < len - 1e-6 {
-                    for off in hits {
+                    for &(off, ()) in &funk {
                         if bar + off < len - 1e-6 && rng.gen_bool(0.85) {
-                            push_chord(&mut out, bar + off, 0.15, rng.gen_range(78..100));
+                            push_chord(&mut out, bar + off, 0.15_f64.min(meter.beats - off), rng.gen_range(78..100));
                         }
                     }
-                    bar += 4.0;
+                    bar += meter.beats;
                 }
             }
         }
@@ -477,16 +598,18 @@ pub fn arpeggio(chords: &[TimedChord], mode: ArpMode, rate: f64, octaves: u32, c
     out
 }
 
-/// Generate a melody over the chords in a key. `density` 0..1 controls note count.
-pub fn melody(chords: &[TimedChord], key: Key, density: f32, octave: i32, seed: u64) -> Vec<Note> {
+/// Generate a melody over the chords in a key. `density` 0..1 controls note count. The motif lasts one bar of `ts`.
+pub fn melody(chords: &[TimedChord], key: Key, density: f32, octave: i32, ts: TimeSignature, seed: u64) -> Vec<Note> {
     let mut rng = StdRng::seed_from_u64(seed);
+    let meter = meter(ts);
+    let strong_at = strong_beats(meter);
     let mut out = vec![];
     let center = ((octave + 1) * 12 + key.root as i32) as i32;
     let mut current = center + 7;
     let total: f64 = chords.iter().map(|c| c.start + c.length).fold(0.0, f64::max);
     // build a one-bar rhythm motif and reuse it with variation (gives musical repetition)
-    let grid = if density > 0.6 { 0.25 } else { 0.5 };
-    let slots = (4.0 / grid) as usize;
+    let grid = (if density > 0.6 { 0.25_f64 } else { 0.5 }).min(meter.beats);
+    let slots = ((meter.beats / grid) + 1e-9).floor().max(1.0) as usize;
     let motif: Vec<bool> = (0..slots).map(|i| i == 0 || rng.gen_bool((density as f64 * 0.75).clamp(0.1, 0.9))).collect();
     let mut t = 0.0;
     while t < total - 1e-6 {
@@ -496,11 +619,14 @@ pub fn melody(chords: &[TimedChord], key: Key, density: f32, octave: i32, seed: 
                 break;
             }
             let vary = rng.gen_bool(0.15);
-            if !(*on ^ vary) {
+            // Outside 4/4 the downbeat always sounds, so every bar starts on its first beat; 4/4 keeps the old roll.
+            let keep_downbeat = si == 0 && meter.feel != Feel::Common;
+            if !(*on ^ vary) && !keep_downbeat {
                 continue;
             }
             let chord = chords.iter().find(|c| at >= c.start && at < c.start + c.length).map(|c| &c.chord);
-            let strong = (at.fract() == 0.0) && (at as i64 % 2 == 0);
+            let pos = si as f64 * grid;
+            let strong = strong_at.iter().any(|b| (pos - b).abs() < 1e-9);
             let target = if let (true, Some(ch)) = (strong, chord) {
                 // nearest chord tone
                 let pcs = ch.pitch_classes();
@@ -528,7 +654,7 @@ pub fn melody(chords: &[TimedChord], key: Key, density: f32, octave: i32, seed: 
             }
             out.push(n(current as u8, if strong { 100 } else { rng.gen_range(75..95) }, at, (l * 0.9).max(0.1)));
         }
-        t += 4.0;
+        t += meter.beats;
     }
     out
 }
@@ -592,12 +718,272 @@ mod tests {
             assert!(d.iter().all(|n| n.start < 16.0));
         }
         let p = prog();
-        assert!(!bass(&p, BassStyle::Walking, 1, 2).is_empty());
-        assert!(!comp(&p, CompStyle::Pop, 60, 2).is_empty());
+        assert!(!bass(&p, BassStyle::Walking, 1, ts(4, 4), 2).is_empty());
+        assert!(!comp(&p, CompStyle::Pop, 60, ts(4, 4), 2).is_empty());
         assert!(!arpeggio(&p, ArpMode::UpDown, 0.25, 2, 60, 0.8, 3).is_empty());
         let key = Key { root: 0, scale: ScaleKind::Major };
-        let m = melody(&p, key, 0.6, 4, 7);
+        let m = melody(&p, key, 0.6, 4, ts(4, 4), 7);
         assert!(!m.is_empty());
         assert!(m.iter().all(|n| key.contains(n.pitch) || true));
+    }
+
+    /// FNV-1a over every note field, in the order the generator returned them.
+    fn digest(notes: &[Note]) -> (usize, u64) {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for nt in notes {
+            for word in [nt.pitch as u64, nt.velocity as u64, nt.start.to_bits(), nt.length.to_bits()] {
+                for b in word.to_le_bytes() {
+                    h ^= b as u64;
+                    h = h.wrapping_mul(0x100000001b3);
+                }
+            }
+        }
+        (notes.len(), h)
+    }
+
+    fn mixed() -> Vec<TimedChord> {
+        [("C", 0.0, 2.0), ("Am", 2.0, 2.0), ("F", 4.0, 8.0), ("G7", 12.0, 3.0), ("C", 15.0, 1.0)]
+            .iter()
+            .map(|(s, start, length)| TimedChord { start: *start, length: *length, chord: Chord::parse(s).unwrap() })
+            .collect()
+    }
+
+    #[test]
+    fn common_time_output_matches_the_previous_generators() {
+        const EXPECTED: [(&str, usize, u64); 14] = [
+            ("bass/root", 34, 0xdccfa6c4075fafa5),
+            ("bass/root_fifth", 64, 0x3f9e649ad5e2ca01),
+            ("bass/eighths", 128, 0x5c95e657df0ee085),
+            ("bass/octaves", 128, 0x16d9fd11594a3135),
+            ("bass/syncopated", 98, 0x1e8665fdb83d542e),
+            ("bass/walking", 64, 0x3c7708653782da6b),
+            ("bass/sub808", 38, 0x7c7def9cef3d7358),
+            ("comp/sustained", 56, 0x279b0c9b15dc6f95),
+            ("comp/pop", 254, 0x4c8ea9eedc9c489d),
+            ("comp/offbeat", 198, 0x856728b3b9f11b1d),
+            ("comp/ballad", 116, 0xcf27287b3777a165),
+            ("comp/funk", 260, 0xf575967693a2e56c),
+            ("melody/0.3", 76, 0xf4287d59eb7980ed),
+            ("melody/0.8", 336, 0x2fd36355401cc2fa),
+        ];
+        let sets = [prog(), mixed()];
+        let seeds = [1u64, 42];
+        let mut got: Vec<(&str, usize, u64)> = vec![];
+        let bass_styles = [
+            ("bass/root", BassStyle::Root),
+            ("bass/root_fifth", BassStyle::RootFifth),
+            ("bass/eighths", BassStyle::Eighths),
+            ("bass/octaves", BassStyle::Octaves),
+            ("bass/syncopated", BassStyle::Syncopated),
+            ("bass/walking", BassStyle::Walking),
+            ("bass/sub808", BassStyle::Sub808),
+        ];
+        for (name, st) in bass_styles {
+            let mut all = vec![];
+            for c in &sets {
+                for &seed in &seeds {
+                    all.extend(bass(c, st, 1, ts(4, 4), seed));
+                }
+            }
+            let (count, h) = digest(&all);
+            got.push((name, count, h));
+        }
+        let comp_styles = [
+            ("comp/sustained", CompStyle::Sustained),
+            ("comp/pop", CompStyle::Pop),
+            ("comp/offbeat", CompStyle::Offbeat),
+            ("comp/ballad", CompStyle::Ballad),
+            ("comp/funk", CompStyle::Funk),
+        ];
+        for (name, st) in comp_styles {
+            let mut all = vec![];
+            for c in &sets {
+                for &seed in &seeds {
+                    all.extend(comp(c, st, 62, ts(4, 4), seed));
+                }
+            }
+            let (count, h) = digest(&all);
+            got.push((name, count, h));
+        }
+        let keys = [Key { root: 0, scale: ScaleKind::Major }, Key { root: 9, scale: ScaleKind::Minor }];
+        for (name, density) in [("melody/0.3", 0.3f32), ("melody/0.8", 0.8)] {
+            let mut all = vec![];
+            for c in &sets {
+                for &seed in &seeds {
+                    for key in keys {
+                        all.extend(melody(c, key, density, 4, ts(4, 4), seed));
+                    }
+                }
+            }
+            let (count, h) = digest(&all);
+            got.push((name, count, h));
+        }
+        assert_eq!(got, EXPECTED.to_vec());
+    }
+
+    fn ts(numerator: u8, denominator: u8) -> TimeSignature {
+        TimeSignature { numerator, denominator }
+    }
+
+    /// `n` chords of `bpb` beats each, one after the other, cycling through `chords`.
+    fn bars_of(bpb: f64, n: usize, chords: &[&str]) -> Vec<TimedChord> {
+        (0..n)
+            .map(|i| TimedChord { start: i as f64 * bpb, length: bpb, chord: Chord::parse(chords[i % chords.len()]).unwrap() })
+            .collect()
+    }
+
+    /// Offsets inside each bar of `bpb` beats (counted from 0), grouped by bar.
+    fn offsets_by_bar(notes: &[Note], bpb: f64, bars: usize) -> Vec<Vec<f64>> {
+        let mut out = vec![vec![]; bars];
+        for nt in notes {
+            let bar = (nt.start / bpb + 1e-9).floor();
+            out[bar as usize].push(nt.start - bar * bpb);
+        }
+        out
+    }
+
+    fn same_offsets(got: &[f64], want: &[f64]) -> bool {
+        got.len() == want.len() && got.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-9)
+    }
+
+    fn ends_inside_bar(nt: &Note, bpb: f64) -> bool {
+        let bar = (nt.start / bpb + 1e-9).floor();
+        nt.start + nt.length <= (bar + 1.0) * bpb + 1e-9
+    }
+
+    #[test]
+    fn three_four_bars_restart_on_the_downbeat() {
+        let chords = bars_of(3.0, 4, &["C", "Am", "F", "G"]);
+        let waltz = ts(3, 4);
+        for seed in 1..=5u64 {
+            let b = bass(&chords, BassStyle::Syncopated, 1, waltz, seed);
+            for (bar, offs) in offsets_by_bar(&b, 3.0, 4).iter().enumerate() {
+                assert!(same_offsets(offs, &[0.0, 0.75, 1.5, 2.0, 2.5]), "syncopated bar {bar}: {offs:?}");
+            }
+            let c = comp(&chords, CompStyle::Pop, 62, waltz, seed);
+            for (bar, offs) in offsets_by_bar(&c, 3.0, 4).iter().enumerate() {
+                let mut hits = offs.clone();
+                hits.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+                assert!(same_offsets(&hits, &[0.0, 1.0, 1.5, 2.0]), "pop bar {bar}: {hits:?}");
+            }
+            let sub = bass(&chords, BassStyle::Sub808, 1, waltz, seed);
+            for (bar, offs) in offsets_by_bar(&sub, 3.0, 4).iter().enumerate() {
+                for want in [0.0, 2.0, 2.5] {
+                    assert!(offs.iter().any(|o| (o - want).abs() < 1e-9), "sub808 bar {bar} misses {want}: {offs:?}");
+                }
+            }
+            for density in [0.3f32, 0.8] {
+                let m = melody(&chords, Key { root: 0, scale: ScaleKind::Major }, density, 4, waltz, seed);
+                for (bar, offs) in offsets_by_bar(&m, 3.0, 4).iter().enumerate() {
+                    assert!(offs.iter().any(|o| o.abs() < 1e-9), "melody bar {bar} has no downbeat: {offs:?}");
+                }
+                assert!(m.iter().all(|nt| ends_inside_bar(nt, 3.0)), "a melody note crosses a 3/4 bar line");
+            }
+            for nt in b.iter().chain(&c).chain(&sub) {
+                assert!(ends_inside_bar(nt, 3.0), "{nt:?} crosses a 3/4 bar line");
+            }
+        }
+    }
+
+    #[test]
+    fn six_eight_melody_accents_the_dotted_beats() {
+        let chords = bars_of(3.0, 4, &["C", "Am", "F", "G"]);
+        let six = ts(6, 8);
+        for seed in 1..=10u64 {
+            for density in [0.3f32, 0.8] {
+                let m = melody(&chords, Key { root: 9, scale: ScaleKind::Minor }, density, 4, six, seed);
+                for nt in &m {
+                    let bar = (nt.start / 3.0 + 1e-9).floor();
+                    let off = nt.start - bar * 3.0;
+                    let on_dotted = off.abs() < 1e-9 || (off - 1.5).abs() < 1e-9;
+                    assert_eq!(nt.velocity == 100, on_dotted, "seed {seed} density {density}: {nt:?}");
+                    assert!(ends_inside_bar(nt, 3.0), "{nt:?} crosses a 6/8 bar line");
+                }
+                for (bar, offs) in offsets_by_bar(&m, 3.0, 4).iter().enumerate() {
+                    assert!(offs.iter().any(|o| o.abs() < 1e-9), "6/8 melody bar {bar} has no downbeat: {offs:?}");
+                }
+            }
+            let b = bass(&chords, BassStyle::Syncopated, 1, six, seed);
+            for (bar, offs) in offsets_by_bar(&b, 3.0, 4).iter().enumerate() {
+                assert!(same_offsets(offs, &[0.0, 1.0, 1.5, 2.5]), "6/8 syncopated bar {bar}: {offs:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_note_stays_inside_its_chord_in_odd_meters() {
+        let bass_styles = [
+            BassStyle::Root,
+            BassStyle::RootFifth,
+            BassStyle::Eighths,
+            BassStyle::Octaves,
+            BassStyle::Syncopated,
+            BassStyle::Walking,
+            BassStyle::Sub808,
+        ];
+        let comp_styles = [CompStyle::Sustained, CompStyle::Pop, CompStyle::Offbeat, CompStyle::Ballad, CompStyle::Funk];
+        for meter in [ts(3, 4), ts(5, 4), ts(6, 8), ts(7, 8)] {
+            let bpb = meter.beats_per_bar();
+            for bars_per_chord in [1usize, 2] {
+                let chords = bars_of(bpb * bars_per_chord as f64, 4, &["C", "Am7", "F", "G7"]);
+                let total = chords.last().map(|c| c.start + c.length).unwrap();
+                // Every note starts inside a chord; bar-bound styles end by their bar (counted from the chord start)
+                // and by the chord end, chord-bound styles (Root, Sustained) end by the chord end.
+                let check = |notes: &[Note], bar_bound: bool, chord_bound: bool, what: &str| {
+                    for nt in notes {
+                        let chord = chords
+                            .iter()
+                            .find(|c| c.start <= nt.start && nt.start < c.start + c.length)
+                            .unwrap_or_else(|| panic!("{what} in {meter:?}: {nt:?} starts outside every chord"));
+                        let chord_end = chord.start + chord.length;
+                        let end = nt.start + nt.length;
+                        if bar_bound {
+                            let bar = chord.start + ((nt.start - chord.start) / bpb + 1e-9).floor() * bpb;
+                            assert!(end <= (bar + bpb).min(chord_end) + 1e-9, "{what} in {meter:?}: {nt:?} crosses the bar line");
+                        } else if chord_bound {
+                            assert!(end <= chord_end + 1e-9, "{what} in {meter:?}: {nt:?} outlasts its chord");
+                        }
+                    }
+                };
+                for seed in 1..=3u64 {
+                    for st in bass_styles {
+                        let notes = bass(&chords, st, 1, meter, seed);
+                        let bar_bound = matches!(st, BassStyle::Eighths | BassStyle::Octaves | BassStyle::Syncopated | BassStyle::Sub808);
+                        check(&notes, bar_bound, st == BassStyle::Root, &format!("bass {st:?}"));
+                    }
+                    for st in comp_styles {
+                        let notes = comp(&chords, st, 62, meter, seed);
+                        let bar_bound = matches!(st, CompStyle::Pop | CompStyle::Offbeat | CompStyle::Funk);
+                        check(&notes, bar_bound, st == CompStyle::Sustained, &format!("comp {st:?}"));
+                    }
+                    for density in [0.3f32, 0.8] {
+                        let m = melody(&chords, Key { root: 0, scale: ScaleKind::Major }, density, 4, meter, seed);
+                        assert!(!m.is_empty());
+                        for nt in &m {
+                            assert!(nt.start < total - 1e-9, "melody in {meter:?}: {nt:?} starts after the chords");
+                            assert!(ends_inside_bar(nt, bpb), "melody in {meter:?}: {nt:?} crosses the bar line");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_time_signature_falls_back_to_four_four() {
+        let broken = ts(0, 4);
+        let common = ts(4, 4);
+        for chords in [prog(), mixed()] {
+            for seed in [1u64, 9] {
+                for st in [BassStyle::Syncopated, BassStyle::Sub808, BassStyle::Walking] {
+                    assert_eq!(bass(&chords, st, 1, broken, seed), bass(&chords, st, 1, common, seed));
+                }
+                for st in [CompStyle::Pop, CompStyle::Funk, CompStyle::Ballad] {
+                    assert_eq!(comp(&chords, st, 62, broken, seed), comp(&chords, st, 62, common, seed));
+                }
+                let key = Key { root: 0, scale: ScaleKind::Major };
+                assert_eq!(melody(&chords, key, 0.5, 4, broken, seed), melody(&chords, key, 0.5, 4, common, seed));
+            }
+        }
     }
 }

@@ -253,6 +253,13 @@ I session player (Bassist, Keys, Arpeggio, Melody) seguono la corsia accordi qua
 una progressione propria. Un grado salvato sulla corsia da una versione precedente viene letto
 nella tonalità attuale del progetto.
 
+Bassist, Keys e Melody seguono anche il metro del progetto: i ritmi di una battuta ricominciano a
+ogni battuta. Il 3/4 e il 6/8 hanno ritmi propri, e in 6/8 la melodia accenta il primo e il quarto
+ottavo. Negli altri metri, per esempio 5/4 o 7/8, il ritmo del 4/4 si ripete ogni quattro movimenti
+e si ferma alla stanghetta. In 4/4, con lo stesso seed, le parti sono identiche a quelle delle
+versioni precedenti. Arpeggio e gli stili che seguono il movimento (Root, Root Fifth, Eighths,
+Octaves, Walking, Sustained, Offbeat, Ballad) non dipendono dalla battuta.
+
 ## Filmato
 
 Puoi collegare un filmato al progetto per scrivere la musica a tempo con l'immagine. Il filmato deve
