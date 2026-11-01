@@ -172,6 +172,55 @@ impl Key {
     }
 }
 
+/// Krumhansl-Kessler key profiles: how well each pitch class fits a major or minor key, from the tonic up.
+const MAJOR_PROFILE: [f64; 12] = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
+const MINOR_PROFILE: [f64; 12] = [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
+
+/// The 24 major and minor keys ranked by how well `notes` fit them, best first, each with a confidence 0..1
+/// (the correlation between the pitch-class histogram and the key profile, negative values as 0).
+/// `notes` are (pitch, length in beats, velocity): longer and louder notes weigh more.
+/// Empty when the notes carry no pitch information: no notes, zero lengths, or all 12 pitch classes equally present.
+/// Relative keys (C major and A minor) share their notes, so they often come out close together.
+pub fn estimate_key(notes: &[(u8, f64, u8)]) -> Vec<(Key, f32)> {
+    let mut h = [0.0f64; 12];
+    for &(pitch, length, velocity) in notes {
+        if length.is_finite() && length > 0.0 {
+            h[pitch as usize % 12] += length * (0.5 + 0.5 * velocity.min(127) as f64 / 127.0);
+        }
+    }
+    let sum: f64 = h.iter().sum();
+    let mean = sum / 12.0;
+    let variance = h.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / 12.0;
+    if sum <= 0.0 || variance < 1e-12 {
+        return vec![];
+    }
+    let mut ranked = Vec::with_capacity(24);
+    for root in 0..12u8 {
+        for (scale, profile) in [(ScaleKind::Major, &MAJOR_PROFILE), (ScaleKind::Minor, &MINOR_PROFILE)] {
+            let rotated: [f64; 12] = std::array::from_fn(|pc| profile[(pc + 12 - root as usize) % 12]);
+            let r = correlation(&h, &rotated);
+            ranked.push((Key { root, scale }, r.clamp(0.0, 1.0) as f32));
+        }
+    }
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+    ranked
+}
+
+/// Pearson correlation of two 12-value series; 0 when either is flat.
+fn correlation(a: &[f64; 12], b: &[f64; 12]) -> f64 {
+    let ma = a.iter().sum::<f64>() / 12.0;
+    let mb = b.iter().sum::<f64>() / 12.0;
+    let cov: f64 = a.iter().zip(b).map(|(x, y)| (x - ma) * (y - mb)).sum();
+    let va: f64 = a.iter().map(|x| (x - ma) * (x - ma)).sum();
+    let vb: f64 = b.iter().map(|y| (y - mb) * (y - mb)).sum();
+    let den = (va * vb).sqrt();
+    if den < 1e-12 {
+        0.0
+    } else {
+        cov / den
+    }
+}
+
 pub fn note_name(pitch: u8) -> String {
     format!("{}{}", NOTE_NAMES[pitch as usize % 12], pitch as i32 / 12 - 1)
 }
@@ -398,5 +447,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn c_major_scale_and_tonic_chord(shift: u8) -> Vec<(u8, f64, u8)> {
+        let mut notes: Vec<(u8, f64, u8)> = [60, 62, 64, 65, 67, 69, 71, 72].iter().map(|&p| (p + shift, 1.0, 100)).collect();
+        notes.extend([60, 64, 67].iter().map(|&p| (p + shift, 4.0, 100)));
+        notes
+    }
+
+    #[test]
+    fn estimate_key_finds_c_major_from_a_scale_and_its_tonic_chord() {
+        let r = estimate_key(&c_major_scale_and_tonic_chord(0));
+        assert_eq!(r.len(), 24);
+        assert_eq!(r[0].0, Key { root: 0, scale: ScaleKind::Major });
+        assert!(r.windows(2).all(|w| w[0].1 >= w[1].1));
+        assert!(r.iter().all(|(_, c)| (0.0..=1.0).contains(c)));
+        assert!(r[0].1 > 0.85, "{}", r[0].1);
+        let g = estimate_key(&c_major_scale_and_tonic_chord(7));
+        assert_eq!(g[0].0, Key { root: 7, scale: ScaleKind::Major });
+    }
+
+    #[test]
+    fn estimate_key_finds_a_minor_with_the_raised_seventh() {
+        let melody = [
+            (69, 1.0), (72, 1.0), (71, 1.0), (69, 1.0), (76, 1.0), (74, 1.0), (72, 1.0), (71, 1.0),
+            (68, 1.0), (69, 1.0), (71, 1.0), (72, 1.0), (71, 1.0), (68, 1.0), (69, 2.0),
+        ];
+        let notes: Vec<(u8, f64, u8)> = melody.iter().map(|&(p, l)| (p, l, 100)).collect();
+        let r = estimate_key(&notes);
+        assert_eq!(r[0].0, Key { root: 9, scale: ScaleKind::Minor });
+        assert!(r[0].1 - r[1].1 > 0.1, "{} vs {}", r[0].1, r[1].1);
+    }
+
+    #[test]
+    fn estimate_key_is_empty_without_pitch_information() {
+        assert!(estimate_key(&[]).is_empty());
+        let chromatic: Vec<(u8, f64, u8)> = (60..72).map(|p| (p, 1.0, 100)).collect();
+        assert!(estimate_key(&chromatic).is_empty());
+        assert!(estimate_key(&[(60, 0.0, 100), (64, 0.0, 100)]).is_empty());
+        assert!(estimate_key(&[(60, f64::NAN, 100), (64, f64::NAN, 100)]).is_empty());
     }
 }
