@@ -21,7 +21,7 @@ pub const ARRANGE_MIN_H: f32 = 150.0;
 /// The bottom panel never takes more than this share of the space under the control bar.
 pub const BOTTOM_MAX_SHARE: f32 = 0.72;
 /// Length and thickness of the grip drawn in the middle of each splitter.
-pub const GRIP: (f32, f32) = (36.0, 2.0);
+pub const GRIP: (f32, f32) = (40.0, 3.0);
 
 const LEFT_ID: &str = "left";
 const ASSISTANT_ID: &str = "assistant";
@@ -36,6 +36,24 @@ pub fn bottom_min(tab: BottomTab) -> f32 {
         BottomTab::Live => 180.0,
         BottomTab::Hidden => 0.0,
     }
+}
+
+/// How the bottom panel's choice is kept in the settings.
+pub fn bottom_key(tab: BottomTab) -> &'static str {
+    match tab {
+        BottomTab::Editor => "editor",
+        BottomTab::Mixer => "mixer",
+        BottomTab::Live => "clip_grid",
+        BottomTab::Hidden => "hidden",
+    }
+}
+
+/// The bottom panel to open with: the one kept in the settings, the Editor when there is none or it is unknown.
+pub fn bottom_from_key(key: Option<&str>) -> BottomTab {
+    [BottomTab::Editor, BottomTab::Mixer, BottomTab::Live, BottomTab::Hidden]
+        .into_iter()
+        .find(|t| Some(bottom_key(*t)) == key)
+        .unwrap_or(BottomTab::Editor)
 }
 
 /// Width range of a side panel whose own limits are `min..=max`, when `room` points are free for the two side
@@ -99,14 +117,14 @@ fn splitter_state(ctx: &egui::Context, id: Id) -> (bool, bool) {
 /// panel's top edge at `y`.
 fn paint_grip(ctx: &egui::Context, edge: Edge, panel: Rect, hot: bool) {
     let painter = ctx.layer_painter(LayerId::new(Order::PanelResizeLine, Id::new("splitter-grips")));
-    let color = if hot { theme::ACCENT } else { theme::TRACK_OFF };
+    let color = if hot { theme::ACCENT } else { theme::TEXT_DISABLED };
     let (len, thick) = GRIP;
     let r = match edge {
         Edge::Right => Rect::from_center_size(pos2(panel.right() - 1.0, panel.center().y), vec2(thick, len)),
         Edge::Left => Rect::from_center_size(pos2(panel.left() + 1.0, panel.center().y), vec2(thick, len)),
         Edge::Top => Rect::from_center_size(pos2(panel.center().x, panel.top() + 1.0), vec2(len, thick)),
     };
-    painter.rect_filled(r, Rounding::same(1.0), color);
+    painter.rect_filled(r, Rounding::same(1.5), color);
 }
 
 #[derive(Clone, Copy)]
@@ -132,7 +150,7 @@ impl OndinaApp {
         } else {
             0.0
         };
-        let mut sizes: PanelSizes = self.settings.panels;
+        let mut sizes: PanelSizes = self.settings.panels.clone();
         let mut assistant_now = 0.0;
         if self.show_assistant {
             let range = side_range(ASSISTANT_MIN, ASSISTANT_MAX, area.width(), left_now);
@@ -181,6 +199,9 @@ impl OndinaApp {
             paint_grip(ctx, Edge::Top, resp.response.rect, hot);
             remember(&mut sizes.bottom, resp.response.rect.height(), dragging);
         }
+        sizes.left_open = Some(self.show_left);
+        sizes.assistant_open = Some(self.show_assistant);
+        sizes.bottom_panel = Some(bottom_key(self.bottom).to_string());
         self.settings.panels = sizes;
     }
 }
@@ -246,6 +267,15 @@ mod tests {
         assert_eq!(clamp_to(10.0, (220.0, 460.0)), 220.0);
         assert_eq!(clamp_to(f32::NAN, (220.0, 460.0)), 220.0);
         assert_eq!(clamp_to(300.0, (220.0, 100.0)), 220.0);
+    }
+
+    #[test]
+    fn the_bottom_panel_choice_round_trips_through_the_settings() {
+        for t in [BottomTab::Editor, BottomTab::Mixer, BottomTab::Live, BottomTab::Hidden] {
+            assert_eq!(bottom_from_key(Some(bottom_key(t))), t);
+        }
+        assert_eq!(bottom_from_key(None), BottomTab::Editor);
+        assert_eq!(bottom_from_key(Some("live_loops")), BottomTab::Editor);
     }
 
     #[test]

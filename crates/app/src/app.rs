@@ -328,6 +328,8 @@ impl OndinaApp {
         };
         let (autosave, recovery) = crate::autosave::Autosave::start(Settings::autosave_dir(), view.document);
         let (tx, rx) = crossbeam_channel::unbounded();
+        // the panels open as they were left
+        let layout = settings.panels.clone();
         OndinaApp {
             session,
             shared,
@@ -351,10 +353,10 @@ impl OndinaApp {
             selected_plugin: None,
             drag: None,
             follow_playhead: true,
-            bottom: BottomTab::Editor,
+            bottom: crate::panel_layout::bottom_from_key(layout.bottom_panel.as_deref()),
             left: LeftTab::Inspector,
-            show_left: true,
-            show_assistant: true,
+            show_left: layout.left_open.unwrap_or(true),
+            show_assistant: layout.assistant_open.unwrap_or(true),
             pr_px_per_beat: 80.0,
             pr_scroll_beat: 0.0,
             pr_top_pitch: 84,

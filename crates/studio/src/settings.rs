@@ -41,7 +41,7 @@ pub struct Settings {
 }
 
 /// Width of the side panels and height of the bottom panel in the main window.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PanelSizes {
     /// Inspector / Library on the left.
@@ -50,6 +50,12 @@ pub struct PanelSizes {
     pub assistant: Option<f32>,
     /// Editor, Mixer or Clip Grid at the bottom (one height for the three).
     pub bottom: Option<f32>,
+    /// Whether the side panel was open when Ondina closed (`None`: open, the first time).
+    pub left_open: Option<bool>,
+    /// Whether the assistant was open.
+    pub assistant_open: Option<bool>,
+    /// What the bottom panel showed: "editor", "mixer", "clip_grid" or "hidden".
+    pub bottom_panel: Option<String>,
 }
 
 impl Default for Settings {
@@ -210,11 +216,11 @@ mod tests {
         let s: Settings = serde_json::from_str(r#"{"model":"x"}"#).unwrap();
         assert_eq!(s.panels, PanelSizes::default());
         let mut s = s;
-        s.panels = PanelSizes { left: Some(250.0), assistant: None, bottom: Some(320.5) };
+        s.panels = PanelSizes { left: Some(250.0), bottom: Some(320.5), left_open: Some(false), bottom_panel: Some("mixer".into()), ..Default::default() };
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.panels, s.panels);
         let partial: Settings = serde_json::from_str(r#"{"panels":{"left":300}}"#).unwrap();
-        assert_eq!(partial.panels, PanelSizes { left: Some(300.0), assistant: None, bottom: None });
+        assert_eq!(partial.panels, PanelSizes { left: Some(300.0), ..Default::default() });
     }
 
     #[test]
