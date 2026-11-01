@@ -7,7 +7,9 @@ Questa guida spiega come usare gli editor di Ondina con mouse, tastiera e menu.
 - Clic su uno spazio vuoto: aggiunge una nota (la durata si sceglie nella barra degli strumenti).
 - Clic su una nota: la seleziona. Ctrl o Maiusc + clic aggiunge o toglie note dalla selezione.
 - Trascinamento su uno spazio vuoto: selezione a riquadro, comprese le note sovrapposte.
-- Trascinamento di una nota: la sposta. Trascinando il bordo destro ne cambi la durata.
+- Trascinamento di una nota: la sposta e le note spostate restano selezionate. Con Alt premuto al rilascio la
+  copia: gli originali restano dove erano e le copie diventano la selezione (un solo Ctrl+Z). Mentre tieni Alt il
+  puntatore mostra la copia. Trascinando il bordo destro ne cambi la durata.
 - Canc o Backspace: elimina le note selezionate. Doppio clic o clic destro elimina una sola nota.
 - Ctrl+C copia le note selezionate, Ctrl+X le taglia, Ctrl+V le incolla. Se il playhead è dentro la regione
   aperta, la prima nota va sul playhead (arrotondato alla griglia dello snap); altrimenti le note tornano alla
@@ -20,9 +22,12 @@ Questa guida spiega come usare gli editor di Ondina con mouse, tastiera e menu.
 - Frecce ←/→: spostano le note selezionate di un passo di snap (1/16 con lo snap spento, 1/4 con Bar);
   ↑/↓ di un semitono, Maiusc+↑/↓ di un'ottava. Lo spostamento si ferma all'inizio della regione e ai limiti
   delle altezze MIDI senza cambiare la forma degli accordi.
+- Alt+←/→: accorciano o allungano le note selezionate di un passo di snap (1/16 con lo snap spento), mai sotto un
+  passo. Le note restano selezionate.
 - Queste scorciatoie agiscono quando il pannello Editor mostra il piano roll e non stai scrivendo in un campo
   di testo; le frecce sono spente con Musical Typing attivo.
-- Corsia delle velocity: trascina per impostare la velocity.
+- Corsia delle velocity: trascina per impostare la velocity; ogni nota che il tratto attraversa prende il valore
+  lungo il tratto, anche con un gesto veloce. Un tratto che non cambia nulla non crea un passo di annullamento.
 - Quando apri una regione la vista si porta sulle sue note (su C4 se è vuota). Doppio clic sulla regione
   nell'arrangiamento: la inquadra di nuovo.
 - Rotella: scorre le altezze, alla stessa velocità in su e in giù. Maiusc+rotella: scorre il tempo.
@@ -403,6 +408,8 @@ l'assistente o un client MCP.
 | Ctrl+A | seleziona tutte le note (piano roll) |
 | ← / → | sposta le note selezionate di un passo di snap |
 | ↑ / ↓, Maiusc+↑ / ↓ | trasporta le note selezionate di un semitono / un'ottava |
+| Alt+← / → | accorcia / allunga le note selezionate di un passo di snap |
+| Alt+trascinamento | copia le note trascinate (piano roll) |
 | Esc (mentre trascini) | annulla il trascinamento |
 
 `,` e `.` da metà battuta portano all'inizio della battuta; durante la riproduzione, a meno di mezzo beat da una
