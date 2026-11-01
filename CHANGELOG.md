@@ -7,6 +7,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-01
+
+### Added
+
+- **Detect from MIDI**, the first entry of the key menu in the transport bar, finds the key of your MIDI parts and
+  sets it as the project key. It looks at the unmuted MIDI regions on instrument tracks (Drum Kit tracks and step
+  patterns are left out), and long, loud notes count more than short, soft ones. The status bar shows the key, how
+  confident the guess is and the closest alternatives: relative keys like C major and A minor share the same notes,
+  so pick the other one from the menu if the part sounds minor. Only major and minor keys are proposed, and Ctrl+Z
+  brings back the previous key.
+- The assistant and MCP clients can do the same with the new `detect_key` tool, on one region or the whole
+  project; it changes the project key only when asked to (`apply: true`).
+
+### Changed
+
+- Step sequencer: paint steps by dragging across the grid, even across several rows. A stroke turns cells on if the
+  first one was off and off if it was on, cells you skip with a fast move are filled in, Esc cancels the stroke
+  while the button is still held, and the whole stroke is a single Ctrl+Z.
+- Step sequencer: right-click a row name for a menu with **Preview**, **Clear row**, **Every step**,
+  **Every 2nd step**, **Every 4th step** and **Offbeats**.
+- Step sequencer: **+ Row** under the grid adds a drum sound, chosen from the 25 Drum Kit sounds.
+
 ## [0.16.0] - 2026-11-01
 
 ### Added
@@ -505,7 +527,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/marconardelli/ondina-daw/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/marconardelli/ondina-daw/compare/v0.15.2...v0.16.0
 [0.15.2]: https://github.com/marconardelli/ondina-daw/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/marconardelli/ondina-daw/compare/v0.15.0...v0.15.1
