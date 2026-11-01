@@ -86,6 +86,26 @@ queste note" e lui agirà solo sulla selezione.
 Lo stesso vale per un agente esterno collegato via MCP (per esempio Claude Desktop): con il tool
 `get_selection` legge la traccia, la regione e le note che hai selezionato.
 
+### Armonia (Harmony)
+
+Il menu **Harmony** della barra del piano roll aggiunge una seconda voce alle note selezionate (a tutte le note
+della regione se non c'è nessuna selezione).
+
+- Scegli l'intervallo: *3rd above*, *3rd below*, *5th above*, *6th above*, *6th below*, *Octave above* o
+  *Octave below*.
+- Terze, quinte e seste contano i gradi della tonalità del progetto, quindi la voce resta nella tonalità: in Do
+  maggiore la terza sopra di Do è Mi, quella di Mi è Sol, quella di Si è Re. Una nota fuori tonalità parte dalla
+  nota della scala più vicina. Con una scala pentatonica, blues o cromatica la voce va alla nota della scala più
+  vicina all'intervallo maggiore.
+- L'ottava è sempre di 12 semitoni, anche per una nota fuori tonalità.
+- Le note nuove hanno lo stesso inizio e la stessa durata, e una velocity un poco più bassa (85%).
+- Una nota che c'è già (stessa altezza e stesso inizio) non si raddoppia, e una nota che uscirebbe dall'estensione
+  MIDI non si aggiunge. Se non si aggiunge niente, la barra di stato lo dice.
+- Le note aggiunte diventano la selezione: puoi spostarle con le frecce o toglierle con Canc. Un Ctrl+Z annulla
+  tutta l'armonia.
+- L'assistente e i client MCP fanno lo stesso con il tool `add_harmony` (per esempio "aggiungi una seconda voce a
+  terze sopra le note selezionate").
+
 ## Tracce nell'arrangiamento
 
 A sinistra di ogni traccia c'è la sua intestazione, con il nome, i pulsanti M (mute), S (solo) e
@@ -400,14 +420,14 @@ compatibile OpenAI all'indirizzo scelto in **Settings ⚙** (di default `http://
 - Se nessun server risponde, Ondina avvia il server llama.cpp incluso in `tools\llm` e lo chiude
   quando chiudi Ondina. Un server già acceso prima (Ollama, LM Studio, un `llama-server` avviato a
   mano) viene usato così com'è e resta acceso.
-- Il modello locale riceve 45 tool, scelti perché stiano nel suo contesto. Bastano per i pulsanti ✨
+- Il modello locale riceve 46 tool, scelti perché stiano nel suo contesto. Bastano per i pulsanti ✨
   del piano roll (*continue / improve*), dello step sequencer (*write a groove*), degli editor dei
   plug-in (*design a sound*), di Live Loops (*fill the grid*), del report del mix e dei menu della
   finestra di arrangiamento. Se nel piano roll hai selezionato delle note, il modello modifica solo
-  quelle: può quantizzarle, umanizzarle, trasporle o portarle nella tonalità del progetto (per
-  esempio "umanizza le note selezionate"). Claude riceve tutti i tool.
+  quelle: può quantizzarle, umanizzarle, trasporle, portarle nella tonalità del progetto o aggiungere
+  una voce in armonia (per esempio "umanizza le note selezionate"). Claude riceve tutti i tool.
 - Sotto il titolo del pannello compaiono il motore e quanti tool riceve: col modello locale
-  `local model (offline) · 45 tools`.
+  `local model (offline) · 46 tools`.
 - La conversazione tiene le richieste più recenti entro il contesto del modello. Quando si allunga,
   le richieste più vecchie vengono dimenticate; **New chat** ricomincia da capo.
 - **⏹ Stop** interrompe subito l'attesa. Le modifiche già fatte restano e si annullano tutte insieme

@@ -113,7 +113,7 @@ Get transport state: playing, recording, playhead position (beats, bar.beat.tick
 Parameters: none
 
 ### `get_selection` · read-only
-Get what the user has selected in the Ondina window: the selected track, the selected region and up to 256 selected notes of that region (each with its index, pitch, name, start and length in beats from the region start, velocity), plus the playhead and the cycle range. To act on "the notes I selected", pass the note index values as `indices` to quantize_notes, transpose_notes, humanize_notes, set_note_velocities, snap_notes_to_key or remove_notes. Indices refer to the region as it is now: read the selection again after editing the region, and compare pitch and start if in doubt. selected_note_count is the real number of selected notes and can be larger than the list. A headless session has no window: track and region are null and notes is empty.
+Get what the user has selected in the Ondina window: the selected track, the selected region and up to 256 selected notes of that region (each with its index, pitch, name, start and length in beats from the region start, velocity), plus the playhead and the cycle range. To act on "the notes I selected", pass the note index values as `indices` to quantize_notes, transpose_notes, humanize_notes, set_note_velocities, snap_notes_to_key, add_harmony or remove_notes. Indices refer to the region as it is now: read the selection again after editing the region, and compare pitch and start if in doubt. selected_note_count is the real number of selected notes and can be larger than the list. A headless session has no window: track and region are null and notes is empty.
 
 Parameters: none
 
@@ -381,6 +381,11 @@ Parameters: `indices, region_id, scale, velocity`
 Move notes of a region (all, or the given indices) to the nearest pitch in the project key. Indices past the last note are ignored.
 
 Parameters: `indices, region_id`
+
+### `add_harmony`
+Add a harmony voice to notes of a MIDI region (all, or the given indices): each note gets a copy with the same start and length and 85% of its velocity, `interval` above it (below with below=true) in the project key. In a seven-note key "3rd", "5th" and "6th" count scale steps, so the voice stays in the key (C major, 3rd above: C->E, E->G, B->D); a note outside the key starts from the nearest scale note. In pentatonic, blues and chromatic keys the copy goes to the scale note nearest to the major interval. "octave" is always 12 semitones. A copy identical to a note already there (same pitch and start) is not added (already_present), nor one outside MIDI 0..127 (out_of_range). Notes are re-sorted by time afterwards; the result's `indices` lists where the added notes ended up (ascending), ready to pass to transpose_notes, set_note_velocities or remove_notes. Indices past the last note are ignored.
+
+Parameters: `below, indices, interval, region_id`
 
 ### `insert_chord`
 Insert a voiced chord (symbol like "Cmaj7", "F#m", "G/B") into a MIDI region.
