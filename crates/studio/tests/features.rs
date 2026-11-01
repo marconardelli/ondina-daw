@@ -106,7 +106,7 @@ fn open_project_starts_a_fresh_history() {
     assert!(s.dirty);
     let rev = s.revision;
 
-    ok(&mut s, "open_project", json!({"path": path.display().to_string()}));
+    ok(&mut s, "open_project", json!({"path": path.display().to_string(), "discard_unsaved": true}));
     assert_eq!(s.project.tracks.len(), 1);
     assert!(s.revision > rev, "the GUI must see a new revision");
     assert_eq!(s.engine.project().tracks.len(), 1, "the engine must play the opened project");
@@ -132,7 +132,7 @@ fn new_project_starts_a_fresh_history() {
     assert!(s.dirty);
     let rev = s.revision;
 
-    ok(&mut s, "new_project", json!({"name": "Second", "tempo": 90}));
+    ok(&mut s, "new_project", json!({"name": "Second", "tempo": 90, "discard_unsaved": true}));
     assert!(s.project.tracks.is_empty());
     assert!(s.revision > rev);
     assert_eq!(s.engine.project().name, "Second", "the engine must play the new project");
@@ -213,7 +213,7 @@ fn new_project_stops_the_transport_and_returns_to_the_start() {
     let live = ok(&mut s, "get_live_loops", json!({}));
     assert!(!live["playing"].as_array().unwrap().is_empty(), "{live}");
 
-    ok(&mut s, "new_project", json!({"name": "Fresh"}));
+    ok(&mut s, "new_project", json!({"name": "Fresh", "discard_unsaved": true}));
     std::thread::sleep(std::time::Duration::from_millis(100));
     let tr = ok(&mut s, "get_transport", json!({}));
     assert_eq!(tr["playing"], false, "{tr}");
@@ -257,7 +257,7 @@ fn gui_open_during_a_recording_drops_the_take_instead_of_moving_it() {
     ok(&mut s, "send_live_midi", json!({"track_id": t, "events": [{"type": "note_on", "number": 64, "value": 100}, {"type": "note_off", "number": 64, "delay_ms": 100}]}));
     std::thread::sleep(std::time::Duration::from_millis(300));
 
-    s.execute(Command::OpenProject { path: path.display().to_string() }, Source::Gui).unwrap();
+    s.execute(Command::OpenProject { path: path.display().to_string(), discard_unsaved: None }, Source::Gui).unwrap();
     assert!(!s.engine.is_recording(), "the recording must not survive the open");
     // the reopened project has the same armed track: a take written into it would show up here
     assert!(s.project.tracks.iter().all(|tr| tr.regions.is_empty()));
@@ -267,7 +267,7 @@ fn gui_open_during_a_recording_drops_the_take_instead_of_moving_it() {
 
     // the same for New
     ok(&mut s, "record", json!({"from_beat": 0}));
-    s.execute(Command::NewProject { name: None, tempo: None, time_signature: None, key: None }, Source::Gui).unwrap();
+    s.execute(Command::NewProject { name: None, tempo: None, time_signature: None, key: None, discard_unsaved: None }, Source::Gui).unwrap();
     assert!(!s.engine.is_recording());
 }
 
@@ -1206,7 +1206,7 @@ fn get_selection_without_selection_is_empty() {
     assert_eq!(v["selected_note_count"], json!(0), "{v}");
 
     // A new project clears the selection.
-    ok(&mut s, "new_project", json!({}));
+    ok(&mut s, "new_project", json!({"discard_unsaved": true}));
     assert!(s.selected_notes.is_empty());
     assert_eq!(s.selected_region, None);
     let v = ok(&mut s, "get_selection", json!({}));
@@ -1330,7 +1330,7 @@ fn new_project_inside_a_turn_starts_a_new_step() {
     let mut s = Session::new(false);
     s.begin_undo_group("assistant: z");
     run(&mut s, "add_track", json!({"kind": "instrument"}), Source::Ai);
-    run(&mut s, "new_project", json!({"name": "Fresh"}), Source::Ai);
+    run(&mut s, "new_project", json!({"name": "Fresh", "discard_unsaved": true}), Source::Ai);
     assert_eq!(s.can_undo(), None);
     run(&mut s, "add_track", json!({"kind": "instrument"}), Source::Ai);
     assert_eq!(s.can_undo(), Some("assistant: z"));
@@ -1520,9 +1520,9 @@ fn session_counts_documents_replaced_by_open_and_new() {
     ok(&mut s, "save_project", json!({"path": path.display().to_string()}));
     assert_eq!(s.document, first);
     // New and Open replace it, from MCP and from the assistant alike
-    ok(&mut s, "new_project", json!({"name": "Second"}));
+    ok(&mut s, "new_project", json!({"name": "Second", "discard_unsaved": true}));
     assert_eq!(s.document, first + 1);
-    ok(&mut s, "open_project", json!({"path": path.display().to_string()}));
+    ok(&mut s, "open_project", json!({"path": path.display().to_string(), "discard_unsaved": true}));
     assert_eq!(s.document, first + 2);
     let c = Command::from_tool_call("new_project", &json!({})).unwrap();
     s.execute(c, Source::Ai).unwrap();
@@ -1810,7 +1810,7 @@ fn get_activity_shows_when_the_project_was_replaced() {
     let a = ok(&mut s, "get_activity", json!({}));
     assert!(a["session_id"].as_u64().unwrap() > 0, "{a}");
     assert_eq!(a["revision"].as_u64().unwrap(), s.revision);
-    ok(&mut s, "new_project", json!({"name": "Second"}));
+    ok(&mut s, "new_project", json!({"name": "Second", "discard_unsaved": true}));
     let b = ok(&mut s, "get_activity", json!({"since": a["latest_seq"]}));
     assert_ne!(b["document"], a["document"]);
     assert_eq!(b["session_id"], a["session_id"]);
@@ -1853,7 +1853,7 @@ fn c018_untrusted_plugin() -> PathBuf {
 }
 
 fn open_from(s: &mut Session, file: &Path, source: Source) -> Value {
-    s.execute(Command::OpenProject { path: file.display().to_string() }, source).unwrap_or_else(|e| panic!("open from {source:?} failed: {e}"))
+    s.execute(Command::OpenProject { path: file.display().to_string(), discard_unsaved: None }, source).unwrap_or_else(|e| panic!("open from {source:?} failed: {e}"))
 }
 
 #[test]
@@ -1933,7 +1933,7 @@ fn blocked_vst3_stays_unloaded_after_duplicate_undo_and_redo() {
     ok(&mut s, "redo", json!({}));
     assert_eq!(instruments(&s.project), 2);
     assert!(!vst3_paths(s.engine.project()).contains(&path), "after redo");
-    ok(&mut s, "new_project", json!({}));
+    ok(&mut s, "new_project", json!({"discard_unsaved": true}));
     assert!(call(&mut s, "undo", json!({})).is_err());
     assert!(vst3_paths(s.engine.project()).is_empty());
 }
@@ -1995,7 +1995,7 @@ fn unloaded_vst3_lists_refused_and_kept_out_plugins_with_the_reason() {
     ok(&mut s, "duplicate_track", json!({"track_id": t}));
     assert_eq!(s.unloaded_vst3().len(), 3, "{:?}", s.unloaded_vst3());
     only_vst3(&s);
-    ok(&mut s, "new_project", json!({}));
+    ok(&mut s, "new_project", json!({"discard_unsaved": true}));
     assert!(s.unloaded_vst3().is_empty());
     // a path the plug-in check refuses, even when the app opens the project
     let dll = tmp("c024_unloaded_dll").join("evil.dll");

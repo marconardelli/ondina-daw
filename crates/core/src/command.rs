@@ -6,7 +6,9 @@
 //! the doc comment becomes the tool description and the fields become the input schema.
 //!
 //! Conventions: positions/lengths are in beats (quarter notes, beat 0 = start of bar 1);
-//! the master channel is addressed with track_id 0; MIDI pitch 60 = C4.
+//! MIDI pitch 60 = C4. track_id 0 addresses the master channel only in the channel commands
+//! (set_volume, set_pan, set_mute, set_solo, add_effect, add_vst3, set_surround_pan, get_track);
+//! the others, automation included, need a track or bus id.
 
 use std::collections::BTreeMap;
 
@@ -25,7 +27,7 @@ pub enum Command {
     GetProject {},
     /// Get the complete raw project document as JSON (large). Prefer get_project / get_track / get_region.
     GetProjectJson {},
-    /// Create a new empty project, replacing the current one. The transport stops (Live Loops cells too) and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take).
+    /// Create a new empty project, replacing the current one. The transport stops (Live Loops cells too) and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). Refused when the current project has unsaved changes, unless discard_unsaved is true.
     NewProject {
         name: Option<String>,
         /// Tempo in BPM (default 120).
@@ -34,9 +36,15 @@ pub enum Command {
         time_signature: Option<String>,
         /// Key like "C major", "A minor", "F# dorian".
         key: Option<String>,
+        /// true: replace the project even if it has unsaved changes, which are lost (no undo). Default false: from an MCP client or the assistant, a project with unsaved changes is kept and the call fails; save it first with save_project, or ask the user.
+        discard_unsaved: Option<bool>,
     },
-    /// Open a project file (.ondina JSON). The transport stops and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). VST3 plug-ins whose path is not a .vst3 bundle on a local drive are not loaded and are listed in blocked_plugins. When an MCP client or the assistant opens the project, VST3 plug-ins outside the standard VST3 folders and the folders the user added in Ondina's VST3 library are not loaded either: they stay in the project and in the saved file, are listed in blocked_plugins, stay silent in playback and bounces, and load only when the user opens the project from the app.
-    OpenProject { path: String },
+    /// Open a project file (.ondina JSON). The transport stops and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). VST3 plug-ins whose path is not a .vst3 bundle on a local drive are not loaded and are listed in blocked_plugins. When an MCP client or the assistant opens the project, VST3 plug-ins outside the standard VST3 folders and the folders the user added in Ondina's VST3 library are not loaded either: they stay in the project and in the saved file, are listed in blocked_plugins, stay silent in playback and bounces, and load only when the user opens the project from the app. Refused when the current project has unsaved changes, unless discard_unsaved is true. The file must be on a local drive (no network shares). Audio files the project lists on a network share are not read either: they stay in the project and are listed in blocked_audio_files.
+    OpenProject {
+        path: String,
+        /// true: replace the project even if it has unsaved changes, which are lost (no undo). Default false: from an MCP client or the assistant, a project with unsaved changes is kept and the call fails; save it first with save_project, or ask the user.
+        discard_unsaved: Option<bool>,
+    },
     /// Save the project. Without a path saves to the current file (or fails if never saved). The path must be a .ondina file (or an older .aurora one) on a local drive (no network shares); .ondina is added when the path has no extension. An existing file is overwritten only if it is an Ondina project. The previous version is kept next to it as <file>.bak when that name is free or already holds an Ondina project; otherwise the backup is skipped, the file is saved anyway and the result reports backup_error.
     SaveProject { path: Option<String> },
     /// Rename the project.
@@ -174,7 +182,7 @@ pub enum Command {
     SetPluginBypass { plugin_id: Id, bypass: bool },
     /// Get a plug-in with all its parameter values and their ranges.
     GetPlugin { plugin_id: Id },
-    /// Load an audio file into a Sampler instrument.
+    /// Load an audio file into a Sampler instrument. The file must be on a local drive (no network shares).
     SetSamplerSample { plugin_id: Id, path: String },
 
     // ------------------------------------------------------------------ regions
@@ -191,13 +199,13 @@ pub enum Command {
         rows: Option<Vec<PatternRow>>,
         name: Option<String>,
     },
-    /// Import an audio file (wav, aiff, flac, mp3, ogg, m4a) onto an audio track (creates one if track_id omitted) at a beat position.
+    /// Import an audio file (wav, aiff, flac, mp3, ogg, m4a) onto an audio track (creates one if track_id omitted) at a beat position. The file must be on a local drive (no network shares).
     ImportAudio { path: String, track_id: Option<Id>, start: Option<f64> },
     /// Delete a region.
     DeleteRegion { region_id: Id },
     /// Move a region in time and/or to another track.
     MoveRegion { region_id: Id, start: Option<f64>, track_id: Option<Id> },
-    /// Change a region's length in beats (MIDI notes beyond the end are kept but not played).
+    /// Change a region's length in beats (MIDI notes beyond the end are kept but not played). A pattern region keeps whole steps and can have at most 65536 steps: a longer length is refused.
     ResizeRegion { region_id: Id, length: f64 },
     /// Split a region at an absolute beat position. Returns the new right-hand region id.
     SplitRegion { region_id: Id, beat: f64 },
@@ -297,7 +305,7 @@ pub enum Command {
     // ------------------------------------------------------------------ step sequencer
     /// Set one step of a pattern region: velocity 0 = off.
     SetPatternStep { region_id: Id, row: usize, step: usize, velocity: u8 },
-    /// Set a whole pattern row from a string: 'x' accent, 'o' normal, 'g' ghost, '.' off. E.g. "x...x...x...x...".
+    /// Set a whole pattern row from a string: 'x' accent, 'o' normal, 'g' ghost, '.' off. E.g. "x...x...x...x...". Exactly one character per step (spaces and '|' ignored), else refused.
     SetPatternRow { region_id: Id, row: usize, pattern: String },
     /// Add a row to a pattern region.
     AddPatternRow { region_id: Id, name: String, pitch: u8 },
@@ -315,21 +323,21 @@ pub enum Command {
     },
     /// Delete a row of a pattern region together with its steps. The rows after it move up one index, so read get_region again before the next edit by row index. Deleting the last row leaves an empty pattern that add_pattern_row can fill again.
     RemovePatternRow { region_id: Id, row: usize },
-    /// Set pattern swing 0..1.
+    /// Set pattern swing 0..1 (applied to every second step). A value outside 0..1 is refused. Returns the swing.
     SetPatternSwing { region_id: Id, swing: f32 },
     /// Convert a pattern region into a regular MIDI region.
     ConvertPatternToMidi { region_id: Id },
 
     // ------------------------------------------------------------------ session players (generators)
-    /// Session drummer: generate a drum groove as a MIDI region on a (drum) instrument track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
+    /// Session drummer: generate a drum groove as a MIDI region on a (drum) instrument track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. Limits: bars <= 512, start 0..1000000.
     GenerateDrums { track_id: Id, start: f64, bars: u32, style: DrumStyle, intensity: Option<f32>, fill: Option<bool>, seed: Option<u64> },
-    /// Session bassist: generate a bass line following `chords` (one symbol per `beats_per_chord`, default one bar) or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
+    /// Session bassist: generate a bass line following `chords` (one symbol per `beats_per_chord`, default one bar) or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. Limits: bars <= 512, start 0..1000000, beats_per_chord >= 0.25. The chord track repeats to fill all bars.
     GenerateBass { track_id: Id, start: f64, bars: u32, style: BassStyle, chords: Option<Vec<String>>, beats_per_chord: Option<f64>, octave: Option<i32>, seed: Option<u64> },
-    /// Session keyboard player: generate chord comping following `chords` or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
+    /// Session keyboard player: generate chord comping following `chords` or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. Limits: bars <= 512, start 0..1000000, beats_per_chord >= 0.25. The chord track repeats to fill all bars.
     GenerateChords { track_id: Id, start: f64, bars: u32, style: CompStyle, chords: Option<Vec<String>>, beats_per_chord: Option<f64>, center_pitch: Option<u8>, seed: Option<u64> },
-    /// Generate an arpeggio following `chords` or the chord track. rate in beats (0.25 = 1/16). Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
+    /// Generate an arpeggio following `chords` or the chord track. rate in beats (0.25 = 1/16). Returns region_id, seed, start, bars; pass the returned seed to get the same part again. Limits: bars <= 512, start 0..1000000, beats_per_chord >= 0.25. The chord track repeats to fill all bars.
     GenerateArpeggio { track_id: Id, start: f64, bars: u32, mode: ArpMode, rate: Option<f64>, octaves: Option<u32>, chords: Option<Vec<String>>, beats_per_chord: Option<f64>, center_pitch: Option<u8>, seed: Option<u64> },
-    /// Generate a melody in the project key over `chords` or the chord track. density 0..1. Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
+    /// Generate a melody in the project key over `chords` or the chord track. density 0..1. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. Limits: bars <= 512, start 0..1000000, beats_per_chord >= 0.25. The chord track repeats to fill all bars.
     GenerateMelody { track_id: Id, start: f64, bars: u32, density: Option<f32>, octave: Option<i32>, chords: Option<Vec<String>>, beats_per_chord: Option<f64>, seed: Option<u64> },
 
     // ------------------------------------------------------------------ chord track
@@ -345,11 +353,11 @@ pub enum Command {
     ClearChords {},
 
     // ------------------------------------------------------------------ automation
-    /// Replace the automation of a parameter. target: "volume" (dB), "pan" (-1..1), "send:<index>" (dB), or "plugin:<plugin_id>:<param>". track_id 0 = master.
+    /// Replace the automation of a parameter on a track or bus (the master has no automation: track_id 0 is refused). target: "volume" (dB, -96..6), "pan" (-1..1), "send:<index>" (dB, -96..6), "surround:azimuth" (degrees, -180..180), "surround:elevation" (degrees, -30..90), "surround:spread" (0..1), or "plugin:<plugin_id>:<param>" for a parameter of a built-in plug-in on the same track (its range is in get_plugin). VST3 parameters cannot be automated: set them with set_plugin_param. Values outside the range are clamped; values that are not finite are refused. Returns the stored points.
     SetAutomation { track_id: Id, target: String, points: Vec<AutomationPoint> },
-    /// Add one automation point.
+    /// Add one automation point to a track or bus lane, with the same targets, ranges and limits as set_automation (no master automation). Returns the number of points and the stored value.
     AddAutomationPoint { track_id: Id, target: String, beat: f64, value: f32 },
-    /// Remove automation for a target, or all automation of the track if target omitted.
+    /// Remove automation for a target, or all automation of the track if target omitted (tracks and buses; the master has no automation).
     ClearAutomation { track_id: Id, target: Option<String> },
 
     // ------------------------------------------------------------------ markers & arrangement
@@ -367,7 +375,7 @@ pub enum Command {
     InsertTime { at_beat: f64, length: f64 },
 
     // ------------------------------------------------------------------ import / export
-    /// Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed). After the end the render goes on until reverb and delay tails fade below about -90 dBFS (at least 2 s, at most 20 s: a sound that never fades, like a note held past the end or a noisy plug-in, stops at 20 s). tail_sec sets an exact tail instead: 0 cuts exactly at end, e.g. to export a loop. normalize=true scales the peak to -1 dBFS. normalize_lufs brings the integrated loudness to a target with one gain for the whole mix (no limiter), keeping the peak under true_peak_ceiling_db: the result's loudness reports gain_db, lufs_after, true_peak_after and target_reached (false when the ceiling stopped the gain: the mix needs a limiter, e.g. auto_master, to get that loud). The peak is the analyze_mix estimate; 16 and 24 bit dither can add about one LSB. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
+    /// Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed). After the end the render goes on until reverb and delay tails fade below about -90 dBFS (at least 2 s, at most 20 s: a sound that never fades, like a note held past the end or a noisy plug-in, stops at 20 s). tail_sec sets an exact tail instead: 0 cuts exactly at end, e.g. to export a loop. normalize=true scales the peak to -1 dBFS. normalize_lufs brings the integrated loudness to a target with one gain for the whole mix (no limiter), keeping the peak under true_peak_ceiling_db: the result's loudness reports gain_db, lufs_after, true_peak_after and target_reached (false when the ceiling stopped the gain: the mix needs a limiter, e.g. auto_master, to get that loud). The peak is the analyze_mix estimate; 16 and 24 bit dither can add about one LSB. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. At most 60 minutes of song per render.
     Bounce {
         path: String,
         start: Option<f64>,
@@ -383,15 +391,15 @@ pub enum Command {
         /// Peak ceiling for normalize_lufs in dBTP, -9 to 0 (default -1).
         true_peak_ceiling_db: Option<f32>,
     },
-    /// Render a track to audio and place it on a new audio track (bounce in place). The source track is muted. Reverb and delay tails are kept: the render goes on until they fade (at least 2 s, at most 20 s after the last region).
+    /// Render a track to audio and place it on a new audio track (bounce in place). The source track is muted. Reverb and delay tails are kept: the render goes on until they fade (at least 2 s, at most 20 s after the last region). At most 60 minutes of song per render.
     BounceInPlace { track_id: Id },
     /// Export MIDI regions to a Standard MIDI File. The path must be a .mid or .midi file on a local drive (no network shares); .mid is added when the path has no extension.
     ExportMidi { path: String, track_ids: Option<Vec<Id>> },
-    /// Import a Standard MIDI File, creating instrument tracks (channel 10 becomes a drum track).
+    /// Import a Standard MIDI File, creating instrument tracks (channel 10 becomes a drum track). The file must be on a local drive (no network shares).
     ImportMidi { path: String, at_beat: Option<f64> },
 
     // ------------------------------------------------------------------ analysis / mastering
-    /// Render offline and analyze: integrated loudness (LUFS), true-peak estimate, RMS, crest factor, stereo correlation, low/mid/high spectral balance for the master and each track. Use it to "listen" to the mix.
+    /// Render offline and analyze: integrated loudness (LUFS), true-peak estimate, RMS, crest factor, stereo correlation, low/mid/high spectral balance for the master and each track. Use it to "listen" to the mix. At most 60 minutes of song per render.
     AnalyzeMix { start: Option<f64>, end: Option<f64> },
     /// Get live peak meters (dBFS) for every track and the master.
     GetMeters {},
@@ -447,13 +455,13 @@ pub enum Command {
     // ------------------------------------------------------------------ live loops
     /// Get the Live Loops grid: scenes, cells (per track/scene) and which cells are playing or queued.
     GetLiveLoops {},
-    /// Add a scene (row) to the Live Loops grid.
+    /// Add a scene (row) to the Live Loops grid. At most 256 scenes.
     AddScene { name: Option<String> },
     /// Rename a scene.
     RenameScene { scene: usize, name: String },
     /// Remove a scene and its cells.
     RemoveScene { scene: usize },
-    /// Create a Live Loops cell on a track and scene: empty MIDI (length in beats), with notes, or copied from an existing region.
+    /// Create a Live Loops cell on a track and scene: empty MIDI (length in beats), with notes, or copied from an existing region. scene 0..255; missing scenes are added.
     CreateLiveCell { track_id: Id, scene: usize, length: Option<f64>, notes: Option<Vec<Note>>, from_region_id: Option<Id>, name: Option<String> },
     /// Delete a Live Loops cell.
     DeleteLiveCell { cell_id: Id },
@@ -475,11 +483,11 @@ pub enum Command {
     SetSurroundFormat { format: SurroundFormat },
     /// Position a track in 3D space for surround/binaural mixing (azimuth degrees: 0 front, 90 right, -90 left, 180 rear). object=true makes it an audio object (object-based mixing, exported as an ADM object) instead of part of the bed. Animate positions with automation targets "surround:azimuth", "surround:elevation", "surround:spread".
     SetSurroundPan { track_id: Id, azimuth: f32, elevation: Option<f32>, spread: Option<f32>, object: Option<bool> },
-    /// Bounce a multichannel surround WAV (channel order L R C LFE Ls Rs, plus Lrs Rrs for 7.1, plus Ltf Rtf Ltr Rtr for 7.1.4). Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
+    /// Bounce a multichannel surround WAV (channel order L R C LFE Ls Rs, plus Lrs Rrs for 7.1, plus Ltf Rtf Ltr Rtr for 7.1.4). Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. At most 60 minutes of song per render.
     BounceSurround { path: String, format: Option<SurroundFormat> },
-    /// Bounce a binaural (headphone spatial audio) stereo WAV from the 3D positions. Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
+    /// Bounce a binaural (headphone spatial audio) stereo WAV from the 3D positions. Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. At most 60 minutes of song per render.
     BounceBinaural { path: String },
-    /// Export an ADM BWF master (ITU-R BS.2076 metadata in a BW64 file, 48 kHz / 24-bit), the interchange format used for Dolby Atmos deliveries: a 7.1.2 channel bed plus one audio object per object track, with time-varying positions from the surround automation. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
+    /// Export an ADM BWF master (ITU-R BS.2076 metadata in a BW64 file, 48 kHz / 24-bit), the interchange format used for Dolby Atmos deliveries: a 7.1.2 channel bed plus one audio object per object track, with time-varying positions from the surround automation. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. At most 60 minutes of song per render.
     ExportAdm { path: String, start: Option<f64>, end: Option<f64> },
 
     // ------------------------------------------------------------------ video
@@ -493,7 +501,7 @@ pub enum Command {
     SetFrameRate { fps: f64 },
     /// Extract the movie frame at a song position as an image (path ending in .png, .jpg or .jpeg; requires ffmpeg on PATH), so an agent can look at the picture.
     ExtractMovieFrame { path: String, beat: Option<f64> },
-    /// Export the movie with the bounced mix as soundtrack (path ending in .mp4, .mov, .mkv or .m4v; requires ffmpeg on PATH).
+    /// Export the movie with the bounced mix as soundtrack (path ending in .mp4, .mov, .mkv or .m4v; requires ffmpeg on PATH). At most 60 minutes of song per render.
     ExportMovie { path: String },
 
     // ------------------------------------------------------------------ environment / MIDI transform
@@ -507,7 +515,7 @@ pub enum Command {
     // ------------------------------------------------------------------ third-party plug-ins (VST3)
     /// Scan the standard VST3 folders, the VST3 folders the user added in Ondina and extra_paths for third-party plug-ins. extra_paths must be folders on a local drive: network shares, device paths and URLs are skipped and listed in skipped_paths. From MCP clients and the assistant an extra folder must also be inside a standard VST3 folder or a folder the user added in Ondina's VST3 library; other folders are skipped and listed in skipped_paths too. scanned_folders lists the extra folders that were scanned.
     ScanVst3 { extra_paths: Option<Vec<String>> },
-    /// Load a VST3 plug-in (path to a .vst3 bundle on a local drive) as instrument or insert effect on a track (track_id 0 = master). Network shares, device paths, URLs and files that are not .vst3 are refused. From MCP clients and the assistant the bundle must also be inside a standard VST3 folder (Common Files\VST3, %LOCALAPPDATA%\Programs\Common\VST3) or a folder the user added in Ondina's VST3 library (Add folder…): if it is refused, ask the user to add its folder. Its parameters are then addressable as "p<id>" (normalized 0..1) with set_plugin_param.
+    /// Load a VST3 plug-in (path to a .vst3 bundle on a local drive) as instrument or insert effect on a track (track_id 0 = master). Network shares, device paths, URLs and files that are not .vst3 are refused. From MCP clients and the assistant the bundle must also be inside a standard VST3 folder (Common Files\VST3, %LOCALAPPDATA%\Programs\Common\VST3) or a folder the user added in Ondina's VST3 library (Add folder…): if it is refused, ask the user to add its folder. Its parameters are then addressable as "p<id>" (normalized 0..1) with set_plugin_param; they cannot be automated (set_automation accepts built-in plug-ins only).
     AddVst3 { track_id: Id, path: String, as_instrument: Option<bool>, index: Option<usize> },
 
     /// Open the native editor window of a VST3 plug-in. Knob moves in the window are applied to the project (undoable) and to the playing instance. Refused for a plug-in that open_project listed in blocked_plugins.
@@ -667,6 +675,42 @@ impl Command {
         )
     }
 
+    /// Whether the command only reads: it changes nothing in the project, on disk, in the settings, on the audio
+    /// and MIDI devices or in what is playing. MCP publishes this as `readOnlyHint`, which clients may use to run
+    /// a tool without asking. Not the same as `!is_mutating()`: saving, bouncing, undo, transport and settings
+    /// create no undo step but do change things. An explicit list, so a new command is never read-only by
+    /// accident.
+    pub fn is_read_only(&self) -> bool {
+        use Command::*;
+        matches!(
+            self,
+            GetProject {}
+                | GetProjectJson {}
+                | GetTransport {}
+                | GetSelection {}
+                | GetActivity { .. }
+                | GetTrack { .. }
+                | ListPlugins { .. }
+                | ListPresets { .. }
+                | ListPatches {}
+                | GetPlugin { .. }
+                | GetRegion { .. }
+                | AnalyzeMix { .. }
+                | GetMeters {}
+                | ListAudioDevices {}
+                | ListMidiInputs {}
+                | DetectTempo { apply: None, .. }
+                | DetectTempo { apply: Some(false), .. }
+                | DetectKey { apply: None, .. }
+                | DetectKey { apply: Some(false), .. }
+                | ListTakes { .. }
+                | GetScore { .. }
+                | GetLiveLoops {}
+                | GetMidiRoutes {}
+                | GetSettings {}
+        )
+    }
+
     /// Build a command from an MCP tool name and its JSON arguments.
     pub fn from_tool_call(name: &str, args: &serde_json::Value) -> Result<Command, String> {
         let mut obj = match args {
@@ -685,6 +729,7 @@ pub struct ToolSpec {
     pub name: String,
     pub description: String,
     pub input_schema: serde_json::Value,
+    /// The tool only reads (see `Command::is_read_only`); published as MCP `readOnlyHint`.
     pub read_only: bool,
 }
 
@@ -715,7 +760,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         }
         obj.entry("properties").or_insert(serde_json::json!({}));
         obj.insert("type".into(), serde_json::json!("object"));
-        let read_only = Command::from_tool_call(&name, &minimal_args(&v)).map(|c| !c.is_mutating()).unwrap_or(false);
+        let read_only = Command::from_tool_call(&name, &minimal_args(&v)).map(|c| c.is_read_only()).unwrap_or(false);
         out.push(ToolSpec { name, description, input_schema: v, read_only });
     }
     out
@@ -821,6 +866,49 @@ mod tests {
         assert!(!add.read_only);
         let c = Command::from_tool_call("set_volume", &serde_json::json!({"track_id": 1, "db": -3.0})).unwrap();
         assert_eq!(c.name(), "set_volume");
+    }
+
+    /// MCP clients may run read-only tools without asking (readOnlyHint). Only the tools that just read are
+    /// marked: anything that changes the project, files on disk, settings, devices or what the user hears is
+    /// not. The list is explicit so that a new tool is not read-only by accident.
+    #[test]
+    fn only_tools_that_just_read_are_marked_read_only() {
+        const READ_ONLY: &[&str] = &[
+            "analyze_mix",
+            "detect_key",
+            "detect_tempo",
+            "get_activity",
+            "get_live_loops",
+            "get_meters",
+            "get_midi_routes",
+            "get_plugin",
+            "get_project",
+            "get_project_json",
+            "get_region",
+            "get_score",
+            "get_selection",
+            "get_settings",
+            "get_track",
+            "get_transport",
+            "list_audio_devices",
+            "list_midi_inputs",
+            "list_patches",
+            "list_plugins",
+            "list_presets",
+            "list_takes",
+        ];
+        let specs = tool_specs();
+        let mut marked: Vec<&str> = specs.iter().filter(|s| s.read_only).map(|s| s.name.as_str()).collect();
+        marked.sort_unstable();
+        assert_eq!(marked, READ_ONLY);
+        for name in ["save_project", "bounce", "export_midi", "export_music_xml", "bounce_surround", "bounce_binaural", "export_adm", "export_movie", "extract_movie_frame", "undo", "redo", "scan_vst3", "set_ai_settings", "set_audio_device", "record", "stop", "play"] {
+            assert!(specs.iter().any(|s| s.name == name && !s.read_only), "{name} must not be read-only");
+        }
+        // a read-only tool never creates an undo step either
+        for s in specs.iter().filter(|s| s.read_only) {
+            let c = Command::from_tool_call(&s.name, &minimal_args(&s.input_schema)).unwrap();
+            assert!(!c.is_mutating(), "{}", s.name);
+        }
     }
 
     #[test]

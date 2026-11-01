@@ -42,7 +42,7 @@ fn main() {
         let session = ondina_studio::Session::shared(has("--audio"));
         if let Some(p) = value("--project") {
             let r = session.lock().execute(
-                ondina_core::Command::OpenProject { path: p },
+                ondina_core::Command::OpenProject { path: p, discard_unsaved: None },
                 ondina_studio::Source::Script,
             );
             if let Err(e) = r {

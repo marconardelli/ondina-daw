@@ -562,11 +562,13 @@ pub fn comp(chords: &[TimedChord], style: CompStyle, center: u8, ts: TimeSignatu
 pub fn arpeggio(chords: &[TimedChord], mode: ArpMode, rate: f64, octaves: u32, center: u8, gate: f64, seed: u64) -> Vec<Note> {
     let mut rng = StdRng::seed_from_u64(seed);
     let rate = rate.max(0.0625);
+    // eleven octaves span the whole MIDI range: more only adds pitches above 127, which are dropped
+    let octaves = octaves.clamp(1, 11);
     let mut out = vec![];
     for tc in chords {
         let base = tc.chord.voicing(center, 0, false);
         let mut pool: Vec<u8> = vec![];
-        for o in 0..octaves.max(1) {
+        for o in 0..octaves {
             for p in &base {
                 let q = *p as u32 + o * 12;
                 if q <= 127 {

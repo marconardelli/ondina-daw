@@ -11,7 +11,7 @@ use ondina_core::model::*;
 use ondina_core::ops;
 use ondina_dsp::{audio_ops, AudioData, MidiKind};
 use ondina_engine::{load_audio_file, render_offline, render_surround, write_multichannel_wav, write_wav, OfflineOptions};
-use ondina_engine::offline::{AUTO_TAIL_MAX_SEC, BOUNCE_TAIL_SEC};
+use ondina_engine::offline::{check_render_span, AUTO_TAIL_MAX_SEC, BOUNCE_TAIL_SEC};
 use serde_json::{json, Value};
 
 use crate::session::{Session, Source};
@@ -150,6 +150,35 @@ pub(crate) fn checked_output_path(source: Source, path: &str, allowed: &[&str], 
         Source::Mcp | Source::Ai => output_path(path, allowed, default_ext).map_err(|e| format!("output path refused: {e}")),
         Source::Gui | Source::Script => Ok(PathBuf::from(path)),
     }
+}
+
+/// The path a read command (import_audio, set_sampler_sample, import_midi, open_project) opens. From MCP and
+/// the assistant the file must be on a local drive, with the rules of `local_media_path`: opening
+/// `\\server\share\x.wav` makes Windows connect to that server and send the user's NTLM hash. The check is
+/// lexical first, then on the path Windows resolves (a junction or a mapped drive can lead to a share). The
+/// app's own dialogs and scripts started by the user keep full freedom, as for output paths.
+pub(crate) fn checked_input_path(source: Source, path: &str) -> Result<PathBuf, String> {
+    if !matches!(source, Source::Mcp | Source::Ai) {
+        return Ok(PathBuf::from(path));
+    }
+    let refused = |e: String| format!("input path refused: {e}");
+    let abs = local_media_path(path).map_err(refused)?;
+    if let Ok(resolved) = abs.canonicalize() {
+        let s = resolved.display().to_string();
+        let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+        let b = s.as_bytes();
+        let local = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/');
+        if !local {
+            return Err(refused(format!("{path} leads to {}, which is not on a local drive", resolved.display())));
+        }
+    }
+    Ok(abs)
+}
+
+/// Whether an audio file listed in a project opened from MCP or the assistant may be read: the same rule as
+/// `checked_input_path`. A refused file stays in the project (and in the saved file) and is reported as blocked.
+pub(crate) fn audio_file_allowed(source: Source, path: &str) -> bool {
+    checked_input_path(source, path).is_ok()
 }
 
 /// Why a plug-in or a scan folder from MCP or the assistant is refused.
@@ -333,7 +362,7 @@ impl Session {
     /// Opens an autosave copy as unsaved work: the project comes back through OpenProject, but without a file
     /// path, so the next save asks where to write instead of writing over the copy.
     pub fn open_recovered(&mut self, copy: &Path) -> Result<Value, String> {
-        let v = self.execute(Command::OpenProject { path: copy.display().to_string() }, Source::Gui)?;
+        let v = self.execute(Command::OpenProject { path: copy.display().to_string(), discard_unsaved: None }, Source::Gui)?;
         self.path = None;
         self.dirty = true;
         Ok(v)
@@ -450,6 +479,9 @@ impl Session {
                 if end <= 0.0 {
                     return Some(Err("project is empty".into()));
                 }
+                if let Err(e) = check_render_span(&self.project.tempo, 0.0, end) {
+                    return Some(Err(e));
+                }
                 let sr = self.engine.sample_rate();
                 let (names, chans) = render_surround(&self.engine_project(), Arc::new(self.pool.clone()), sr, 0.0, end, name, AUTO_TAIL_MAX_SEC);
                 if let Err(e) = write_multichannel_wav(&p, &chans, sr) {
@@ -466,6 +498,9 @@ impl Session {
                 let end = self.project.content_end();
                 if end <= 0.0 {
                     return Some(Err("project is empty".into()));
+                }
+                if let Err(e) = check_render_span(&self.project.tempo, 0.0, end) {
+                    return Some(Err(e));
                 }
                 let mut p = self.engine_project();
                 p.surround = SurroundFormat::Binaural;
@@ -514,6 +549,9 @@ impl Session {
                 let sr = self.engine.sample_rate();
                 let start = self.project.tempo.sec_to_beat(m.offset_sec);
                 let end = self.project.tempo.sec_to_beat(m.offset_sec + m.duration_sec.max(1.0));
+                if let Err(e) = check_render_span(&self.project.tempo, start, end) {
+                    return Some(Err(e));
+                }
                 let mut p = self.engine_project();
                 if let Some(aid) = m.audio_file_id {
                     // keep the guide audio out of the export
@@ -796,6 +834,7 @@ impl Session {
         if end <= start {
             return Err("project is empty".into());
         }
+        check_render_span(&self.project.tempo, start, end)?;
         let sr = 48000; // ADM/Atmos masters are 48 kHz
         let (bed_audio, objs) = ondina_engine::render_objects(&self.engine_project(), Arc::new(self.pool.clone()), sr, start, end);
         let defs = ondina_engine::adm::bed_712();
