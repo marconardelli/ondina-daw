@@ -204,6 +204,24 @@ fn path_key(path: &str) -> Option<Vec<String>> {
     Some(key)
 }
 
+/// The form of a plug-in path (as `resolve_plugin_path` returned it) to compare with `trusted_roots`. A
+/// path that does not exist is still lexical, while the roots are resolved (8.3 short names, junctions):
+/// its nearest existing folder is resolved and the rest appended. A folder that leads off the local
+/// drives gives an empty path, which no root contains.
+pub fn trusted_check_path(resolved: &str) -> String {
+    let p = Path::new(resolved);
+    if p.exists() {
+        return resolved.to_string();
+    }
+    for anc in p.ancestors().skip(1) {
+        if let Ok(c) = anc.canonicalize() {
+            let (Some(local), Ok(rest)) = (local_resolved(&c), p.strip_prefix(anc)) else { return String::new() };
+            return Path::new(&local).join(rest).display().to_string();
+        }
+    }
+    resolved.to_string()
+}
+
 /// Whether the plug-in at `resolved` (a path `resolve_plugin_path` returned) lies inside one of
 /// `roots`, compared component by component: `C:\VST3evil` is not inside `C:\VST3`. A root must be a
 /// folder on a local drive, not a whole drive.
@@ -852,6 +870,18 @@ mod tests {
         assert!(r.contains(&absolute(&dir)), "{r:?}");
         assert!(r.iter().any(|x| x == "C:\\no-such-ondina-root"), "{r:?}");
         assert!(r.iter().all(|x| !x.starts_with("\\\\")), "{r:?}");
+    }
+
+    #[test]
+    fn trusted_check_path_resolves_the_folder_of_a_missing_plugin() {
+        let dir = std::env::temp_dir().join("ondina_trusted_root");
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing = dir.join("Missing.vst3");
+        let _ = std::fs::remove_file(&missing);
+        let expected = Path::new(&absolute(&dir.display().to_string())).join("Missing.vst3").display().to_string();
+        assert_eq!(trusted_check_path(&missing.display().to_string()), expected);
+        assert!(is_under_trusted(&trusted_check_path(&missing.display().to_string()), &trusted_roots(&[dir.display().to_string()])));
+        assert_eq!(trusted_check_path(&dir.display().to_string()), dir.display().to_string(), "an existing path is already resolved");
     }
 
     #[test]
