@@ -339,7 +339,12 @@ fn pasted_region(project: &Project, track_id: Id, start: f64, region: &Region) -
             if !p.step_length.is_finite() {
                 return Err("pattern step length must be a finite number".into());
             }
-            p.steps = p.steps.clamp(1, 128);
+            // resize_region has no step limit, so a valid pattern keeps all its steps; the bound only stops a
+            // huge allocation from a hand-written region.
+            if p.steps > 65_536 {
+                return Err("a pattern can have at most 65536 steps".into());
+            }
+            p.steps = p.steps.max(1);
             p.step_length = p.step_length.max(0.03125);
             p.swing = p.swing.clamp(0.0, 1.0);
             for row in &mut p.rows {

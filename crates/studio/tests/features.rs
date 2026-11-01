@@ -2023,6 +2023,18 @@ fn paste_region_copies_pattern_and_audio_regions_and_drops_the_take() {
     assert_eq!(without(pasted, &["id", "start"]), without(pat.clone(), &["id", "start"]));
     assert!(track_region_ids(&mut s, b).contains(&new));
 
+    // A pattern stretched past 128 steps keeps every step: 16th notes over 16 bars are 256 steps.
+    let long = ok(&mut s, "create_pattern_region", json!({"track_id": a, "start": 64, "steps": 16}))["region_id"].as_u64().unwrap();
+    ok(&mut s, "set_pattern_step", json!({"region_id": long, "row": 0, "step": 3, "velocity": 90}));
+    assert_eq!(ok(&mut s, "resize_region", json!({"region_id": long, "length": 64}))["length"].as_f64(), Some(64.0));
+    ok(&mut s, "set_pattern_step", json!({"region_id": long, "row": 0, "step": 250, "velocity": 100}));
+    let long_pat = region_object(&mut s, long);
+    assert_eq!(long_pat["content"]["steps"].as_u64(), Some(256));
+    let new = ok(&mut s, "paste_region", json!({"track_id": b, "start": 128, "region": long_pat}))["region_id"].as_u64().unwrap();
+    let pasted = region_object(&mut s, new);
+    assert_eq!(pasted["length"].as_f64(), Some(64.0));
+    assert_eq!(without(pasted, &["id", "start"]), without(long_pat, &["id", "start"]));
+
     let wav = tmp("paste_region.wav");
     write_wav(&wav, &[vec![0.1f32; 44100]], 44100);
     let aid = ok(&mut s, "import_audio", json!({"path": wav.display().to_string(), "start": 0}))["region_id"].as_u64().unwrap();
@@ -2063,6 +2075,8 @@ fn paste_region_refuses_a_region_that_does_not_fit_and_keeps_the_project() {
     missing_file["content"]["file_id"] = json!(999_999);
     let mut empty = midi.clone();
     empty["length"] = json!(0);
+    let mut huge = pat.clone();
+    huge["content"]["steps"] = json!(100_000);
     let cases = [
         ("audio on an instrument track", json!({"track_id": inst, "start": 4, "region": audio})),
         ("MIDI on an audio track", json!({"track_id": audio_track, "start": 4, "region": midi})),
@@ -2070,6 +2084,7 @@ fn paste_region_refuses_a_region_that_does_not_fit_and_keeps_the_project() {
         ("missing audio file", json!({"track_id": audio_track, "start": 4, "region": missing_file})),
         ("missing track", json!({"track_id": 999_999, "start": 4, "region": midi})),
         ("zero length", json!({"track_id": inst, "start": 4, "region": empty})),
+        ("pattern with too many steps", json!({"track_id": inst, "start": 4, "region": huge})),
     ];
     for (what, args) in cases {
         let r = call(&mut s, "paste_region", args);
