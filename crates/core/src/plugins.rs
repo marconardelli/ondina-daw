@@ -258,6 +258,20 @@ pub static REGISTRY: &[PluginInfo] = &[
         ],
     },
     PluginInfo {
+        kind: "de_esser",
+        name: "De-Esser",
+        category: Effect,
+        group: "Dynamics",
+        description: "Tames harsh S and T sounds on vocals: when the band above Frequency rises over Threshold it is turned down, by at most Range. Split turns down only that band, Wideband the whole signal; Listen plays the band being detected.",
+        params: &[
+            p("freq", "Frequency", 2000.0, 12000.0, 6000.0, "Hz"),
+            p("threshold", "Threshold", -60.0, 0.0, -24.0, "dB"),
+            p("range", "Range", 0.0, 24.0, 8.0, "dB"),
+            c("mode", "Mode", 0.0, &["Split", "Wideband"]),
+            c("listen", "Listen", 0.0, ONOFF),
+        ],
+    },
+    PluginInfo {
         kind: "stereo_delay",
         name: "Stereo Delay",
         category: Effect,
@@ -554,6 +568,8 @@ pub static PRESETS: &[Preset] = &[
     Preset { name: "Drum Bus Glue", kind: "compressor", params: &[("threshold", -14.0), ("ratio", 2.0), ("attack", 30.0), ("release", 100.0), ("knee", 10.0), ("makeup", 2.0)] },
     Preset { name: "Parallel Smash", kind: "compressor", params: &[("threshold", -35.0), ("ratio", 10.0), ("attack", 1.0), ("release", 80.0), ("makeup", 12.0), ("mix", 0.35)] },
     Preset { name: "Master Bus Glue", kind: "compressor", params: &[("threshold", -10.0), ("ratio", 1.8), ("attack", 30.0), ("release", 200.0), ("knee", 12.0), ("makeup", 1.0)] },
+    Preset { name: "Vocal De-Ess", kind: "de_esser", params: &[("freq", 6500.0), ("threshold", -30.0), ("range", 8.0), ("mode", 0.0)] },
+    Preset { name: "Soft De-Ess", kind: "de_esser", params: &[("freq", 7500.0), ("threshold", -24.0), ("range", 4.0), ("mode", 0.0)] },
     Preset { name: "Vocal Presence", kind: "channel_eq", params: &[("hp_on", 1.0), ("hp_freq", 90.0), ("mid1_gain", -2.5), ("mid1_freq", 300.0), ("mid2_gain", 3.0), ("mid2_freq", 3500.0), ("high_gain", 2.0), ("high_freq", 10000.0)] },
     Preset { name: "Kick Punch", kind: "channel_eq", params: &[("low_gain", 3.0), ("low_freq", 60.0), ("mid1_gain", -4.0), ("mid1_freq", 350.0), ("mid2_gain", 3.0), ("mid2_freq", 4000.0)] },
     Preset { name: "Low Cut 100", kind: "channel_eq", params: &[("hp_on", 1.0), ("hp_freq", 100.0)] },
@@ -652,5 +668,26 @@ mod tests {
     fn plugin_label_uses_the_registry_name_for_built_ins() {
         assert_eq!(plugin_label(&inst("compressor", Some("Gentle"), None)), find("compressor").unwrap().name);
         assert_eq!(plugin_label(&inst("future_fx", None, None)), "future_fx");
+    }
+
+    #[test]
+    fn de_esser_is_registered_with_its_presets() {
+        let info = find("de_esser").expect("de_esser in the registry");
+        assert_eq!(info.category, PluginCategory::Effect);
+        assert_eq!(info.group, "Dynamics");
+        let ids: Vec<&str> = info.params.iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["freq", "threshold", "range", "mode", "listen"]);
+        let mode = info.params.iter().find(|p| p.id == "mode").unwrap();
+        assert_eq!(mode.choices, ["Split", "Wideband"]);
+        let names: Vec<&str> = presets_for("de_esser").map(|p| p.name).collect();
+        assert_eq!(names, ["Vocal De-Ess", "Soft De-Ess"]);
+        for preset in presets_for("de_esser") {
+            for (id, v) in preset.params {
+                let p = info.params.iter().find(|p| p.id == *id).unwrap_or_else(|| panic!("{}: no parameter {id}", preset.name));
+                assert!((p.min..=p.max).contains(v), "{}: {id} = {v} out of range", preset.name);
+            }
+        }
+        let lead = find_patch("Lead Vocal").unwrap();
+        assert_eq!(lead.effects.iter().map(|e| e.0).collect::<Vec<_>>(), ["channel_eq", "compressor", "reverb"]);
     }
 }
