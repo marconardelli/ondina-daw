@@ -25,6 +25,9 @@ use crate::doc_guard::{self, Answer, CloseStep, DocAction, Step};
 use crate::note_selection;
 use crate::transport_keys as tk;
 
+/// Tooltip of the overload counter in the transport bar.
+const OVERLOAD_HINT: &str = "Audio blocks since the last Play that took longer than the audio device allows. Each one can be heard as a click. If the count grows, raise the buffer size in the audio device's settings or remove heavy plug-ins.";
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BottomTab {
     Editor,
@@ -1649,6 +1652,13 @@ impl OndinaApp {
                         theme::TEXT_DIM
                     }),
             );
+            let overloads = self.shared.overloads();
+            ui.label(
+                RichText::new(format!("{overloads} overload{}", if overloads == 1 { "" } else { "s" }))
+                    .small()
+                    .color(if overloads > 0 { theme::REC } else { theme::TEXT_DIM }),
+            )
+            .on_hover_text(OVERLOAD_HINT);
             if self.musical_typing {
                 ui.label(
                     RichText::new(format!("🎹 Typing C{}", self.typing_octave))
