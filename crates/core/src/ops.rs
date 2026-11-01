@@ -1416,13 +1416,15 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
         }
         GenerateBass { track_id, start, bars, style, chords, beats_per_chord, octave, seed } => {
             let tc = resolve_chords(project, *start, *bars, chords, *beats_per_chord)?;
-            let notes = generate::bass(&tc, *style, octave.unwrap_or(1), seed_or_random(*seed));
+            let ts = project.time_signature;
+            let notes = generate::bass(&tc, *style, octave.unwrap_or(1), ts, seed_or_random(*seed));
             let id = put_generated_region(project, *track_id, *start, (*bars).max(1), &format!("Bass ({style:?})"), notes)?;
             ok(json!({"region_id": id}))
         }
         GenerateChords { track_id, start, bars, style, chords, beats_per_chord, center_pitch, seed } => {
             let tc = resolve_chords(project, *start, *bars, chords, *beats_per_chord)?;
-            let notes = generate::comp(&tc, *style, center_pitch.unwrap_or(62), seed_or_random(*seed));
+            let ts = project.time_signature;
+            let notes = generate::comp(&tc, *style, center_pitch.unwrap_or(62), ts, seed_or_random(*seed));
             let id = put_generated_region(project, *track_id, *start, (*bars).max(1), &format!("Chords ({style:?})"), notes)?;
             ok(json!({"region_id": id}))
         }
@@ -1434,7 +1436,8 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
         }
         GenerateMelody { track_id, start, bars, density, octave, chords, beats_per_chord, seed } => {
             let tc = resolve_chords(project, *start, *bars, chords, *beats_per_chord)?;
-            let notes = generate::melody(&tc, project.key, density.unwrap_or(0.5), octave.unwrap_or(4), seed_or_random(*seed));
+            let ts = project.time_signature;
+            let notes = generate::melody(&tc, project.key, density.unwrap_or(0.5), octave.unwrap_or(4), ts, seed_or_random(*seed));
             let id = put_generated_region(project, *track_id, *start, (*bars).max(1), "Melody", notes)?;
             ok(json!({"region_id": id}))
         }
