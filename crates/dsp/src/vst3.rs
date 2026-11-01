@@ -19,6 +19,91 @@ pub fn absolute(path: &str) -> String {
     s.strip_prefix(r"\\?\").map(|x| x.to_string()).unwrap_or(s)
 }
 
+/// A path on a local drive, made absolute without touching the file system. Shared by the
+/// plug-in and scan-folder checks: VST3 plug-ins are native code, and a project file or an MCP
+/// client must not be able to make Ondina load one from a network share, a device path or a URL.
+fn local_absolute(path: &str) -> Result<String, String> {
+    if path.trim().is_empty() {
+        return Err("the path is empty".into());
+    }
+    if path.starts_with("\\\\") || path.starts_with("//") {
+        return Err(format!("{path} is a network or device path"));
+    }
+    // the only colon a local path may have is the drive letter's (C:\...); any other one is a
+    // URL scheme or an NTFS alternate stream
+    let b = path.as_bytes();
+    let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+    if path.matches(':').count() > usize::from(drive) {
+        return Err(format!("{path} looks like a URL or an NTFS stream"));
+    }
+    // lexical only (GetFullPathNameW): canonicalize would open the file first
+    let abs = std::path::absolute(path).map_err(|e| format!("{path}: {e}"))?;
+    let s = abs.to_string_lossy();
+    if !is_drive_path(&s) {
+        return Err(format!("{path} is not on a local drive"));
+    }
+    Ok(s.into_owned())
+}
+
+/// `X:\...` or `X:/...` with no other colon.
+fn is_drive_path(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/') && !s[2..].contains(':')
+}
+
+/// The last component names a .vst3 bundle (or the .vst3 file inside one).
+fn names_vst3(path: &str) -> bool {
+    Path::new(path).file_name().and_then(|n| n.to_str()).is_some_and(|n| n.len() > 5 && n.to_ascii_lowercase().ends_with(".vst3"))
+}
+
+/// Check a VST3 plug-in path without touching the file system: it must be on a local drive (no
+/// network shares, device paths, URLs or NTFS streams) and name a .vst3 bundle or the .vst3
+/// file inside one. Returns the absolute path.
+pub fn check_plugin_path(path: &str) -> Result<String, String> {
+    let abs = local_absolute(path)?;
+    if !names_vst3(&abs) {
+        return Err(format!("{path} is not a .vst3 plug-in bundle"));
+    }
+    Ok(abs)
+}
+
+/// The second half of the check, on the path Windows resolved (`canonicalize`): a junction or a
+/// link on a local drive can lead to a share, and then the resolved path is `\\?\UNC\...`.
+pub fn check_resolved(resolved: &str) -> Result<String, String> {
+    let s = resolved.strip_prefix(r"\\?\").unwrap_or(resolved);
+    if !is_drive_path(s) || !names_vst3(s) {
+        return Err(format!("it leads to {resolved}, which is not a .vst3 bundle on a local drive"));
+    }
+    Ok(s.to_string())
+}
+
+/// The path to hand to the VST3 host: checked, resolved, then checked again. Errors start with
+/// "plug-in path refused:".
+pub fn resolve_plugin_path(path: &str) -> Result<String, String> {
+    let refused = |e: String| format!("plug-in path refused: {e}");
+    let abs = check_plugin_path(path).map_err(refused)?;
+    match Path::new(&abs).canonicalize() {
+        Ok(c) => check_resolved(&c.display().to_string()).map_err(|e| refused(format!("{path}: {e}"))),
+        // a path that does not exist: the host reports "not found" itself
+        Err(_) => Ok(abs),
+    }
+}
+
+/// Split scan folders into the ones that may be scanned (absolute, on a local drive) and the
+/// skipped ones with the reason. Scanning loads every plug-in it finds, so a folder on a share
+/// would run code from the network.
+pub fn split_scan_paths(extra: &[String]) -> (Vec<String>, Vec<(String, String)>) {
+    let mut kept = Vec::new();
+    let mut skipped = Vec::new();
+    for p in extra {
+        match local_absolute(p) {
+            Ok(abs) => kept.push(abs),
+            Err(e) => skipped.push((p.clone(), e)),
+        }
+    }
+    (kept, skipped)
+}
+
 #[derive(Debug, Clone)]
 pub struct Vst3Info {
     pub path: String,
@@ -86,7 +171,7 @@ fn keep_cwd<T>(f: impl FnOnce() -> T) -> T {
 
 /// Scan standard VST3 folders plus `extra` paths.
 pub fn scan(extra: &[String]) -> Result<Vec<Vst3Info>, String> {
-    let extra = extra.to_vec();
+    let extra = split_scan_paths(extra).0;
     on_host(move || scan_impl(&extra))
 }
 
@@ -114,7 +199,7 @@ fn scan_impl(extra: &[String]) -> Result<Vec<Vst3Info>, String> {
 
 /// Load a plug-in just to read its metadata and parameter list.
 pub fn probe(path: &str) -> Result<(String, bool, Vec<Vst3ParamInfo>), String> {
-    let path = absolute(path);
+    let path = resolve_plugin_path(path)?;
     on_host(move || probe_impl(&path))
 }
 
@@ -155,7 +240,7 @@ impl Vst3Processor {
     }
 
     pub fn load(path: &str, sr: f32, as_instrument: bool) -> Result<Self, String> {
-        let path = absolute(path);
+        let path = resolve_plugin_path(path)?;
         on_host(move || Self::load_impl(&path, sr, as_instrument))
     }
 
@@ -441,7 +526,7 @@ fn service_editors() {
 
 /// Open the native editor of a VST3 plug-in, initialized with the given parameter values.
 pub fn open_editor(plugin_id: u64, path: &str, params: Vec<(String, f32)>, state: Option<Vec<u8>>) -> Result<(), String> {
-    let path = absolute(path);
+    let path = resolve_plugin_path(path)?;
     on_host(move || {
         if EDITORS.with(|e| e.borrow().contains_key(&plugin_id)) {
             return Ok(());
@@ -507,4 +592,64 @@ pub fn open_editors() -> Vec<u64> {
 /// Drain parameter changes made in editor windows.
 pub fn take_editor_events() -> Vec<EditorEvent> {
     std::mem::take(&mut *editor_events_store().lock().unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_plugin_path_refuses_network_device_url_and_non_vst3_paths() {
+        for bad in [
+            "\\\\server\\share\\a.vst3",
+            "//server/a.vst3",
+            "\\\\?\\C:\\a.vst3",
+            "\\\\.\\C:\\a.vst3",
+            "/\\server\\share\\a.vst3",
+            "http://x/a.vst3",
+            "C:\\a.vst3:evil",
+            "C:\\plugins\\a.dll",
+            "C:\\x.vst3\\payload.dll",
+            "",
+            "   ",
+        ] {
+            assert!(check_plugin_path(bad).is_err(), "{bad:?} was accepted");
+        }
+    }
+
+    #[test]
+    fn check_plugin_path_accepts_local_vst3_bundles() {
+        let bundle = "C:\\Program Files\\Common Files\\VST3\\X.vst3";
+        assert_eq!(check_plugin_path(bundle).unwrap(), bundle);
+        let inner = "C:\\Program Files\\Common Files\\VST3\\X.vst3\\Contents\\x86_64-win\\X.vst3";
+        assert_eq!(check_plugin_path(inner).unwrap(), inner);
+        assert_eq!(check_plugin_path("C:/VST3/X.VST3").unwrap(), "C:\\VST3\\X.VST3");
+    }
+
+    #[test]
+    fn check_resolved_refuses_shares_and_non_vst3_targets() {
+        for bad in ["\\\\?\\UNC\\server\\share\\a.vst3", "\\\\server\\share\\a.vst3", "\\\\?\\Volume{0}\\a.vst3", "\\\\?\\C:\\real\\payload.dll"] {
+            let e = check_resolved(bad).unwrap_err();
+            assert!(e.contains(bad), "{e}");
+        }
+    }
+
+    #[test]
+    fn check_resolved_strips_the_device_prefix() {
+        assert_eq!(check_resolved("\\\\?\\C:\\VST3\\X.vst3").unwrap(), "C:\\VST3\\X.vst3");
+    }
+
+    #[test]
+    fn split_scan_paths_skips_network_folders() {
+        let extra: Vec<String> = ["tools/vst3", "\\\\server\\vst", "C:\\VST", "http://x/vst"].iter().map(|s| s.to_string()).collect();
+        let (kept, skipped) = split_scan_paths(&extra);
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert!(Path::new(&kept[0]).is_absolute(), "{kept:?}");
+        assert_eq!(Path::new(&kept[0]), std::path::absolute("tools/vst3").unwrap());
+        assert_eq!(kept[1], "C:\\VST");
+        assert_eq!(skipped.len(), 2, "{skipped:?}");
+        assert_eq!(skipped[0].0, "\\\\server\\vst");
+        assert_eq!(skipped[1].0, "http://x/vst");
+        assert!(skipped.iter().all(|(_, r)| !r.is_empty()));
+    }
 }
