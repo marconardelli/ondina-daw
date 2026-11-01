@@ -1,6 +1,7 @@
 //! Ondina studio layer: session/command execution, MCP server and the AI assistant.
 
 pub mod ai;
+pub(crate) mod activity;
 pub mod local_ai;
 pub mod mcp;
 pub mod prompts;
