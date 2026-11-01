@@ -7,16 +7,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Changed
-
-- New visual theme: graphite surfaces in layers with a single water-blue accent for selection and focus, separate
-  colors for play, record, solo, mute, input monitoring and the assistant, and buttons that look different when
-  hovered and when switched on. Text follows one type scale (titles, body, caps labels, numbers).
-- The interface now uses the bundled Inter and JetBrains Mono fonts (SIL Open Font License) instead of the system
-  fonts, and draws its own icons: the Add effect, effect and send buttons, the Mixer, Editor, Live Loops,
-  Inspector, Library and AI Assistant toggles and the track type icons no longer show empty squares or emoji of
-  different sizes.
-
 ## [0.19.1] - 2026-11-01
 
 ### Changed
