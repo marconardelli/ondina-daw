@@ -37,7 +37,7 @@ pub enum Command {
     },
     /// Open a project file (.ondina JSON). The transport stops and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). VST3 plug-ins whose path is not a .vst3 bundle on a local drive are not loaded and are listed in blocked_plugins. When an MCP client or the assistant opens the project, VST3 plug-ins outside the standard VST3 folders and the folders the user added in Ondina's VST3 library are not loaded either: they stay in the project and in the saved file, are listed in blocked_plugins, stay silent in playback and bounces, and load only when the user opens the project from the app.
     OpenProject { path: String },
-    /// Save the project. Without a path saves to the current file (or fails if never saved). The path must be a .ondina file (or an older .aurora one) on a local drive (no network shares); .ondina is added when the path has no extension. An existing file is overwritten only if it is an Ondina project.
+    /// Save the project. Without a path saves to the current file (or fails if never saved). The path must be a .ondina file (or an older .aurora one) on a local drive (no network shares); .ondina is added when the path has no extension. An existing file is overwritten only if it is an Ondina project. The previous version is kept next to it as <file>.bak when that name is free or already holds an Ondina project; otherwise the backup is skipped, the file is saved anyway and the result reports backup_error.
     SaveProject { path: Option<String> },
     /// Rename the project.
     SetProjectName { name: String },

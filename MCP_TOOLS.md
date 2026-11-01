@@ -23,7 +23,7 @@ Open a project file (.ondina JSON). The transport stops and the playhead goes ba
 Parameters: `path`
 
 ### `save_project` · read-only
-Save the project. Without a path saves to the current file (or fails if never saved). The path must be a .ondina file (or an older .aurora one) on a local drive (no network shares); .ondina is added when the path has no extension. An existing file is overwritten only if it is an Ondina project.
+Save the project. Without a path saves to the current file (or fails if never saved). The path must be a .ondina file (or an older .aurora one) on a local drive (no network shares); .ondina is added when the path has no extension. An existing file is overwritten only if it is an Ondina project. The previous version is kept next to it as <file>.bak when that name is free or already holds an Ondina project; otherwise the backup is skipped, the file is saved anyway and the result reports backup_error.
 
 Parameters: `path`
 

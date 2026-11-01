@@ -2295,3 +2295,50 @@ fn save_without_the_backup_setting_writes_no_bak() {
     assert!(second.get("backup").is_none(), "{second}");
     assert!(!dir.join("song.ondina.bak").exists());
 }
+
+#[test]
+fn save_leaves_a_bak_that_is_not_a_project_alone() {
+    let dir = safe_save_dir("foreign_bak");
+    let song = dir.join("song.ondina");
+    let bak = dir.join("song.ondina.bak");
+    let mut s = Session::new(false);
+    s.settings.keep_save_backup = true;
+    ok(&mut s, "add_track", json!({"kind": "instrument"}));
+    ok(&mut s, "save_project", json!({"path": song.display().to_string()}));
+    std::fs::write(&bak, b"my notes").unwrap();
+    ok(&mut s, "add_track", json!({"kind": "instrument"}));
+    let r = ok(&mut s, "save_project", json!({"path": song.display().to_string()}));
+    assert!(r.get("backup").is_none(), "{r}");
+    assert!(r["backup_error"].as_str().unwrap().contains("song.ondina.bak"), "{r}");
+    assert_eq!(std::fs::read(&bak).unwrap(), b"my notes");
+    let mut reopened = Session::new(false);
+    ok(&mut reopened, "open_project", json!({"path": song.display().to_string()}));
+    assert_eq!(reopened.project.tracks.len(), 2);
+
+    std::fs::copy(&song, &bak).unwrap();
+    let prev = std::fs::read(&song).unwrap();
+    ok(&mut s, "add_track", json!({"kind": "audio"}));
+    let r = ok(&mut s, "save_project", json!({"path": song.display().to_string()}));
+    assert_eq!(r["backup"], json!(bak.display().to_string()), "{r}");
+    assert_eq!(std::fs::read(&bak).unwrap(), prev);
+    assert_eq!(listing(&dir), vec!["song.ondina", "song.ondina.bak"]);
+}
+
+#[test]
+fn save_leaves_files_named_like_its_temporary_files_alone() {
+    let dir = safe_save_dir("named_like_tmp");
+    let song = dir.join("song.ondina");
+    let victim = dir.join("victim.txt");
+    std::fs::write(&victim, b"keep me").unwrap();
+    std::fs::hard_link(&victim, dir.join("song.ondina.tmp")).unwrap();
+    std::fs::write(dir.join("song.ondina.bak.tmp"), b"keep me too").unwrap();
+    let mut s = Session::new(false);
+    s.settings.keep_save_backup = true;
+    ok(&mut s, "save_project", json!({"path": song.display().to_string()}));
+    ok(&mut s, "add_track", json!({"kind": "instrument"}));
+    ok(&mut s, "save_project", json!({"path": song.display().to_string()}));
+    assert_eq!(std::fs::read(&victim).unwrap(), b"keep me");
+    assert_eq!(std::fs::read(dir.join("song.ondina.tmp")).unwrap(), b"keep me");
+    assert_eq!(std::fs::read(dir.join("song.ondina.bak.tmp")).unwrap(), b"keep me too");
+    assert_eq!(listing(&dir), vec!["song.ondina", "song.ondina.bak", "song.ondina.bak.tmp", "song.ondina.tmp", "victim.txt"]);
+}
