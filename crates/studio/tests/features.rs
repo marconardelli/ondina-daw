@@ -1300,3 +1300,29 @@ fn replace_cc_is_a_mutating_tool_with_optional_range() {
         assert!(!req.iter().any(|r| r == name), "{name} must be optional: {req:?}");
     }
 }
+
+#[test]
+fn session_counts_documents_replaced_by_open_and_new() {
+    let mut s = Session::new(false);
+    let first = s.document;
+    // edits, undo, redo and save keep the same document
+    ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}));
+    ok(&mut s, "undo", json!({}));
+    ok(&mut s, "redo", json!({}));
+    let path = tmp("document_counter.ondina");
+    ok(&mut s, "save_project", json!({"path": path.display().to_string()}));
+    assert_eq!(s.document, first);
+    // New and Open replace it, from MCP and from the assistant alike
+    ok(&mut s, "new_project", json!({"name": "Second"}));
+    assert_eq!(s.document, first + 1);
+    ok(&mut s, "open_project", json!({"path": path.display().to_string()}));
+    assert_eq!(s.document, first + 2);
+    let c = Command::from_tool_call("new_project", &json!({})).unwrap();
+    s.execute(c, Source::Ai).unwrap();
+    assert_eq!(s.document, first + 3);
+    // a failed open leaves the document as it was
+    let missing = tmp("document_counter_missing.ondina");
+    let _ = std::fs::remove_file(&missing);
+    assert!(call(&mut s, "open_project", json!({"path": missing.display().to_string()})).is_err());
+    assert_eq!(s.document, first + 3);
+}
