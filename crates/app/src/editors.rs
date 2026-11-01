@@ -1097,7 +1097,7 @@ impl OndinaApp {
             let mut fi = a.fade_in;
             ui.label("Fade in");
             if ui
-                .add(egui::Slider::new(&mut fi, 0.0..=8.0).suffix(" beats"))
+                .add(egui::Slider::new(&mut fi, 0.0..=8.0).suffix(" beats").clamping(egui::SliderClamping::Edits))
                 .changed()
             {
                 self.cmd_merge(props(None, Some(fi), None, None), format!("fi{rid}"));
@@ -1106,7 +1106,7 @@ impl OndinaApp {
             let mut fo = a.fade_out;
             ui.label("Fade out");
             if ui
-                .add(egui::Slider::new(&mut fo, 0.0..=8.0).suffix(" beats"))
+                .add(egui::Slider::new(&mut fo, 0.0..=8.0).suffix(" beats").clamping(egui::SliderClamping::Edits))
                 .changed()
             {
                 self.cmd_merge(props(None, None, Some(fo), None), format!("fo{rid}"));
