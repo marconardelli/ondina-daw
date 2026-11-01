@@ -186,17 +186,10 @@ impl Tracker {
     }
 }
 
-/// Writes `contents` to `path` through `<path>.tmp` and a rename, so a crash in the middle never leaves a
+/// Writes `contents` to `path` with `fs_safe::write_replace`, so a crash in the middle never leaves a
 /// half-written copy in place of the previous one.
 pub fn write_atomic(path: &Path, contents: &str) -> Result<(), String> {
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, contents).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("{}: {e}", path.display())
-    })
+    ondina_studio::fs_safe::write_replace(path, contents.as_bytes())
 }
 
 /// Writes the copy `<stem>.ondina` and then its metadata `<stem>.json` in `dir`. Runs on the writer thread.
