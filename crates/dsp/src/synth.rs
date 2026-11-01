@@ -1079,11 +1079,9 @@ mod tests {
         // Captured from the render before the sustain rewrite (v0.19.0); change only when the synth sound changes on purpose.
         const ANALOG_ENERGY_BITS: u64 = 4641415494624865352;
         const FM_ENERGY_BITS: u64 = 4651729550933210591;
-        let cases: [(&str, fn() -> Box<dyn Instrument>, u64); 2] =
-            [("analog", || Box::new(AnalogSynth::new(SR)), ANALOG_ENERGY_BITS), ("fm", || Box::new(FmSynth::new(SR)), FM_ENERGY_BITS)];
-        for (name, make, bits) in cases {
-            let plain = script(make().as_mut(), false);
-            let with_cc = script(make().as_mut(), true);
+        for (name, bits) in [("analog", ANALOG_ENERGY_BITS), ("fm", FM_ENERGY_BITS)] {
+            let plain = script(keyboard(name).as_mut(), false);
+            let with_cc = script(keyboard(name).as_mut(), true);
             assert!(plain.0 == with_cc.0 && plain.1 == with_cc.1, "{name}: controllers that are not pedal-down changed the render");
             assert_eq!(energy(&plain.0, &plain.1).to_bits(), bits, "{name}: render energy changed");
         }
