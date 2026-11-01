@@ -105,7 +105,7 @@ pub fn lane_spec(project: &Project, track: &Track, target: &str) -> Option<LaneS
             let info = ondina_core::plugins::find(&plugin.kind)?;
             let pi = info.params.iter().find(|x| x.id == param)?;
             let value = plugin.params.get(param).copied().unwrap_or(pi.default);
-            let label = format!("{}: {}", info.name, pi.name);
+            let label = format!("{}: {}", ondina_core::plugins::plugin_label(plugin), pi.name);
             let mut spec = LaneSpec::new(target, label, pi.name.into(), (pi.min, pi.max), Unit::Plain(pi.unit), value);
             spec.stepped = !pi.choices.is_empty();
             spec.choices = pi.choices;

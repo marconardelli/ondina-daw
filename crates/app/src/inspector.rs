@@ -216,10 +216,10 @@ impl OndinaApp {
                         .map(|i| i.kind.clone())
                         .unwrap_or_default();
                     egui::ComboBox::from_id_salt("inst")
-                        .selected_text(if cur == "vst3" {
-                            "VST3 plug-in"
-                        } else {
-                            plugins::find(&cur).map(|i| i.name).unwrap_or("None")
+                        .selected_text(match &t.instrument {
+                            Some(i) if i.kind == "vst3" => format!("VST3 · {}", plugins::plugin_label(i)),
+                            Some(i) => plugins::plugin_label(i),
+                            None => "None".to_string(),
                         })
                         .show_ui(ui, |ui| {
                             for info in plugins::registry()
@@ -290,7 +290,7 @@ impl OndinaApp {
                 .default_open(false)
                 .show(ui, |ui| {
                     for fx in &t.midi_fx {
-                        let name = plugins::find(&fx.kind).map(|i| i.name).unwrap_or("?");
+                        let name = plugins::plugin_label(fx);
                         ui.horizontal(|ui| {
                             if ui
                                 .selectable_label(self.selected_plugin == Some(fx.id), name)
@@ -480,7 +480,8 @@ impl OndinaApp {
 
     fn insert_list(&mut self, ui: &mut egui::Ui, owner: Id, inserts: &[PluginInstance]) {
         for (i, fx) in inserts.iter().enumerate() {
-            let name = plugins::find(&fx.kind).map(|x| x.name).unwrap_or("?");
+            let name = plugins::plugin_label(fx);
+            let not_loaded = self.view.unloaded_vst3.get(&fx.id).cloned();
             ui.horizontal(|ui| {
                 let mut on = !fx.bypass;
                 if ui.checkbox(&mut on, "").on_hover_text("Bypass").changed() {
@@ -489,21 +490,24 @@ impl OndinaApp {
                         bypass: !on,
                     });
                 }
+                // a VST3's preset is its name, already in `name`
                 let label = match &fx.preset {
-                    Some(pr) => format!("{name} · {pr}"),
-                    None => name.to_string(),
+                    Some(pr) if fx.kind != "vst3" => format!("{name} · {pr}"),
+                    _ => name.clone(),
                 };
-                if ui
-                    .selectable_label(
-                        self.selected_plugin == Some(fx.id),
-                        RichText::new(label).color(if fx.bypass {
-                            theme::TEXT_DIM
-                        } else {
-                            Color32::WHITE
-                        }),
-                    )
-                    .clicked()
-                {
+                let mut txt = RichText::new(label);
+                txt = if not_loaded.is_some() {
+                    txt.color(theme::TEXT_DIM).strikethrough()
+                } else if fx.bypass {
+                    txt.color(theme::TEXT_DIM)
+                } else {
+                    txt.color(Color32::WHITE)
+                };
+                let mut resp = ui.selectable_label(self.selected_plugin == Some(fx.id), txt);
+                if let Some(reason) = &not_loaded {
+                    resp = resp.on_hover_text(format!("Not loaded: {reason}"));
+                }
+                if resp.clicked() {
                     self.selected_plugin = Some(fx.id);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -622,10 +626,7 @@ impl OndinaApp {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new(format!(
-                            "VST3 · {}",
-                            inst.preset.clone().unwrap_or_default()
-                        ))
+                        RichText::new(format!("VST3 · {}", plugins::plugin_label(inst)))
                         .strong()
                         .color(theme::ACCENT),
                     );
@@ -640,15 +641,26 @@ impl OndinaApp {
                         .small()
                         .color(theme::TEXT_DIM),
                 );
+                let not_loaded = self.view.unloaded_vst3.get(&pid).cloned();
+                if let Some(reason) = &not_loaded {
+                    ui.label(RichText::new(format!("Not loaded: {reason}")).small().color(theme::REC));
+                }
                 let open = ondina_dsp::vst3::open_editors().contains(&pid);
-                if ui
-                    .button(if open {
-                        "Close plug-in window"
-                    } else {
-                        "Open plug-in window"
-                    })
-                    .clicked()
-                {
+                let clicked = match &not_loaded {
+                    Some(reason) if !open => {
+                        ui.add_enabled(false, egui::Button::new("Open plug-in window"))
+                            .on_disabled_hover_text(reason)
+                            .clicked()
+                    }
+                    _ => ui
+                        .button(if open {
+                            "Close plug-in window"
+                        } else {
+                            "Open plug-in window"
+                        })
+                        .clicked(),
+                };
+                if clicked {
                     if open {
                         self.cmd(Command::ClosePluginEditor { plugin_id: pid });
                     } else {
