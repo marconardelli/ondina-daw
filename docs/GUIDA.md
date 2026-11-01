@@ -30,6 +30,8 @@ Questa guida spiega come usare gli editor di Ondina con mouse, tastiera e menu.
   (altezza dei tasti) attorno alla nota sotto il puntatore.
 - In riproduzione la linea del playhead segue le ripetizioni di una regione in loop e, con **Follow playhead**
   attivo, la vista la segue.
+- Nello step sequencer, durante la riproduzione, un bordo bianco segna lo step che suona, anche nelle
+  ripetizioni di una regione in loop.
 
 ### Corsia dei controller
 
@@ -83,11 +85,13 @@ R (registrazione), lo slider del volume e il meter.
 
 - Clic sull'intestazione: seleziona la traccia. Clic destro: **Duplicate track**, **Bounce in place**,
   **Delete track**.
-- Trascinamento dell'intestazione in alto o in basso: sposta la traccia. Una linea mostra dove andrà.
-  Se arrivi al bordo alto o basso dell'area delle tracce, la vista scorre. Rilascia per spostarla,
-  Esc annulla. Se la rilasci dov'era non cambia niente. Il mixer segue lo stesso ordine.
+- Trascinamento dell'intestazione **col tasto sinistro** in alto o in basso: sposta la traccia. Una
+  linea mostra dove andrà. Se arrivi al bordo alto o basso dell'area delle tracce, la vista scorre.
+  Rilascia per spostarla, Esc annulla. Se la rilasci dov'era non cambia niente. Il mixer segue lo stesso ordine.
 - Il trascinamento parte anche da M, S e R (un clic senza trascinare li attiva come sempre), non dallo
   slider del volume, che resta per il volume.
+- Il clic destro apre solo il menu: un clic destro tenuto a lungo o trascinato, o un trascinamento col
+  tasto centrale, non sposta la traccia.
 - Doppio clic sul nome: apre un campo di testo per rinominare la traccia. Invio o un clic fuori
   confermano, Esc annulla. Un nome vuoto o uguale a prima non cambia niente. Mentre scrivi, le
   scorciatoie da tastiera sono spente.
@@ -299,6 +303,10 @@ o scegli un file recente, Ondina ti chiede prima se vuoi salvare.
 
 Invio equivale a Save. Se stai registrando, la registrazione si ferma prima della domanda e la
 take resta nel progetto.
+
+Un campo di testo aperto (rinomina di marker, tracce o regioni, nome della regione nell'inspector,
+accordo) si chiude senza applicare nulla quando apri o crei un altro progetto, anche se lo fanno
+l'assistente o un client MCP.
 
 ## Scorciatoie principali
 

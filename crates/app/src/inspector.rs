@@ -346,11 +346,11 @@ impl OndinaApp {
                     let rid = r.id;
                     let fid = ui.id().with("region-rename");
                     // reload the text unless the user is typing; the id keeps a commit on the region it was typed for
-                    if !ui.memory(|m| m.has_focus(fid)) || self.region_name_edit.is_none() {
-                        self.region_name_edit = Some((rid, r.name.clone()));
+                    if !ui.memory(|m| m.has_focus(fid)) || self.edits.region_name_edit.is_none() {
+                        self.edits.region_name_edit = Some((rid, r.name.clone()));
                     }
                     let mut commit = None;
-                    if let Some((eid, buf)) = self.region_name_edit.as_mut() {
+                    if let Some((eid, buf)) = self.edits.region_name_edit.as_mut() {
                         let resp = ui.add(egui::TextEdit::singleline(buf).id(fid).hint_text("Region name"));
                         // Esc takes the focus away too: it cancels, the text is reloaded on the next frame
                         if resp.lost_focus() && !ui.input(|i| i.key_pressed(egui::Key::Escape)) {

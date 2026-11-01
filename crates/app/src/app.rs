@@ -65,6 +65,8 @@ pub struct AiState {
 pub struct View {
     pub project: Arc<Project>,
     pub revision: u64,
+    /// `Session::document` when the view was taken.
+    pub document: u64,
     pub undo: Option<String>,
     /// The step Undo would revert was made by the built-in assistant.
     pub undo_ai: bool,
@@ -238,12 +240,8 @@ pub struct OndinaApp {
     pub show_about: bool,
     pub mix_report: Option<Value>,
     pub rename_buf: String,
-    pub marker_rename: Option<crate::arrange::InPlaceRename>,
-    pub track_rename: Option<crate::arrange::InPlaceRename>,
-    pub region_rename: Option<crate::arrange::InPlaceRename>,
-    /// The selected region's name as typed in the inspector, with the region it was typed for.
-    pub region_name_edit: Option<(Id, String)>,
-    pub chord_edit: Option<crate::arrange::ChordEdit>,
+    /// Name and chord fields open in place; closed when the project is replaced.
+    pub edits: crate::arrange::InPlaceEdits,
     pub vst_filter: String,
     pub api_key_buf: String,
     pub devices_cache: Option<Value>,
@@ -336,11 +334,7 @@ impl OndinaApp {
             show_about: false,
             mix_report: None,
             rename_buf: String::new(),
-            marker_rename: None,
-            track_rename: None,
-            region_rename: None,
-            region_name_edit: None,
-            chord_edit: None,
+            edits: Default::default(),
             vst_filter: String::new(),
             devices_cache: None,
             midi_inputs_cache: vec![],
@@ -356,6 +350,7 @@ impl OndinaApp {
         View {
             project: Arc::new(s.project.clone()),
             revision: s.revision,
+            document: s.document,
             undo: s.can_undo().map(|x| x.to_string()),
             undo_ai: s.last_undo_is_ai(),
             redo: s.can_redo().map(|x| x.to_string()),
@@ -396,6 +391,7 @@ impl OndinaApp {
         let v = Self::make_view(&s);
         drop(s);
         note_selection::follow(&mut self.selected_notes, self.selected_region, &self.view.project, &v.project);
+        self.edits.follow_document(self.view.document, v.document);
         self.view = v;
         match r {
             Ok(v) => Some(v),
@@ -436,6 +432,7 @@ impl OndinaApp {
         {
             let fresh = Self::make_view(&s);
             note_selection::follow(&mut self.selected_notes, self.selected_region, &self.view.project, &fresh.project);
+            self.edits.follow_document(self.view.document, fresh.document);
             self.view = fresh;
         }
         if let Some(v) = note_selection::session_notes_update(&s.selected_notes, &self.selected_notes, self.notes_region == self.selected_region) {

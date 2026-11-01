@@ -72,6 +72,9 @@ pub struct Session {
     pub dirty: bool,
     /// Increments on every project change (GUI caches key off this).
     pub revision: u64,
+    /// Counts the documents this session has held: Open and New add one, edits, undo and save do not. The GUI
+    /// closes its in-place text fields when it changes, so a field opened on the old project never edits the new one.
+    pub document: u64,
     pub log: VecDeque<LogEntry>,
     pub selected_track: Option<Id>,
     pub selected_region: Option<Id>,
@@ -102,6 +105,7 @@ impl Session {
             pool,
             dirty: false,
             revision: 1,
+            document: 1,
             log: VecDeque::new(),
             selected_track: None,
             selected_region: None,
@@ -255,6 +259,7 @@ impl Session {
             Ok(v) => {
                 if let Some(b) = before {
                     if replaces_project {
+                        self.document += 1;
                         self.commit();
                         self.reset_history();
                     } else {
