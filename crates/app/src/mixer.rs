@@ -509,7 +509,7 @@ impl OndinaApp {
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     for (i, t) in shown {
-                        self.channel_strip(ui, &p, Some((i + 1, t)), t.id, &t.channel, fit, strip_h);
+                        self.channel_strip(ui, &p, Some((i + 1, t)), &t.channel, fit, strip_h);
                     }
                 });
             });
@@ -526,7 +526,7 @@ impl OndinaApp {
         let master_fit = Fit::for_height(true, master_rect.height() - theme::SP_4);
         let master_h = master_rect.height().max(master_fit.min_height() + theme::SP_4);
         egui::ScrollArea::vertical().id_salt("mixer-master-scroll").auto_shrink([false, false]).show(&mut mui, |ui| {
-            self.channel_strip(ui, &p, None, MASTER_ID, &p.master, master_fit, master_h);
+            self.channel_strip(ui, &p, None, &p.master, master_fit, master_h);
         });
     }
 
@@ -593,9 +593,9 @@ impl OndinaApp {
 
     /// One strip laid out as `fit`, `height` tall: a track's (with its 1-based number) or the Master's when `track`
     /// is None.
-    #[allow(clippy::too_many_arguments)]
-    fn channel_strip(&mut self, ui: &mut egui::Ui, p: &Project, track: Option<(usize, &Track)>, id: Id, ch: &Channel, fit: Fit, height: f32) {
+    fn channel_strip(&mut self, ui: &mut egui::Ui, p: &Project, track: Option<(usize, &Track)>, ch: &Channel, fit: Fit, height: f32) {
         let master = track.is_none();
+        let id = track.map_or(MASTER_ID, |(_, t)| t.id);
         let w = if master { MASTER_W - 1.0 } else { STRIP_W };
         let (rect, bg) = ui.allocate_exact_size(vec2(w, height), Sense::click());
         if bg.clicked() && !master {
