@@ -153,8 +153,14 @@ extension: Ondina opens both.
 | Ctrl+Shift+wheel | track height (piano roll: key height) | | |
 | Ctrl+C / X / V | copy / cut / paste notes (piano roll) | Ctrl+A | select all notes (piano roll) |
 | ← / → | move selected notes by the snap step | ↑ / ↓ (Shift: octave) | transpose selected notes |
+| `,` / `.` | playhead to previous / next bar | Shift+, / Shift+. | playhead to previous / next marker |
+| Ctrl+T | split selected region at playhead | | |
 
 Musical Typing: `A W S E D F T G Y H U J K` play notes, `Z` / `X` change octave.
+
+`,` and `.` from the middle of a bar go to the start of that bar; while playing, less than half a beat past a bar
+line or a marker, `,` goes to the one before. These keys and Ctrl+T are off while you type in a text field and while
+Musical Typing is on.
 
 ## AI: three ways in
 

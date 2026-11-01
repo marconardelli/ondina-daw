@@ -22,6 +22,7 @@ mod note_selection;
 mod piano_roll_view;
 mod region_edit;
 mod theme;
+mod transport_keys;
 
 use ondina_studio::{Session, Settings, Source};
 
