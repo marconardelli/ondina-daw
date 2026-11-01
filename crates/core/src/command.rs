@@ -72,7 +72,7 @@ pub enum Command {
     SetMetronome { enabled: bool },
     /// Set the number of count-in bars played before recording starts (0-4).
     SetCountIn { bars: u32 },
-    /// Get transport state: playing, recording, playhead position (beats, bar.beat.tick, seconds), cycle.
+    /// Get transport state: playing, recording, playhead position (beats, bar.beat.tick, seconds), cycle, metronome, sample rate, dsp_load (share of the audio block time the last block used) and dsp_overloads (audio blocks since the last Play that took longer than the audio device allows; each one can be heard as a click).
     GetTransport {},
     /// Get what the user has selected in the Ondina window: the selected track, the selected region and up to 256 selected notes of that region (each with its index, pitch, name, start and length in beats from the region start, velocity), plus the playhead and the cycle range. To act on "the notes I selected", pass the note index values as `indices` to quantize_notes, transpose_notes, humanize_notes, set_note_velocities, snap_notes_to_key or remove_notes. Indices refer to the region as it is now: read the selection again after editing the region, and compare pitch and start if in doubt. selected_note_count is the real number of selected notes and can be larger than the list. A headless session has no window: track and region are null and notes is empty.
     GetSelection {},
