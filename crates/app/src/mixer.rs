@@ -172,7 +172,7 @@ impl OndinaApp {
                         Color32::BLACK,
                     );
                     if resp.clicked() && id != MASTER_ID {
-                        self.selected_track = Some(id);
+                        self.select_track(id);
                     }
                     // instrument
                     if let Some(t) = track {
