@@ -23,6 +23,7 @@ use serde_json::Value;
 use crate::theme;
 use crate::doc_guard::{self, Answer, CloseStep, DocAction, Step};
 use crate::editors::take_event;
+use crate::metronome_ui;
 use crate::note_clipboard as nc;
 use crate::note_selection;
 use crate::region_clipboard as rc;
@@ -1068,8 +1069,8 @@ impl OndinaApp {
             });
         }
         if k {
-            let m = self.view.project.metronome;
-            self.cmd(Command::SetMetronome { enabled: !m });
+            let c = metronome_ui::toggle(&self.view.project);
+            self.cmd(c);
         }
         if del {
             if !self.selected_notes.is_empty() && self.bottom == BottomTab::Editor {
@@ -1818,18 +1819,34 @@ impl OndinaApp {
                     end: None,
                 });
             }
-            let met = p.metronome;
-            if ui
-                .add(egui::Button::new(big("🎵")).fill(if met {
-                    Color32::from_rgb(60, 90, 150)
-                } else {
-                    theme::LANE
+            let look = metronome_ui::look(&p, rec);
+            let resp = ui
+                .add(egui::Button::new(big("🎵")).fill(match look {
+                    metronome_ui::Look::On => Color32::from_rgb(60, 90, 150),
+                    metronome_ui::Look::Waiting => Color32::from_rgb(38, 52, 82),
+                    metronome_ui::Look::Off => theme::LANE,
                 }))
-                .on_hover_text("Metronome (K)")
-                .clicked()
-            {
-                self.cmd(Command::SetMetronome { enabled: !met });
+                .on_hover_text(metronome_ui::tooltip(&p));
+            if resp.clicked() {
+                self.cmd(metronome_ui::toggle(&p));
             }
+            resp.context_menu(|ui| {
+                ui.label("Click level");
+                let mut db = p.metronome_level_db;
+                if ui
+                    .add(egui::Slider::new(&mut db, METRONOME_MIN_DB..=METRONOME_MAX_DB).suffix(" dB").fixed_decimals(1))
+                    .changed()
+                {
+                    self.cmd_merge(metronome_ui::set_level(&p, db), "metronome-level");
+                }
+                if ui.button("Reset level").clicked() {
+                    self.cmd(metronome_ui::set_level(&p, METRONOME_DEFAULT_DB));
+                }
+                let mut only = p.metronome_only_recording;
+                if ui.checkbox(&mut only, "Only while recording").changed() {
+                    self.cmd(metronome_ui::set_only_recording(&p, only));
+                }
+            });
             ui.separator();
             // LCD
             let pos = self.position();

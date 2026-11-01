@@ -28,6 +28,13 @@ pub struct Project {
     pub chords: Vec<ChordEvent>,
     pub cycle: Cycle,
     pub metronome: bool,
+    /// Metronome click level in dB (0 = full scale). Projects saved before the level existed get the level the
+    /// click always had.
+    #[serde(default = "default_metronome_level_db")]
+    pub metronome_level_db: f32,
+    /// The metronome clicks only while recording; the count-in always clicks.
+    #[serde(default)]
+    pub metronome_only_recording: bool,
     pub count_in_bars: u32,
     pub audio_files: Vec<AudioFileRef>,
     /// Free-form notes, e.g. lyrics or an AI-generated brief.
@@ -53,6 +60,16 @@ pub struct Project {
 
 fn default_fps() -> f64 {
     25.0
+}
+
+/// 20·log10(0.35): the fixed click gain used before the level could be set, so older projects sound the same.
+pub const METRONOME_DEFAULT_DB: f32 = -9.118_639;
+/// Range of the metronome level, the same in the GUI slider and in `set_metronome`.
+pub const METRONOME_MIN_DB: f32 = -60.0;
+pub const METRONOME_MAX_DB: f32 = 0.0;
+
+fn default_metronome_level_db() -> f32 {
+    METRONOME_DEFAULT_DB
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -470,6 +487,8 @@ impl Project {
             chords: vec![],
             cycle: Cycle { enabled: false, start: 0.0, end: 16.0 },
             metronome: false,
+            metronome_level_db: METRONOME_DEFAULT_DB,
+            metronome_only_recording: false,
             count_in_bars: 1,
             audio_files: vec![],
             notes: String::new(),
@@ -480,6 +499,13 @@ impl Project {
             frame_rate: 25.0,
             midi_routes: vec![],
         }
+    }
+
+    /// Linear gain of the metronome click. A level outside the range is clamped; a non-finite one (a hand-edited
+    /// file) falls back to the default.
+    pub fn metronome_gain(&self) -> f32 {
+        let db = if self.metronome_level_db.is_finite() { self.metronome_level_db } else { METRONOME_DEFAULT_DB };
+        10f32.powf(db.clamp(METRONOME_MIN_DB, METRONOME_MAX_DB) / 20.0)
     }
 
     pub fn alloc_id(&mut self) -> Id {
@@ -688,5 +714,37 @@ mod b64_tests {
         for d in [&b""[..], b"a", b"ab", b"abc", b"\x00\xff\x10hello world"] {
             assert_eq!(super::base64_decode(&super::base64_encode(d)).unwrap(), d);
         }
+    }
+}
+
+#[cfg(test)]
+mod metronome_tests {
+    use super::*;
+
+    #[test]
+    fn project_without_metronome_level_gets_the_old_click() {
+        let mut v = serde_json::to_value(Project::new("x")).unwrap();
+        let map = v.as_object_mut().unwrap();
+        assert!(map.remove("metronome_level_db").is_some());
+        assert!(map.remove("metronome_only_recording").is_some());
+        let p: Project = serde_json::from_value(v).unwrap();
+        assert!((p.metronome_gain() - 0.35).abs() < 0.001);
+        assert!(!p.metronome_only_recording);
+    }
+
+    #[test]
+    fn metronome_gain_follows_the_level_and_stays_in_range() {
+        let mut p = Project::new("x");
+        let gain = |p: &mut Project, db: f32| {
+            p.metronome_level_db = db;
+            p.metronome_gain()
+        };
+        assert!((gain(&mut p, 0.0) - 1.0).abs() < 1e-6);
+        assert!((gain(&mut p, -20.0) - 0.1).abs() < 1e-4);
+        let floor = gain(&mut p, -60.0);
+        assert!((floor - 0.001).abs() < 1e-5);
+        assert_eq!(gain(&mut p, -100.0), floor);
+        assert!((gain(&mut p, 12.0) - 1.0).abs() < 1e-6);
+        assert!((gain(&mut p, f32::NAN) - 0.35).abs() < 0.001);
     }
 }

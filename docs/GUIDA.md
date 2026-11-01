@@ -381,6 +381,24 @@ locale o collegala a una lettera di unità.
 - Per esportare un loop di lunghezza esatta, senza coda, chiedi all'assistente o usa il tool MCP
   `bounce` con `tail_sec: 0`.
 
+## Metronomo
+
+**K** o un clic sul pulsante del metronomo nella barra di trasporto accendono e spengono il clic. Un clic destro
+sul pulsante apre un menu:
+
+- **Click level**: uno slider da −60 a 0 dB (−9,1 dB di partenza). Il volume cambia subito, anche durante la
+  riproduzione, e un intero trascinamento si annulla con un solo Ctrl+Z.
+- **Reset level**: torna a −9,1 dB.
+- **Only while recording**: il clic suona solo mentre registri, non nella riproduzione normale. Il count-in prima
+  della registrazione suona sempre, allo stesso livello.
+
+Il pulsante è blu quando il clic suona, blu scuro quando il metronomo è acceso ma aspetta una registrazione (modo
+**Only while recording** e niente registrazione in corso), del colore della corsia quando è spento.
+
+Il tool MCP `set_metronome` accetta gli stessi valori con i parametri facoltativi `level_db` e
+`only_while_recording`; `get_transport` e `get_project` li riportano come `metronome_level_db` e
+`metronome_only_while_recording`. I progetti salvati prima di questa funzione suonano il clic al livello di sempre.
+
 ## Carico DSP e sovraccarichi
 
 Nella barra di trasporto, accanto a **DSP nn%** (quanto del tempo a disposizione ha usato l'ultimo blocco

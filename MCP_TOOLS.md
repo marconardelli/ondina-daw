@@ -98,9 +98,9 @@ Configure the cycle (loop) range.
 Parameters: `enabled, end, start`
 
 ### `set_metronome`
-Enable or disable the metronome click.
+Enable or disable the metronome click, and optionally set its level and whether it clicks only while recording. The count-in before a recording always clicks, at the same level. Returns the resulting metronome, level_db and only_while_recording.
 
-Parameters: `enabled`
+Parameters: `enabled, level_db, only_while_recording`
 
 ### `set_count_in`
 Set the number of count-in bars played before recording starts (0-4).
@@ -108,7 +108,7 @@ Set the number of count-in bars played before recording starts (0-4).
 Parameters: `bars`
 
 ### `get_transport` · read-only
-Get transport state: playing, recording, playhead position (beats, bar.beat.tick, seconds), cycle, metronome, sample rate, dsp_load (share of the audio block time the last block used) and dsp_overloads (audio blocks since the last Play that took longer than the audio device allows; each one can be heard as a click).
+Get transport state: playing, recording, playhead position (beats, bar.beat.tick, seconds), cycle, metronome, metronome_level_db, metronome_only_while_recording, sample rate, dsp_load (share of the audio block time the last block used) and dsp_overloads (audio blocks since the last Play that took longer than the audio device allows; each one can be heard as a click).
 
 Parameters: none
 

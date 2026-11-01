@@ -2342,3 +2342,78 @@ fn save_leaves_files_named_like_its_temporary_files_alone() {
     assert_eq!(std::fs::read(dir.join("song.ondina.bak.tmp")).unwrap(), b"keep me too");
     assert_eq!(listing(&dir), vec!["song.ondina", "song.ondina.bak", "song.ondina.bak.tmp", "song.ondina.tmp", "victim.txt"]);
 }
+
+#[test]
+fn metronome_level_and_only_while_recording_are_undoable_steps() {
+    let default_db = ondina_core::model::METRONOME_DEFAULT_DB;
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "get_transport", json!({}));
+    assert!((t["metronome_level_db"].as_f64().unwrap() + 9.12).abs() < 0.01, "{t}");
+    assert_eq!(t["metronome_only_while_recording"], json!(false));
+
+    // the old way of calling it still works and leaves the level alone
+    ok(&mut s, "set_metronome", json!({"enabled": true}));
+    assert!(s.project.metronome);
+    assert_eq!(s.project.metronome_level_db, default_db);
+
+    let r = ok(&mut s, "set_metronome", json!({"enabled": true, "level_db": -20}));
+    assert_eq!(r["ok"], json!(true), "{r}");
+    assert_eq!(r["level_db"], json!(-20.0), "{r}");
+    assert_eq!(s.project.metronome_level_db, -20.0);
+    assert!(s.project.metronome);
+    assert_eq!(ok(&mut s, "get_transport", json!({}))["metronome_level_db"], json!(-20.0));
+
+    ok(&mut s, "undo", json!({}));
+    assert!((s.project.metronome_level_db - default_db).abs() < 1e-4);
+    assert!(s.project.metronome);
+
+    ok(&mut s, "set_metronome", json!({"enabled": true, "only_while_recording": true}));
+    assert!(s.project.metronome_only_recording);
+    assert!((s.project.metronome_level_db - default_db).abs() < 1e-4);
+    assert_eq!(ok(&mut s, "get_transport", json!({}))["metronome_only_while_recording"], json!(true));
+    ok(&mut s, "undo", json!({}));
+    assert!(!s.project.metronome_only_recording);
+
+    ok(&mut s, "set_metronome", json!({"enabled": true, "level_db": -100}));
+    assert_eq!(s.project.metronome_level_db, -60.0);
+    ok(&mut s, "set_metronome", json!({"enabled": true, "level_db": 6}));
+    assert_eq!(s.project.metronome_level_db, 0.0);
+
+    // a level that is not a number changes nothing at all
+    let undo_before = s.can_undo().map(String::from);
+    let bad = Command::SetMetronome { enabled: false, level_db: Some(f32::NAN), only_while_recording: Some(true) };
+    assert!(s.execute(bad, Source::Mcp).is_err());
+    assert!(s.project.metronome);
+    assert_eq!(s.project.metronome_level_db, 0.0);
+    assert!(!s.project.metronome_only_recording);
+    assert_eq!(s.can_undo().map(String::from), undo_before);
+}
+
+#[test]
+fn get_project_reports_the_metronome_level() {
+    let mut s = Session::new(false);
+    ok(&mut s, "set_metronome", json!({"enabled": false, "level_db": -12.5, "only_while_recording": true}));
+    let p = ok(&mut s, "get_project", json!({}));
+    assert_eq!(p["metronome_level_db"], json!(-12.5), "{p}");
+    assert_eq!(p["metronome_only_while_recording"], json!(true), "{p}");
+    assert_eq!(p["metronome"], json!(false), "{p}");
+}
+
+#[test]
+fn old_projects_keep_the_metronome_level_they_had() {
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/lofi-beat.aurora");
+    let text = std::fs::read_to_string(&example).unwrap();
+    assert!(!text.contains("metronome_level_db"), "the example must be a file saved before the level existed");
+    let mut s = Session::new(false);
+    ok(&mut s, "open_project", json!({"path": example.display().to_string()}));
+    assert!((s.project.metronome_gain() - 0.35).abs() < 0.001);
+    assert!(!s.project.metronome_only_recording);
+
+    ok(&mut s, "set_metronome", json!({"enabled": true, "level_db": -18, "only_while_recording": true}));
+    let saved = tmp("metronome_level.ondina");
+    ok(&mut s, "save_project", json!({"path": saved.display().to_string()}));
+    let mut again = Session::new(false);
+    ok(&mut again, "open_project", json!({"path": saved.display().to_string()}));
+    assert_eq!(again.project.metronome_level_db, -18.0);
+    assert!(again.project.metronome_only_recording);
+}

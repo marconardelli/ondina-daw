@@ -713,6 +713,8 @@ pub fn project_summary(p: &Project) -> Value {
         "chords": p.chords,
         "cycle": {"enabled": p.cycle.enabled, "start": p.cycle.start, "end": p.cycle.end},
         "metronome": p.metronome,
+        "metronome_level_db": (p.metronome_level_db * 100.0).round() / 100.0,
+        "metronome_only_while_recording": p.metronome_only_recording,
         "audio_files": p.audio_files.iter().map(|f| json!({"id": f.id, "name": f.name, "duration_sec": f.duration_sec})).collect::<Vec<_>>(),
         "notes": p.notes,
     })
@@ -808,9 +810,25 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             }
             ok(json!({"cycle": {"enabled": project.cycle.enabled, "start": project.cycle.start, "end": project.cycle.end}}))
         }
-        SetMetronome { enabled } => {
+        SetMetronome { enabled, level_db, only_while_recording } => {
+            if let Some(db) = level_db {
+                if !db.is_finite() {
+                    return err("level_db must be a number of dB between -60 and 0");
+                }
+            }
             project.metronome = *enabled;
-            ok(json!({"ok": true}))
+            if let Some(db) = level_db {
+                project.metronome_level_db = db.clamp(METRONOME_MIN_DB, METRONOME_MAX_DB);
+            }
+            if let Some(o) = only_while_recording {
+                project.metronome_only_recording = *o;
+            }
+            ok(json!({
+                "ok": true,
+                "metronome": project.metronome,
+                "level_db": project.metronome_level_db,
+                "only_while_recording": project.metronome_only_recording,
+            }))
         }
         SetCountIn { bars } => {
             project.count_in_bars = (*bars).min(4);
