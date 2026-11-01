@@ -11,7 +11,7 @@ use eframe::egui::{
 use crate::app::{OndinaApp, BottomTab, Drag};
 use crate::arrange_view::{self, apply_step, max_scroll_y, zoom_track_height, ArrangeView, ViewArea};
 use crate::piano_roll_view::{wheel_zoom, zoom_factor};
-use crate::region_edit::{self, region_name_field};
+use crate::region_edit::{self, region_name_field, FadeGeom, FadeHandle};
 use crate::theme;
 
 const HEADER_W: f32 = 210.0;
@@ -945,6 +945,29 @@ impl OndinaApp {
                     pos2(rect.right(), rect.bottom() - 2.0),
                 );
                 let ppainter = tpainter.with_clip_rect(clip);
+                let fade_drag = match &self.drag {
+                    Some(Drag::RegionFade { id, handle, cur, .. }) if *id == r.id => Some((*handle, *cur)),
+                    _ => None,
+                };
+                // while a resize is dragged the repetitions already have the new length, like the ghost
+                let rep_len = match &self.drag {
+                    Some(Drag::ResizeRegion { id, cur_len, .. }) if *id == r.id => *cur_len,
+                    _ => r.length,
+                };
+                let fade_geom = region_edit::audio_fades(r).map(|(fi, fo)| {
+                    let (fi, fo) = match fade_drag {
+                        Some((FadeHandle::In, v)) => (v, fo),
+                        Some((FadeHandle::Out, v)) => (fi, v),
+                        None => (fi, fo),
+                    };
+                    let first_right = (rx0 + rep_len as f32 * self.px_per_beat).min(rect.right());
+                    FadeGeom {
+                        first: Rect::from_min_max(rect.min, pos2(first_right, rect.bottom())),
+                        reps: r.loop_count.max(1),
+                        fade_in_px: fi as f32 * self.px_per_beat,
+                        fade_out_px: fo as f32 * self.px_per_beat,
+                    }
+                });
                 match &r.content {
                     RegionContent::Midi(_) | RegionContent::Pattern(_) => {
                         let notes: Vec<Note> = match &r.content {
@@ -1004,6 +1027,9 @@ impl OndinaApp {
                         }
                     }
                 }
+                if let Some(g) = &fade_geom {
+                    region_edit::paint_fades(&ppainter, g, fade_drag.map(|(h, _)| h));
+                }
                 tpainter.rect_stroke(
                     clip,
                     Rounding::same(3.0_f32),
@@ -1037,15 +1063,71 @@ impl OndinaApp {
                 if edge_resp.hovered() && self.drag.is_none() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                 }
+                // fade handles last, over body and edge, so they get presses, clicks and double-clicks
+                let handles = fade_geom.as_ref().and_then(region_edit::fade_handles);
+                let fade_resps = handles.map(|[hi, ho]| {
+                    [
+                        ui.interact(hi.intersect(clip), ui.id().with(("rfadein", r.id)), Sense::click_and_drag()),
+                        ui.interact(ho.intersect(clip), ui.id().with(("rfadeout", r.id)), Sense::click_and_drag()),
+                    ]
+                });
                 // Decide from where the press began, not where the pointer is once egui reports the drag
                 // (that comes a few pixels later), so a drag that starts on the edge never moves the region.
-                let press_zone = ui
-                    .input(|i| i.pointer.press_origin())
-                    .map(|o| region_hit_zone(o.x, rect.left(), rect.right()))
-                    .unwrap_or(RegionZone::Body);
-                let start_resize = edge_resp.drag_started()
-                    || (body_resp.drag_started() && press_zone == RegionZone::Edge);
-                let start_move = body_resp.drag_started() && !start_resize;
+                let press_origin = ui.input(|i| i.pointer.press_origin());
+                let press_zone = press_origin.map(|o| region_press_zone(o, rect, handles)).unwrap_or(RegionZone::Body);
+                let handle_started = match &fade_resps {
+                    Some([fin, _]) if fin.drag_started() => Some(FadeHandle::In),
+                    Some([_, fout]) if fout.drag_started() => Some(FadeHandle::Out),
+                    _ => None,
+                };
+                let any_started = body_resp.drag_started() || edge_resp.drag_started() || handle_started.is_some();
+                let start_fade = if !any_started {
+                    None
+                } else {
+                    match press_zone {
+                        RegionZone::FadeIn => Some(FadeHandle::In),
+                        RegionZone::FadeOut => Some(FadeHandle::Out),
+                        _ => handle_started,
+                    }
+                };
+                let start_resize = start_fade.is_none()
+                    && (edge_resp.drag_started() || (body_resp.drag_started() && press_zone == RegionZone::Edge));
+                let start_move = body_resp.drag_started() && start_fade.is_none() && !start_resize;
+                if let (Some(handle), Some((fi, fo)), Some(o)) = (start_fade, region_edit::audio_fades(r), press_origin) {
+                    let orig = if handle == FadeHandle::In { fi } else { fo };
+                    let grab_beat = self.x_to_beat(o.x, timeline_x);
+                    self.drag = Some(Drag::RegionFade { id: r.id, handle, grab_beat, orig, cur: orig });
+                    self.selected_region = Some(r.id);
+                    self.selected_track = Some(t.id);
+                }
+                if let (Some(resps), Some((fi, fo))) = (&fade_resps, region_edit::audio_fades(r)) {
+                    let mut hot = fade_drag.map(|(h, _)| h);
+                    for (resp, handle, v) in [(&resps[0], FadeHandle::In, fi), (&resps[1], FadeHandle::Out, fo)] {
+                        // a click on a handle only selects the region
+                        if resp.clicked() {
+                            self.selected_region = Some(r.id);
+                            self.selected_track = Some(t.id);
+                        }
+                        // a double-click removes that fade
+                        if resp.double_clicked() {
+                            if let Some(c) = region_edit::fade_command(r.id, handle, v, 0.0) {
+                                self.cmd(c);
+                            }
+                        }
+                        if resp.hovered() && self.drag.is_none() {
+                            hot = Some(handle);
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                            resp.clone().on_hover_text(format!(
+                                "{}. Drag to change it, Alt+drag ignores the grid, double-click removes it.",
+                                region_edit::fade_label(handle, v)
+                            ));
+                        }
+                    }
+                    let show = selected || fade_drag.is_some() || pointer.is_some_and(|pp| clip.contains(pp));
+                    if let (true, Some(h)) = (show, handles) {
+                        region_edit::paint_fade_handles(&tpainter.with_clip_rect(clip), h, hot);
+                    }
+                }
                 if start_resize {
                     self.drag = Some(Drag::ResizeRegion {
                         id: r.id,
@@ -1238,6 +1320,21 @@ impl OndinaApp {
                     *cur_len = l.max(0.25);
                 }
             }
+            Some(Drag::RegionFade { id, handle, grab_beat, orig, cur }) => {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                if let (Some(b), Some((_, r))) = (pointer_beat, p.find_region(*id)) {
+                    if let Some((fi, fo)) = region_edit::audio_fades(r) {
+                        let other = if *handle == FadeHandle::In { fo } else { fi };
+                        // Alt drags without the grid
+                        let grid = if ctrl_alt { 0.0 } else { snap };
+                        *cur = region_edit::fade_from_drag(*handle, *orig, b - *grab_beat, r.length, other, grid);
+                    }
+                }
+                let text = region_edit::fade_label(*handle, *cur);
+                egui::show_tooltip_at_pointer(ui.ctx(), ui.layer_id(), ui.id().with("fade_tip"), |ui| {
+                    ui.label(text);
+                });
+            }
             Some(Drag::MoveMarker {
                 grab_beat,
                 orig_beat,
@@ -1396,6 +1493,11 @@ impl OndinaApp {
                         .and_then(|from| track_move_target(from, gap.min(p.tracks.len())))
                     {
                         self.cmd(Command::MoveTrack { track_id: id, index });
+                    }
+                }
+                Some(Drag::RegionFade { id, handle, orig, cur, .. }) => {
+                    if let Some(c) = region_edit::fade_command(id, handle, orig, cur) {
+                        self.cmd(c);
                     }
                 }
                 other => self.drag = other.filter(|d| !matches!(d, Drag::Cycle { .. } | Drag::CycleEdit { .. })),
@@ -1691,11 +1793,14 @@ impl OndinaApp {
     }
 }
 
-/// Which part of a region the pointer is on: the body moves it, the right edge resizes it.
+/// Which part of a region the pointer is on: the body moves it, the right edge resizes it, the fade handles on
+/// the top edge of an audio region change its fades.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RegionZone {
     Body,
     Edge,
+    FadeIn,
+    FadeOut,
 }
 
 /// Distance of the M/S/R buttons from the top of a track header `height` points tall.
@@ -1718,6 +1823,16 @@ fn region_hit_zone(x: f32, left: f32, right: f32) -> RegionZone {
         RegionZone::Edge
     } else {
         RegionZone::Body
+    }
+}
+
+/// Zone under `p` for a region drawn in `rect`, whose fade handles (if any) are `handles`. The handles sit over the
+/// body and the right edge, in the band at the top only, so the rest of the edge still resizes.
+fn region_press_zone(p: Pos2, rect: Rect, handles: Option<[Rect; 2]>) -> RegionZone {
+    match handles.and_then(|h| region_edit::fade_handle_at(p, h)) {
+        Some(FadeHandle::In) => RegionZone::FadeIn,
+        Some(FadeHandle::Out) => RegionZone::FadeOut,
+        None => region_hit_zone(p.x, rect.left(), rect.right()),
     }
 }
 
@@ -2049,12 +2164,13 @@ mod tests {
     use super::{
         button_row_top, chord_commit, chord_field_rect, chord_span_rect, cycle_gesture_key, track_rename_command, cycle_hit_zone, cycle_toggle, dragged_marker_beat,
         edge_scroll_speed, moved_cycle, new_chord_span, next_cycle_gesture, region_edge_width, region_hit_zone,
-        rename_commit, resized_chord_length, resized_cycle, resized_marker_length, ruler_click_action,
+        region_press_zone, rename_commit, resized_chord_length, resized_cycle, resized_marker_length, ruler_click_action,
         ruler_drag_action, track_drop_index, track_move_target, CycleZone, RegionZone, RulerClick, RulerDrag,
         CYCLE_EDGE_PX, HEADER_BUTTON_H, HEADER_FULL_H, MIN_CHORD_LEN, MIN_CYCLE_LEN, MIN_MARKER_LEN, REGION_EDGE_PX,
         TRACK_DRAG_SCROLL_PX_S, ChordEdit, ChordLaneGeom, ChordTarget, InPlaceEdits, InPlaceRename, LANE_H,
     };
     use crate::arrange_view::{TRACK_H_MAX, TRACK_H_MIN};
+    use crate::region_edit::{fade_handles, FadeGeom};
     use eframe::egui::{pos2, vec2, Rect};
     use ondina_core::command::Command;
     use ondina_core::model::ChordEvent;
@@ -2094,6 +2210,36 @@ mod tests {
         assert_eq!(region_hit_zone(5.0, 0.0, 10.0), RegionZone::Body);
         // the smallest region drawn is 4 px wide
         assert!(region_edge_width(4.0) < 4.0);
+    }
+
+    #[test]
+    fn fade_handles_take_the_top_band_and_leave_the_edge_below() {
+        let r = |x0: f32, x1: f32| Rect::from_min_max(pos2(x0, 100.0), pos2(x1, 140.0));
+        let geom = |first: Rect, fade_in_px: f32| FadeGeom { first, reps: 1, fade_in_px, fade_out_px: 0.0 };
+        let rect = r(200.0, 400.0);
+        let handles = fade_handles(&geom(rect, 0.0));
+        assert!(handles.is_some());
+        let zone = |x: f32, y: f32, rect: Rect, h| region_press_zone(pos2(x, y), rect, h);
+        assert_eq!(zone(202.0, 103.0, rect, handles), RegionZone::FadeIn);
+        assert_eq!(zone(398.0, 103.0, rect, handles), RegionZone::FadeOut);
+        assert_eq!(zone(398.0, 125.0, rect, handles), RegionZone::Edge);
+        assert_eq!(zone(300.0, 103.0, rect, handles), RegionZone::Body);
+        assert_eq!(zone(300.0, 125.0, rect, handles), RegionZone::Body);
+        // a 40 px fade in moves its handle, and the corner is body again
+        let handles = fade_handles(&geom(rect, 40.0));
+        assert_eq!(zone(240.0, 104.0, rect, handles), RegionZone::FadeIn);
+        assert_eq!(zone(202.0, 103.0, rect, handles), RegionZone::Body);
+        // a region looped twice: the handles stay on the first repetition, the end of the region only resizes
+        let looped = r(200.0, 600.0);
+        let handles = fade_handles(&geom(rect, 0.0));
+        assert_eq!(zone(398.0, 103.0, looped, handles), RegionZone::FadeOut);
+        assert_eq!(zone(598.0, 125.0, looped, handles), RegionZone::Edge);
+        assert_eq!(zone(598.0, 103.0, looped, handles), RegionZone::Edge);
+        // a narrow region has no handles and keeps body and edge as before
+        let narrow = r(200.0, 220.0);
+        assert_eq!(fade_handles(&geom(narrow, 0.0)), None);
+        assert_eq!(zone(202.0, 103.0, narrow, None), RegionZone::Body);
+        assert_eq!(zone(219.0, 103.0, narrow, None), RegionZone::Edge);
     }
 
     #[test]

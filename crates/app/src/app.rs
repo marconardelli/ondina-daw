@@ -95,6 +95,15 @@ pub enum Drag {
         orig_len: f64,
         cur_len: f64,
     },
+    /// Dragging a fade handle of an audio region. `orig` is the fade when the drag began and `cur` what the
+    /// release sends, both in beats; `grab_beat` is where the press began.
+    RegionFade {
+        id: Id,
+        handle: crate::region_edit::FadeHandle,
+        grab_beat: f64,
+        orig: f64,
+        cur: f64,
+    },
     /// Drawing a new cycle on the ruler from `anchor`; `gesture` keys its single undo step.
     Cycle {
         anchor: f64,
