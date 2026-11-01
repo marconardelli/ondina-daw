@@ -430,6 +430,32 @@ e si ferma alla stanghetta. In 4/4, con lo stesso seed, le parti sono identiche 
 versioni precedenti. Arpeggio e gli stili che seguono il movimento (Root, Root Fifth, Eighths,
 Octaves, Walking, Sustained, Offbeat, Ballad) non dipendono dalla battuta.
 
+## Session player
+
+Clic destro su una zona vuota di una traccia strumento: nel menu ci sono i session player (Session Drummer,
+Session Bassist, Session Keys, Arpeggio, Melody). Ognuno scrive una regione MIDI nuova sulla traccia.
+
+- Se il ciclo è acceso e il playhead è dentro il ciclo, la regione copre il ciclo: parte dall'inizio del ciclo e
+  dura le battute che servono a coprirlo, arrotondate in su (un ciclo di 5 movimenti in 4/4 dà 2 battute). Se il
+  ciclo non comincia su una stanghetta, anche la regione comincia lì e le sue battute si contano da quel punto.
+- Altrimenti la regione parte dall'inizio della battuta in cui sta il playhead e dura quanto dice la riga
+  **Length** in cima al menu: 1, 2, 4, 8 o 16 battute (di partenza 4). Quando vale il ciclo, la riga lo dice al
+  posto delle scelte.
+- I nomi nel menu dicono la lunghezza che verrà usata, per esempio "Session Drummer (cycle, 4 bars)".
+- Nel sottomenu del Session Drummer, **Intensity** sceglie quanto è carica la batteria (Soft, Medium, Hard: più
+  colpi e più dinamica salendo) e **Fill at the end** mette un fill nell'ultima battuta, solo nelle parti di almeno
+  2 battute. Poi scegli lo stile.
+- Length, Intensity e Fill restano come li hai lasciati finché Ondina è aperta.
+- Una parte dura al massimo 512 battute.
+- Dopo la generazione la barra di stato dice parte, lunghezza e seed, per esempio "Drums (Pop), 8 bars, seed 1234".
+- Ogni generazione si annulla con un solo Ctrl+Z.
+
+Dall'assistente e dai tool MCP, `generate_drums`, `generate_bass`, `generate_chords`, `generate_arpeggio` e
+`generate_melody` restituiscono, oltre a `region_id`, il `seed` usato (quello passato o quello estratto a caso),
+`start` e `bars`. Lo stesso seed con gli stessi parametri dà la stessa parte, anche su un'altra traccia o in un altro
+progetto con la stessa tonalità, lo stesso metro e gli stessi accordi; un seed diverso dà una variante. I seed
+estratti a caso sono numeri sotto 1.000.000.
+
 ## Filmato
 
 Puoi collegare un filmato al progetto per scrivere la musica a tempo con l'immagine. Il filmato deve
