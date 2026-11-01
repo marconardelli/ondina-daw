@@ -130,6 +130,7 @@ pub fn create_effect(kind: &str, sample_rate: f32) -> Option<Box<dyn Effect>> {
         "compressor" => Box::new(Compressor::new(sample_rate)),
         "limiter" => Box::new(Limiter::new(sample_rate)),
         "noise_gate" => Box::new(NoiseGate::new(sample_rate)),
+        "de_esser" => Box::new(DeEsser::new(sample_rate)),
         "stereo_delay" => Box::new(StereoDelay::new(sample_rate)),
         "tape_delay" => Box::new(TapeDelay::new(sample_rate)),
         "reverb" => Box::new(Reverb::new(sample_rate)),
