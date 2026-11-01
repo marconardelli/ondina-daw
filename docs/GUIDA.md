@@ -369,6 +369,32 @@ locale o collegala a una lettera di unità.
   scritto nulla.
 - I fotogrammi e l'export richiedono ffmpeg.
 
+## De-Esser
+
+Il De-Esser abbassa le S e le T taglienti di una voce, solo nei momenti in cui ci sono: il resto
+della voce passa com'è.
+
+- Dove si trova: nel mixer, menu **+** di uno slot insert, oppure nell'inspector con **Add effect**,
+  poi **Dynamics** e **De-Esser**. Ci sono due preset: **Vocal De-Ess** e **Soft De-Ess**.
+- **Frequency**: da dove cominciano le sibilanti. Da questa frequenza in su la riduzione è piena e
+  sfuma circa un'ottava sotto: con 6000 Hz e 8 dB di riduzione, a 3 kHz la voce scende di circa 2 dB.
+- **Threshold**: quando la banda alta supera questo livello viene abbassata, fino a riportarla alla
+  soglia.
+- **Range**: la riduzione massima, in dB. Con 0 il De-Esser non cambia nulla.
+- **Mode**: **Split** abbassa solo le frequenze alte, **Wideband** abbassa tutto il segnale mentre
+  dura la "s".
+- **Listen**: fa sentire solo la banda che il De-Esser ascolta. Serve a trovare la Frequency giusta;
+  ricordati di spegnerlo.
+- Sotto la soglia l'audio esce identico a com'è entrato, e il De-Esser non aggiunge latenza.
+
+In pratica: mettilo dopo l'EQ e prima del compressore, poi abbassa Threshold finché le "s" si
+ammorbidiscono senza che la voce diventi sorda.
+
+Da MCP e dall'assistente: il tool `add_effect` con `kind: "de_esser"` lo aggiunge a una traccia e
+`set_plugin_params` ne cambia i parametri (`freq`, `threshold`, `range`, `mode`, `listen`). Puoi anche
+chiedere all'assistente "de-ess the vocal". La patch **Lead Vocal** non lo contiene: va aggiunto a
+mano.
+
 ## Bounce
 
 - **File > Bounce to WAV…** (Ctrl+B) scrive il mix in un file WAV: tutta la canzone, oppure solo
