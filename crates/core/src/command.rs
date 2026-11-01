@@ -436,9 +436,9 @@ pub enum Command {
     GetMidiRoutes {},
 
     // ------------------------------------------------------------------ third-party plug-ins (VST3)
-    /// Scan standard VST3 folders (plus extra_paths) for third-party plug-ins. extra_paths must be folders on a local drive: network shares, device paths and URLs are skipped and listed in skipped_paths.
+    /// Scan the standard VST3 folders, the VST3 folders the user added in Ondina and extra_paths for third-party plug-ins. extra_paths must be folders on a local drive: network shares, device paths and URLs are skipped and listed in skipped_paths. From MCP clients and the assistant an extra folder must also be inside a standard VST3 folder or a folder the user added in Ondina's VST3 library; other folders are skipped and listed in skipped_paths too. scanned_folders lists the extra folders that were scanned.
     ScanVst3 { extra_paths: Option<Vec<String>> },
-    /// Load a VST3 plug-in (path to a .vst3 bundle on a local drive) as instrument or insert effect on a track (track_id 0 = master). Network shares, device paths, URLs and files that are not .vst3 are refused. Its parameters are then addressable as "p<id>" (normalized 0..1) with set_plugin_param.
+    /// Load a VST3 plug-in (path to a .vst3 bundle on a local drive) as instrument or insert effect on a track (track_id 0 = master). Network shares, device paths, URLs and files that are not .vst3 are refused. From MCP clients and the assistant the bundle must also be inside a standard VST3 folder (Common Files\VST3, %LOCALAPPDATA%\Programs\Common\VST3) or a folder the user added in Ondina's VST3 library (Add folder…): if it is refused, ask the user to add its folder. Its parameters are then addressable as "p<id>" (normalized 0..1) with set_plugin_param.
     AddVst3 { track_id: Id, path: String, as_instrument: Option<bool>, index: Option<usize> },
 
     /// Open the native editor window of a VST3 plug-in. Knob moves in the window are applied to the project (undoable) and to the playing instance.
