@@ -202,6 +202,11 @@ pub enum Drag {
         region: Id,
         stroke: crate::cc_lane::CcStroke,
     },
+    /// Dragging a point in the arrangement's automation view (a new one when the press began on empty space).
+    AutoPoint {
+        track: Id,
+        drag: crate::automation_lane::PointDrag,
+    },
 }
 
 pub struct OndinaApp {
@@ -253,6 +258,8 @@ pub struct OndinaApp {
     pub region_clipboard: Option<crate::region_clipboard::RegionClip>,
     /// What the piano roll's controller lane shows (open or closed, which controller).
     pub cc_lane: crate::cc_lane::CcLaneState,
+    /// Whether the arrangement shows automation over the regions, and which lane each track shows.
+    pub automation: crate::automation_lane::AutomationView,
     // misc
     pub meters: HashMap<Id, [f32; 2]>,
     pub waveforms: HashMap<Id, Vec<(f32, f32)>>,
@@ -347,6 +354,7 @@ impl OndinaApp {
             note_clipboard: None,
             region_clipboard: None,
             cc_lane: Default::default(),
+            automation: Default::default(),
             meters: HashMap::new(),
             waveforms: HashMap::new(),
             ai: AiState {
