@@ -211,6 +211,11 @@ pub enum Drag {
         track: Id,
         drag: crate::automation_lane::PointDrag,
     },
+    /// A paint stroke in the step sequencer; nothing is sent until the release.
+    StepPaint {
+        region: Id,
+        stroke: crate::step_paint::StepStroke,
+    },
 }
 
 pub struct OndinaApp {
