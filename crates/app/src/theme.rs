@@ -91,21 +91,53 @@ pub const CHROME: Color32 = hex(0x16181C);
 /// Lower end of the meter gradient.
 pub const METER_LOW: Color32 = hex(0x3FAF7A);
 
-/// The twelve colors a user can give a track (Tokens: "colori traccia").
-pub const TRACK_COLORS: [Color32; 12] = [
-    hex(0x4A90D9),
-    hex(0x4CAF7D),
-    hex(0xD9A441),
-    hex(0xE0705F),
-    hex(0x9A7BD9),
-    hex(0x3FB0A8),
-    hex(0xD46BA3),
-    hex(0xC98B5A),
-    hex(0x7FA650),
-    hex(0x5F7FD9),
-    hex(0xB8B8B8),
-    hex(0x8C6BD9),
+// ---- arrangement ----
+/// The track header column.
+pub const HEADER_BG: Color32 = hex(0x181A1E);
+/// A track header under the pointer.
+pub const HEADER_HOVER: Color32 = hex(0x1D2025);
+/// Hairlines between header rows, under the ruler and the lanes.
+pub const HAIRLINE: Color32 = hex(0x23272D);
+/// Track lanes, alternating, and the lane of the selected track.
+pub const LANE_EVEN: Color32 = GROUND;
+pub const LANE_ODD: Color32 = hex(0x141619);
+pub const LANE_SELECTED: Color32 = hex(0x181C21);
+/// Line under each track lane.
+pub const LANE_LINE: Color32 = hex(0x1C1F23);
+/// Bar and beat lines over the lanes.
+pub const GRID_BAR_LINE: Color32 = hex(0x262A30);
+pub const GRID_BEAT_LINE: Color32 = hex(0x1B1E22);
+/// Bar ticks on the ruler, and the smaller beat ticks.
+pub const RULER_TICK: Color32 = hex(0x4A5059);
+pub const RULER_BEAT_TICK: Color32 = hex(0x30353C);
+/// Chord chips in the chord lane.
+pub const CHORD_CHIP: Color32 = CONTROL;
+/// Marker chips: (fill, text), alternating along the marker lane.
+pub const MARKER_CHIPS: [(Color32, Color32); 4] = [
+    (hex(0x3A3423), hex(0xF2D58A)),
+    (hex(0x23314A), hex(0xA9C4F2)),
+    (hex(0x2A3A2E), hex(0xA8DDB8)),
+    (hex(0x3A2A36), hex(0xE9B3D4)),
 ];
+/// Notes and waveforms drawn on a region body.
+pub const REGION_INK: Color32 = Color32::from_rgba_premultiplied(209, 209, 209, 209);
+/// Color of a muted region, instead of its own.
+pub const REGION_MUTED: Color32 = hex(0x6E7580);
+/// Fill of the lit part of the slim volume slider in the track headers.
+pub const SLIDER_FILL: Color32 = hex(0x5A616B);
+
+/// The twelve colors a user can give a track (Tokens: "colori traccia"). They come from the core palette that new
+/// tracks take their color from, so the theme and the model always agree.
+pub const TRACK_COLORS: [Color32; 12] = {
+    let c = ondina_core::model::TRACK_COLORS;
+    let mut out = [Color32::BLACK; 12];
+    let mut i = 0;
+    while i < out.len() {
+        out[i] = Color32::from_rgb(c[i][0], c[i][1], c[i][2]);
+        i += 1;
+    }
+    out
+};
 /// Text on a track-colored header.
 pub const ON_TRACK: Color32 = hex(0x0E1013);
 
@@ -119,8 +151,8 @@ pub const LANE_ALT: Color32 = hex(0x16181C);
 pub const GRID: Color32 = hex(0x22262B);
 pub const GRID_BAR: Color32 = TRACK_OFF;
 pub const TEXT_DIM: Color32 = TEXT_2;
-/// Loop/cycle band over the ruler (accent, translucent).
-pub const CYCLE: Color32 = Color32::from_rgba_premultiplied(23, 58, 64, 150);
+/// Cycle band over the ruler: amber at 55 %, like the cycle button.
+pub const CYCLE: Color32 = Color32::from_rgba_premultiplied(133, 106, 43, 140);
 /// Outline of selected regions, notes and points: near white so it reads on every track color.
 pub const SELECT: Color32 = PLAYHEAD;
 
@@ -339,6 +371,18 @@ mod tests {
         assert_eq!(GROUND, Color32::from_rgb(0x12, 0x14, 0x17));
         assert_eq!(ACCENT, Color32::from_rgb(0x4C, 0xC2, 0xD6));
         assert_eq!(TRACK_COLORS[11], Color32::from_rgb(0x8C, 0x6B, 0xD9));
+    }
+
+    #[test]
+    fn track_palette_matches_the_design_and_the_core() {
+        let design = [
+            0x4A90D9, 0x4CAF7D, 0xD9A441, 0xE0705F, 0x9A7BD9, 0x3FB0A8, 0xD46BA3, 0xC98B5A, 0x7FA650, 0x5F7FD9,
+            0xB8B8B8, 0x8C6BD9,
+        ];
+        for (i, (c, d)) in TRACK_COLORS.iter().zip(design).enumerate() {
+            assert_eq!(*c, hex(d), "color {i}");
+            assert_eq!(*c, rgb(ondina_core::model::TRACK_COLORS[i]), "color {i}");
+        }
     }
 
     #[test]
