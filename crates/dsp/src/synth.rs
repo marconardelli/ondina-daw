@@ -899,3 +899,87 @@ impl Instrument for Sampler {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SR: f32 = 48000.0;
+    const BLOCK: usize = 480; // 10 ms
+
+    /// Renders `ms` milliseconds (in 10 ms blocks) and returns the audio; every sample must be finite.
+    fn render_ms(inst: &mut dyn Instrument, ms: usize) -> (Vec<f32>, Vec<f32>) {
+        let ctx = ProcessContext::idle(SR);
+        let (mut out_l, mut out_r) = (Vec::new(), Vec::new());
+        let (mut l, mut r) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
+        for _ in 0..ms / 10 {
+            l.fill(0.0);
+            r.fill(0.0);
+            inst.render(&mut l, &mut r, &ctx);
+            assert!(l.iter().chain(r.iter()).all(|s| s.is_finite()), "non-finite sample");
+            out_l.extend_from_slice(&l);
+            out_r.extend_from_slice(&r);
+        }
+        (out_l, out_r)
+    }
+
+    fn energy(l: &[f32], r: &[f32]) -> f64 {
+        l.iter().chain(r.iter()).map(|&s| (s as f64) * (s as f64)).sum()
+    }
+
+    fn energy_ms(inst: &mut dyn Instrument, ms: usize) -> f64 {
+        let (l, r) = render_ms(inst, ms);
+        energy(&l, &r)
+    }
+
+    /// A fixed little performance; with `extra_cc` it also gets controllers that must not change the sound.
+    fn script(inst: &mut dyn Instrument, extra_cc: bool) -> (Vec<f32>, Vec<f32>) {
+        let (mut l, mut r) = (Vec::new(), Vec::new());
+        let mut take = |inst: &mut dyn Instrument, ms: usize| {
+            let (bl, br) = render_ms(inst, ms);
+            l.extend(bl);
+            r.extend(br);
+        };
+        if extra_cc {
+            inst.control_change(64, 0);
+        }
+        for p in [60, 64, 67] {
+            inst.note_on(p, 100);
+        }
+        take(inst, 200);
+        if extra_cc {
+            inst.control_change(1, 90);
+        }
+        for p in [60, 64, 67] {
+            inst.note_off(p);
+        }
+        take(inst, 100);
+        inst.note_on(72, 90);
+        if extra_cc {
+            inst.control_change(7, 100);
+            inst.control_change(64, 0);
+        }
+        take(inst, 200);
+        inst.note_off(72);
+        if extra_cc {
+            inst.control_change(64, 0);
+        }
+        take(inst, 700);
+        (l, r)
+    }
+
+    #[test]
+    fn analog_and_fm_without_pedal_render_as_before() {
+        // Captured from the render before the sustain rewrite (v0.19.0); change only when the synth sound changes on purpose.
+        const ANALOG_ENERGY_BITS: u64 = 4641415494624865352;
+        const FM_ENERGY_BITS: u64 = 4651729550933210591;
+        let cases: [(&str, fn() -> Box<dyn Instrument>, u64); 2] =
+            [("analog", || Box::new(AnalogSynth::new(SR)), ANALOG_ENERGY_BITS), ("fm", || Box::new(FmSynth::new(SR)), FM_ENERGY_BITS)];
+        for (name, make, bits) in cases {
+            let plain = script(make().as_mut(), false);
+            let with_cc = script(make().as_mut(), true);
+            assert!(plain.0 == with_cc.0 && plain.1 == with_cc.1, "{name}: controllers that are not pedal-down changed the render");
+            assert_eq!(energy(&plain.0, &plain.1).to_bits(), bits, "{name}: render energy changed");
+        }
+    }
+}
