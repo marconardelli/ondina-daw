@@ -160,16 +160,19 @@ extension: Ondina opens both.
 | Ctrl+wheel | zoom time around the pointer | Shift+wheel | scroll time |
 | Ctrl+Shift+wheel | track height (piano roll: key height) | | |
 | Ctrl+C / X / V | copy / cut / paste notes (piano roll) | Ctrl+A | select all notes (piano roll) |
-| ← / → | move selected notes by the snap step | ↑ / ↓ (Shift: octave) | transpose selected notes |
+| ← / → | move selected notes by the snap step | ↑ / ↓ (Shift: octave) | transpose selected notes (piano roll) |
 | `,` / `.` | playhead to previous / next bar | Shift+, / Shift+. | playhead to previous / next marker |
 | Ctrl+T | split selected region at playhead | Esc (while dragging) | cancel the drag |
 | Alt+← / → | shorten / lengthen selected notes | Alt+drag (piano roll) | copy the dragged notes |
+| ↑ / ↓ | select previous / next track | M / S | mute / solo selected track |
+| Shift+M | add a marker at the playhead | | |
 
 Musical Typing: `A W S E D F T G Y H U J K` play notes, `Z` / `X` change octave.
 
 `,` and `.` from the middle of a bar go to the start of that bar; while playing, less than half a beat past a bar
-line or a marker, `,` goes to the one before. These keys and Ctrl+T are off while you type in a text field and while
-Musical Typing is on.
+line or a marker, `,` goes to the one before. ↑ / ↓ move the selected notes while notes are selected in the piano
+roll, otherwise they select tracks. These keys, M, S, Shift+M and Ctrl+T are off while you type in a text field,
+while dragging and while Musical Typing is on (there S and M play notes).
 
 ## AI: three ways in
 

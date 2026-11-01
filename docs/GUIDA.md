@@ -110,6 +110,17 @@ R (registrazione), lo slider del volume e il meter.
 - Se cambi lo strumento o applichi una patch dall'inspector, Ondina toglie le automazioni dei parametri dei
   plug-in sostituiti. Volume, pan e mandate restano. Un solo Ctrl+Z rimette tutto com'era.
 
+Dalla tastiera:
+
+- ↑ e ↓: selezionano la traccia sopra o sotto e la portano in vista. Sulla prima e sull'ultima traccia la
+  selezione resta ferma; se nessuna traccia è selezionata si parte dalla prima.
+- M: muta la traccia selezionata, S la mette in solo. Premuti di nuovo tolgono mute e solo. Ognuno si
+  annulla con un Ctrl+Z.
+- Con note selezionate nel piano roll le frecce spostano le note, non la selezione delle tracce. Con il
+  piano roll aperto e nessuna nota selezionata le frecce cambiano traccia, ma l'editor continua a mostrare
+  la regione di prima: un clic su una regione della nuova traccia la apre.
+- Le stesse azioni sono nel menu **Track**.
+
 ### Zoom, scorrimento e altezza delle tracce
 
 - Rotella: scorre le tracce su e giù.
@@ -204,6 +215,9 @@ lunghezza, in blu) e i marker semplici (un punto, in marrone).
 - Doppio clic su un marker: apre un campo di testo per rinominarlo. Invio o un clic fuori
   confermano, Esc annulla. Mentre scrivi, le scorciatoie da tastiera sono spente.
 - Doppio clic sulla corsia vuota: crea una sezione di 4 battute.
+- Maiusc+M: aggiunge un marker semplice al punto esatto del playhead, anche durante la riproduzione, con il
+  nome Marker N. Se lì c'è già un marker non ne aggiunge un altro. La stessa azione è nel menu Edit,
+  **Add Marker at Playhead**.
 - Ogni spostamento, ridimensionamento o rinomina si annulla con un solo Ctrl+Z.
 
 Spostare un marker non sposta le regioni che ci stanno sotto. Per copiare o ripetere il materiale
@@ -412,10 +426,14 @@ l'assistente o un client MCP.
 | Ctrl+A | seleziona tutte le note (piano roll) |
 | ← / → | sposta le note selezionate di un passo di snap |
 | ↑ / ↓, Maiusc+↑ / ↓ | trasporta le note selezionate di un semitono / un'ottava |
+| ↑ / ↓ | seleziona la traccia precedente / successiva (con note selezionate nel piano roll: trasporta le note) |
+| M / S | mute / solo della traccia selezionata |
+| Maiusc+M | marker al playhead |
 | Alt+← / → | accorcia / allunga le note selezionate di un passo di snap |
 | Alt+trascinamento | copia le note trascinate (piano roll) |
 | Esc (mentre trascini) | annulla il trascinamento |
 
 `,` e `.` da metà battuta portano all'inizio della battuta; durante la riproduzione, a meno di mezzo beat da una
-battuta o da un marker, `,` va a quello prima. Queste scorciatoie e Ctrl+T sono spente mentre scrivi in un campo di
-testo e con Musical Typing attivo.
+battuta o da un marker, `,` va a quello prima. Queste scorciatoie, Ctrl+T, ↑ / ↓ per le tracce, M, S e Maiusc+M
+sono spente mentre scrivi in un campo di testo, durante un trascinamento e con Musical Typing attivo (lì S e M
+suonano note).
