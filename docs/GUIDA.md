@@ -461,6 +461,54 @@ Un campo di testo aperto (rinomina di marker, tracce o regioni, nome della regio
 accordo) si chiude senza applicare nulla quando apri o crei un altro progetto, anche se lo fanno
 l'assistente o un client MCP.
 
+## Salvataggio automatico e recupero
+
+Mentre lavori, Ondina scrive ogni 3 minuti una copia del progetto non salvato, in background: non
+compare nessuna finestra e il lavoro non si ferma, nemmeno durante la riproduzione o la registrazione.
+La copia si scrive solo se il progetto ha modifiche non salvate (il pallino "•" nel titolo) e solo se è
+cambiato qualcosa dalla copia precedente. La prima copia arriva qualche minuto dopo la prima modifica.
+
+Le copie finiscono nella cartella `%APPDATA%\OndinaDAW\Autosave`. Sono normali file `.ondina`: se
+serve, si aprono anche con File > Open.
+
+La copia sparisce da sola quando salvi il progetto, quando crei un progetto nuovo o ne apri un altro, e
+quando chiudi Ondina normalmente.
+
+### Dopo un crash
+
+Se Ondina si è chiuso male (un plug-in o il driver audio lo hanno fatto cadere, oppure lo hai terminato
+dal Task Manager), al riavvio compare la finestra **Recover Unsaved Work** con l'elenco delle copie
+trovate: il nome del progetto, il file da cui veniva (o "never saved" se non era mai stato salvato) e da
+quanto tempo è stata scritta la copia.
+
+- **Recover** apre la copia come lavoro non salvato. Il titolo mostra il pallino "•" e la riga di stato
+  ti ricorda di salvare. Il primo Save chiede sempre dove salvare e propone la cartella e il nome del
+  file originale: la copia nella cartella Autosave non viene mai sovrascritta. La cronologia di Annulla
+  riparte vuota, come dopo ogni Apri.
+- **Discard** cancella quella copia.
+- **Discard All** cancella tutte le copie dell'elenco.
+- **Decide Later** (o Esc) chiude la finestra senza toccare niente: le copie restano e la finestra
+  ricompare al prossimo avvio.
+
+Se recuperi una copia, le altre restano sul disco e ricompaiono al prossimo avvio. Se il progetto aperto
+ha modifiche non salvate, prima del recupero compare la solita domanda Save / Don't Save / Cancel.
+
+### Impostazione
+
+In Settings, nella sezione **Autosave**, scegli ogni quanti minuti scrivere la copia (da 0 a 60).
+Con 0 il salvataggio automatico è spento: non si scrive nessuna copia e quella che c'era viene
+cancellata. La finestra di recupero compare comunque se all'avvio trova copie rimaste da prima.
+
+### Cosa non è coperto
+
+- I file audio non vengono copiati: la copia li cita dove erano, come il progetto.
+- Una registrazione ancora in corso al momento del crash non è nella copia: una take entra nel
+  progetto solo dopo Stop.
+- Se il crash arriva prima della prima copia (pochi minuti dopo la prima modifica), non c'è niente da
+  recuperare.
+- Se tieni aperte più finestre di Ondina, ognuna scrive le sue copie e non propone quelle di un'altra
+  finestra ancora aperta.
+
 ## Scorciatoie principali
 
 | Tasto | Azione |

@@ -1,7 +1,7 @@
 //! Main application state and frame loop.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -278,6 +278,12 @@ pub struct OndinaApp {
     doc_prompt: Option<DocAction>,
     /// Set once the user chose to quit, so our own close request is not cancelled again.
     allow_close: bool,
+    /// Background autosave: decides each frame, writes on its own thread.
+    autosave: crate::autosave::Autosave,
+    /// Copies left by a run that did not close cleanly; the recovery window is open while not empty.
+    recovery: Vec<crate::autosave::Leftover>,
+    /// Document opened from an autosave copy and where it originally lived (proposed by the next Save As).
+    recovered: Option<(u64, PathBuf)>,
 }
 
 impl OndinaApp {
@@ -300,6 +306,7 @@ impl OndinaApp {
                 Self::make_view(&s),
             )
         };
+        let (autosave, recovery) = crate::autosave::Autosave::start(Settings::autosave_dir(), view.document);
         let (tx, rx) = crossbeam_channel::unbounded();
         OndinaApp {
             session,
@@ -370,6 +377,9 @@ impl OndinaApp {
             last_playhead: 0.0,
             doc_prompt: None,
             allow_close: false,
+            autosave,
+            recovery,
+            recovered: None,
         }
     }
 
@@ -681,9 +691,9 @@ impl OndinaApp {
         }
     }
 
-    /// Whether the "Save changes?" prompt is waiting for an answer.
+    /// Whether the "Save changes?" prompt or the recovery window is waiting for an answer.
     pub(crate) fn doc_prompt_open(&self) -> bool {
-        self.doc_prompt.is_some()
+        self.doc_prompt.is_some() || !self.recovery.is_empty()
     }
 
     fn open_doc_prompt(&mut self, ctx: &egui::Context, action: DocAction) {
@@ -702,6 +712,7 @@ impl OndinaApp {
             DocAction::New => self.new_project_now(),
             DocAction::Open(None) => self.open_dialog_now(),
             DocAction::Open(Some(path)) => self.open_path_now(path),
+            DocAction::Recover(copy) => self.recover_now(copy),
         }
     }
 
@@ -753,14 +764,56 @@ impl OndinaApp {
         }
     }
 
+    /// Opens an autosave copy as unsaved work; the copy stays on disk until this instance has written its own.
+    fn recover_now(&mut self, copy: String) {
+        let copy = PathBuf::from(copy);
+        let meta = crate::autosave::read_meta(&copy);
+        match self.exec_with(|s| s.open_recovered(&copy)) {
+            Some(Ok(v)) => {
+                self.waveforms.clear();
+                self.pr_framing.reset();
+                let name = self.view.project.name.clone();
+                self.recovered = meta.and_then(|m| m.original).map(|o| (self.view.document, PathBuf::from(o)));
+                self.autosave.adopt(self.view.document, self.view.revision, &copy);
+                self.status = crate::autosave::recovered_status(&name, &v);
+            }
+            Some(Err(e)) => self.status = format!("⚠ Can't recover {}: {e}", copy.display()),
+            None => {}
+        }
+    }
+
+    /// The original file of the recovered document, while that document is still the one open.
+    fn recovered_original(&self) -> Option<&Path> {
+        self.recovered.as_ref().filter(|(doc, _)| *doc == self.view.document).map(|(_, p)| p.as_path())
+    }
+
+    fn autosave_tick(&mut self, ctx: &egui::Context) {
+        let recovered = self.recovered_original().map(Path::to_path_buf);
+        self.autosave.tick(crate::autosave::Snapshot {
+            now: ctx.input(|i| i.time),
+            minutes: self.settings.autosave_minutes,
+            dirty: self.view.dirty,
+            document: self.view.document,
+            revision: self.view.revision,
+            project: &self.view.project,
+            path: self.view.path.as_deref(),
+            recovered: recovered.as_deref(),
+        });
+        if let Some(msg) = self.autosave.poll() {
+            self.status = msg;
+        }
+    }
+
     pub fn save(&mut self, save_as: bool) -> bool {
         let path = if save_as || self.view.path.is_none() {
-            let name = format!("{}.ondina", self.view.project.name);
-            match rfd::FileDialog::new()
+            let (folder, name) = crate::autosave::save_dialog_default(&self.view.project.name, self.recovered_original());
+            let mut dialog = rfd::FileDialog::new()
                 .add_filter("Ondina Project", &["ondina", "aurora"])
-                .set_file_name(&name)
-                .save_file()
-            {
+                .set_file_name(&name);
+            if let Some(d) = folder {
+                dialog = dialog.set_directory(d);
+            }
+            match dialog.save_file() {
                 Some(p) => Some(p.display().to_string()),
                 None => return false,
             }
@@ -774,6 +827,7 @@ impl OndinaApp {
                     self.settings.save();
                     self.status = format!("Saved {p}");
                 }
+                self.recovered = None;
                 true
             }
             None => false,
@@ -2060,6 +2114,13 @@ impl OndinaApp {
                     ui.label(RichText::new("none found").color(theme::TEXT_DIM));
                 }
             });
+            ui.separator();
+            ui.heading("Autosave");
+            ui.horizontal(|ui| {
+                ui.label("Save a recovery copy every");
+                ui.add(egui::DragValue::new(&mut self.settings.autosave_minutes).range(0..=60).suffix(" min"));
+            });
+            ui.label(RichText::new("0 turns autosave off. After a crash Ondina offers the copy back at the next start.").small().color(theme::TEXT_DIM));
             ui.horizontal(|ui| {
                 ui.label("UI scale (restart)");
                 ui.add(egui::Slider::new(&mut self.settings.ui_scale, 0.75..=2.0));
@@ -2247,6 +2308,101 @@ impl OndinaApp {
             self.run_doc_action(ctx, next);
         }
     }
+
+    /// At startup, when an earlier run did not close cleanly: offers the copies it left back.
+    fn recovery_ui(&mut self, ctx: &egui::Context) {
+        enum Choice {
+            Recover(usize),
+            Discard(usize),
+            DiscardAll,
+            Later,
+        }
+        if self.recovery.is_empty() {
+            return;
+        }
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("recovery_backdrop"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(150));
+                ui.allocate_rect(screen, egui::Sense::click_and_drag());
+            });
+        let now = crate::autosave::unix_secs();
+        let mut choice = None;
+        let shown = egui::Window::new("Recover Unsaved Work")
+            .id(egui::Id::new("recovery_prompt"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .collapsible(false)
+            .resizable(false)
+            .movable(false)
+            .show(ctx, |ui| {
+                ui.label(RichText::new("Ondina did not close normally. These copies of unsaved work were found:").strong());
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical().max_height(8.0 * 44.0).show(ui, |ui| {
+                    for (i, l) in self.recovery.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new(&l.meta.name).strong());
+                                let from = l.meta.original.as_ref().map_or_else(|| "never saved".to_string(), |o| format!("from {o}"));
+                                let when = crate::autosave::age_label(now, l.meta.saved_at);
+                                ui.label(RichText::new(format!("{from} · {when}")).small().color(theme::TEXT_DIM));
+                            });
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button("Discard").clicked() {
+                                    choice = Some(Choice::Discard(i));
+                                }
+                                let recover = egui::Button::new(RichText::new("Recover").color(Color32::BLACK)).fill(theme::ACCENT);
+                                if ui.add(recover).clicked() {
+                                    choice = Some(Choice::Recover(i));
+                                }
+                            });
+                        });
+                        ui.separator();
+                    }
+                });
+                ui.label(
+                    RichText::new("Audio files stay where they were; a recording that was still in progress is not in the copy.")
+                        .small()
+                        .color(theme::TEXT_DIM),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Discard All").clicked() {
+                        choice = Some(Choice::DiscardAll);
+                    }
+                    if ui.button("Decide Later").clicked() {
+                        choice = Some(Choice::Later);
+                    }
+                });
+            });
+        if let Some(r) = shown {
+            ctx.move_to_top(r.response.layer_id);
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
+            choice.get_or_insert(Choice::Later);
+        }
+        match choice {
+            Some(Choice::Recover(i)) => {
+                // The other copies stay on disk and are offered again at the next start.
+                let copy = self.recovery[i].copy.display().to_string();
+                self.recovery.clear();
+                self.request_doc_action(ctx, DocAction::Recover(copy));
+            }
+            Some(Choice::Discard(i)) => {
+                let l = self.recovery.remove(i);
+                self.autosave.discard(&l.stem);
+            }
+            Some(Choice::DiscardAll) => {
+                for l in self.recovery.drain(..) {
+                    self.autosave.discard(&l.stem);
+                }
+            }
+            Some(Choice::Later) => self.recovery.clear(),
+            None => {}
+        }
+    }
 }
 
 fn snap_label(s: f64) -> &'static str {
@@ -2288,7 +2444,7 @@ impl eframe::App for OndinaApp {
         self.update_meters();
         self.handle_close_request(ctx);
         self.cancel_drag_on_escape(ctx);
-        if self.doc_prompt.is_none() {
+        if !self.doc_prompt_open() {
             self.handle_keys(ctx);
         }
 
@@ -2355,8 +2511,10 @@ impl eframe::App for OndinaApp {
             .show(ctx, |ui| self.arrange_ui(ui));
         self.windows(ctx);
         self.extra_windows(ctx);
+        self.recovery_ui(ctx);
         self.doc_prompt_ui(ctx);
         self.sync();
+        self.autosave_tick(ctx);
         ctx.request_repaint_after(Duration::from_millis(if self.playing() || self.ai.busy {
             16
         } else {
@@ -2365,6 +2523,7 @@ impl eframe::App for OndinaApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.autosave.shutdown();
         self.settings.save();
         if let Some(h) = &self.mcp {
             h.shutdown();

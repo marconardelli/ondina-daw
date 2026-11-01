@@ -147,6 +147,11 @@ extension: Ondina opens both.
 - **Unsaved changes**: when the project has unsaved changes (the • in the title bar), closing the window, New,
   Open or a recent project first asks *Save*, *Don't Save* or *Cancel*. Esc cancels, Enter saves. A recording in
   progress is stopped and kept before the question.
+- **Autosave and recovery**: every 3 minutes (Settings > Autosave; 0 turns it off) a copy of unsaved work is
+  written in the background to %APPDATA%\OndinaDAW\Autosave. The copy is removed when you save, start a new project
+  or open another, and when Ondina closes normally. If Ondina did not close normally, the next start lists the copies
+  it left: Recover opens one as unsaved work (Save asks where to save it, proposing the original file), Discard
+  deletes it. Audio files are not copied, and a recording still in progress is not in the copy.
 - **Drag and drop**: drag audio files (wav, aiff, flac, mp3, ogg, m4a, caf) from Explorer onto an audio track to
   place them at that point (snapped to the grid); below the last track or on an instrument track they go on a new
   audio track. While you drag, a line and the file name show where they land. Several files go one after the
@@ -269,7 +274,7 @@ crates/
   dsp/       src/synth.rs, drums.rs, effects.rs, midifx.rs, audio_ops.rs, ml_stems.rs, spatial.rs, vst3.rs
   engine/    src/realtime.rs, renderer.rs, offline.rs, analysis.rs, adm.rs, pool.rs
   studio/    src/session.rs, session_ext.rs, mcp.rs, ai.rs, local_ai.rs, settings.rs; tests/features.rs
-  app/       src/app.rs, arrange.rs, editors.rs, mixer.rs, inspector.rs, extra_ui.rs, assistant.rs; src/bin/ondina-mcp.rs
+  app/       src/app.rs, arrange.rs, editors.rs, mixer.rs, inspector.rs, extra_ui.rs, assistant.rs, autosave.rs; src/bin/ondina-mcp.rs
 examples/    example projects and rendered audio
 MCP_TOOLS.md generated reference of every MCP tool
 CHANGELOG.md release notes
