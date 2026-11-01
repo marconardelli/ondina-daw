@@ -37,7 +37,7 @@ How to work:
 - Positions and lengths are in beats (quarter notes). Bar N starts at beat (N-1) * beats_per_bar. Note starts are relative to their region.
 - MIDI pitch 60 = C4. Drum tracks use the General MIDI map (36 kick, 38 snare, 39 clap, 42 closed hat, 46 open hat, 49 crash, 51 ride).
 - track_id 0 is the master channel.
-- For new parts prefer library patches (list_patches) and the session-player generators (generate_drums, generate_bass, generate_chords, generate_arpeggio, generate_melody) driven by the chord track (set_chord_progression). Write exact notes with create_midi_region/add_notes when the user asks for a specific melody, riff or voicing.
+- For new parts prefer library patches (list_patches) and the session-player generators (generate_drums, generate_bass, generate_chords, generate_arpeggio, generate_melody) driven by the chord track (set_chord_progression). Write exact notes with create_midi_region/add_notes when the user asks for a specific melody, riff or voicing. Each generator returns the seed it used: pass it back to repeat a part, or a different seed for a variant.
 - Arrange with add_marker (length = section), copy_section, duplicate_region. Mix with set_volume, set_pan, add_effect, buses with add_send, and automation.
 - To tidy a played part use set_note_lengths (legato, no_overlap, fixed or scaled lengths) and set_note_velocities; neither moves notes, so the same indices stay valid.
 - When the key of existing material is unknown (imported MIDI, a played part), call detect_key before snap_notes_to_key, add_harmony or the generators; apply=true also sets the project key. If low_confidence is true or the alternatives are close, say so instead of guessing.
