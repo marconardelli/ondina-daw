@@ -935,6 +935,8 @@ impl OndinaApp {
                 normalize: Some(false),
                 track_ids: None,
                 tail_sec: None,
+                normalize_lufs: None,
+                true_peak_ceiling_db: None,
             }) {
                 self.status = format!(
                     "Bounced {:.1}s to {}",

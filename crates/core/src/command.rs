@@ -353,16 +353,21 @@ pub enum Command {
     InsertTime { at_beat: f64, length: f64 },
 
     // ------------------------------------------------------------------ import / export
-    /// Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed). After the end the render goes on until reverb and delay tails fade below about -90 dBFS (at least 2 s, at most 20 s: a sound that never fades, like a note held past the end or a noisy plug-in, stops at 20 s). tail_sec sets an exact tail instead: 0 cuts exactly at end, e.g. to export a loop. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
+    /// Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed). After the end the render goes on until reverb and delay tails fade below about -90 dBFS (at least 2 s, at most 20 s: a sound that never fades, like a note held past the end or a noisy plug-in, stops at 20 s). tail_sec sets an exact tail instead: 0 cuts exactly at end, e.g. to export a loop. normalize=true scales the peak to -1 dBFS. normalize_lufs brings the integrated loudness to a target with one gain for the whole mix (no limiter), keeping the peak under true_peak_ceiling_db: the result's loudness reports gain_db, lufs_after, true_peak_after and target_reached (false when the ceiling stopped the gain: the mix needs a limiter, e.g. auto_master, to get that loud). The peak is the analyze_mix estimate; 16 and 24 bit dither can add about one LSB. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
     Bounce {
         path: String,
         start: Option<f64>,
         end: Option<f64>,
         bit_depth: Option<u16>,
+        /// true: scale the peak to -1 dBFS. Ignored when normalize_lufs is set.
         normalize: Option<bool>,
         track_ids: Option<Vec<Id>>,
         /// Exact tail after end, in seconds (0 to 60). Omit it for the automatic tail; 0 cuts exactly at end.
         tail_sec: Option<f64>,
+        /// Loudness target in LUFS, -30 to -6 (-14 streaming, -16, -23 broadcast).
+        normalize_lufs: Option<f32>,
+        /// Peak ceiling for normalize_lufs in dBTP, -9 to 0 (default -1).
+        true_peak_ceiling_db: Option<f32>,
     },
     /// Render a track to audio and place it on a new audio track (bounce in place). The source track is muted. Reverb and delay tails are kept: the render goes on until they fade (at least 2 s, at most 20 s after the last region).
     BounceInPlace { track_id: Id },

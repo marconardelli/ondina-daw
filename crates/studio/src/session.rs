@@ -52,6 +52,11 @@ const UNDO_LIMIT: usize = 200;
 const LOG_LIMIT: usize = 500;
 /// Longest exact tail `bounce` accepts, in seconds.
 const MAX_FIXED_TAIL_SEC: f64 = 60.0;
+/// Loudness targets the bounce accepts for normalize_lufs, in LUFS.
+const LOUDNESS_TARGET_LUFS: std::ops::RangeInclusive<f32> = -30.0..=-6.0;
+/// Peak ceilings the bounce accepts for true_peak_ceiling_db, in dBTP.
+const TRUE_PEAK_CEILING_DB: std::ops::RangeInclusive<f32> = -9.0..=0.0;
+const DEFAULT_TRUE_PEAK_CEILING_DB: f32 = -1.0;
 
 /// One entry of the undo or redo history.
 struct UndoStep {
@@ -515,11 +520,21 @@ impl Session {
                 std::fs::write(&p, bytes).map_err(|e| format!("cannot write {}: {e}", p.display()))?;
                 Ok(json!({"path": p.display().to_string()}))
             }
-            Bounce { path, start, end, bit_depth, normalize, track_ids, tail_sec } => {
+            Bounce { path, start, end, bit_depth, normalize, track_ids, tail_sec, normalize_lufs, true_peak_ceiling_db } => {
                 let p = checked_output_path(source, &path, WAV_EXTENSIONS, "wav")?;
                 if let Some(t) = tail_sec {
                     if !(0.0..=MAX_FIXED_TAIL_SEC).contains(&t) {
                         return Err(format!("tail_sec must be between 0 and {MAX_FIXED_TAIL_SEC} seconds"));
+                    }
+                }
+                if let Some(t) = normalize_lufs {
+                    if !LOUDNESS_TARGET_LUFS.contains(&t) {
+                        return Err("normalize_lufs must be between -30 and -6 LUFS".into());
+                    }
+                }
+                if let Some(c) = true_peak_ceiling_db {
+                    if !TRUE_PEAK_CEILING_DB.contains(&c) {
+                        return Err("true_peak_ceiling_db must be between -9 and 0 dBTP".into());
                     }
                 }
                 let start = start.unwrap_or(0.0);
@@ -531,8 +546,43 @@ impl Session {
                     None => (BOUNCE_TAIL_SEC, AUTO_TAIL_MAX_SEC),
                 };
                 let mut res = render_offline(&self.engine_project(), Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start, end, tail_sec: tail, auto_tail_max_sec: auto_max, solo: track_ids, analyze: true, keep_audio: true });
-                if normalize.unwrap_or(false) {
-                    ondina_engine::offline::normalize(&mut res.left, &mut res.right);
+                // The mix as rendered, before any gain.
+                let master = res.analysis.as_ref().and_then(|a| a.get(&MASTER_ID)).cloned();
+                let mut warnings: Vec<String> = vec![];
+                let mut loudness = None;
+                if let Some(target) = normalize_lufs {
+                    if normalize == Some(true) {
+                        warnings.push("normalize was ignored: normalize_lufs sets the level".into());
+                    }
+                    let ceiling = true_peak_ceiling_db.unwrap_or(DEFAULT_TRUE_PEAK_CEILING_DB);
+                    let before = master.as_ref().map_or(-120.0, |m| m.integrated_lufs);
+                    let peak = ondina_engine::offline::sample_peak(&res.left, &res.right);
+                    let g = ondina_engine::offline::loudness_gain(before, peak, target, ceiling);
+                    match g {
+                        Some(g) => ondina_engine::offline::apply_gain(&mut res.left, &mut res.right, g.gain),
+                        None => warnings.push("the mix is silent: normalize_lufs left it as it is".into()),
+                    }
+                    // Measured again on what goes to the file (the render's analysis also saw the trimmed silent tail).
+                    let mut after = ondina_engine::Analyzer::new(sr as f32);
+                    after.push(&res.left, &res.right);
+                    let after = after.report();
+                    loudness = Some(json!({
+                        "target_lufs": target,
+                        "true_peak_ceiling_db": ceiling,
+                        "lufs_before": master.as_ref().map(|m| m.integrated_lufs),
+                        "true_peak_before": master.as_ref().map(|m| m.true_peak_dbtp),
+                        "gain_db": g.map_or(0.0, |g| (g.gain_db * 10.0).round() / 10.0),
+                        "lufs_after": after.integrated_lufs,
+                        "true_peak_after": after.true_peak_dbtp,
+                        "target_reached": g.is_some_and(|g| g.target_reached),
+                    }));
+                } else {
+                    if true_peak_ceiling_db.is_some() {
+                        warnings.push("true_peak_ceiling_db is used only with normalize_lufs".into());
+                    }
+                    if normalize.unwrap_or(false) {
+                        ondina_engine::offline::normalize(&mut res.left, &mut res.right);
+                    }
                 }
                 let bits = match bit_depth.unwrap_or(24) {
                     16 => 16,
@@ -540,11 +590,17 @@ impl Session {
                     _ => 24,
                 };
                 write_wav(&p, &res.left, &res.right, sr, bits)?;
-                let master = res.analysis.as_ref().and_then(|a| a.get(&MASTER_ID)).cloned();
                 let duration = res.left.len() as f64 / sr as f64;
                 let span = self.project.tempo.beat_to_sec(end) - self.project.tempo.beat_to_sec(start);
                 let tail_out = ((duration - span) * 1000.0).round() / 1000.0;
-                Ok(json!({"path": p.display().to_string(), "duration_sec": duration, "tail_sec": tail_out, "sample_rate": sr, "bit_depth": bits, "master_analysis": master}))
+                let mut out = json!({"path": p.display().to_string(), "duration_sec": duration, "tail_sec": tail_out, "sample_rate": sr, "bit_depth": bits, "master_analysis": master});
+                if let Some(l) = loudness {
+                    out["loudness"] = l;
+                }
+                if !warnings.is_empty() {
+                    out["warnings"] = json!(warnings);
+                }
+                Ok(out)
             }
             BounceInPlace { track_id } => {
                 let t = self.project.track(track_id).ok_or("track not found")?.clone();
@@ -1149,7 +1205,7 @@ mod tests {
         assert!(a["master"]["integrated_lufs"].as_f64().unwrap() > -60.0, "{a}");
         let dir = std::env::temp_dir().join("ondina_test");
         let wav = dir.join("mix.wav");
-        let r = s.execute(Command::Bounce { path: wav.display().to_string(), start: None, end: None, bit_depth: Some(16), normalize: Some(true), track_ids: None, tail_sec: None }, Source::Script).unwrap();
+        let r = s.execute(Command::Bounce { path: wav.display().to_string(), start: None, end: None, bit_depth: Some(16), normalize: Some(true), track_ids: None, tail_sec: None, normalize_lufs: None, true_peak_ceiling_db: None }, Source::Script).unwrap();
         assert!(r["duration_sec"].as_f64().unwrap() > 7.0);
         let m = s.execute(Command::AutoMaster { target_lufs: Some(-14.0), character: None }, Source::Script).unwrap();
         assert!((m["measured_lufs"].as_f64().unwrap() + 14.0).abs() < 2.5, "{m}");

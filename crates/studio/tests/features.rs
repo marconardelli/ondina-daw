@@ -2636,3 +2636,158 @@ fn detect_key_explains_what_it_cannot_read() {
     assert_eq!(s.can_undo().map(String::from), undo);
     assert_eq!(s.project.key.name(), "C Major");
 }
+
+/// The stereo mix of `song_wav` (melody, bass, clicks; 8 s at 44.1 kHz) in its own file. Measured: about -9.9 LUFS
+/// integrated with peaks at +2.4 dBFS.
+fn mix_wav(name: &str) -> PathBuf {
+    let sr = 44100u32;
+    let n = sr as usize * 8;
+    let beat = 0.6;
+    let melody = [261.63f32, 329.63, 392.0, 523.25];
+    let mut l = vec![0.0f32; n];
+    for (i, x) in l.iter_mut().enumerate() {
+        let t = i as f32 / sr as f32;
+        let k = (t / beat) as usize;
+        let ph = t - k as f32 * beat;
+        let env = if ph < beat * 0.85 { 1.0 } else { 0.0 };
+        let mel = (2.0 * std::f32::consts::PI * melody[k % 4] * t).sin() * 0.3 * env;
+        let bass = (2.0 * std::f32::consts::PI * 82.0 * t).sin() * 0.25;
+        let click = if ph < 0.004 { (1.0 - ph / 0.004) * if (i % 2) == 0 { 0.8 } else { -0.8 } } else { 0.0 };
+        *x = mel + bass + click;
+    }
+    let p = tmp(name);
+    write_wav(&p, &[l.clone(), l], sr);
+    p
+}
+
+/// A session with that mix on one audio track at 100 bpm. Returns the session and the track id.
+fn loudness_session(name: &str) -> (Session, u64) {
+    let wav = mix_wav(name);
+    let mut s = Session::new(false);
+    ok(&mut s, "set_tempo", json!({"bpm": 100}));
+    let imp = ok(&mut s, "import_audio", json!({"path": wav.display().to_string(), "start": 0}));
+    (s, imp["track_id"].as_u64().unwrap())
+}
+
+/// The samples of a stereo WAV file as left and right channels (float or integer samples).
+fn read_stereo(path: &Path) -> (Vec<f32>, Vec<f32>, u32) {
+    let reader = hound::WavReader::open(path).unwrap();
+    let spec = reader.spec();
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader.into_samples::<f32>().map(|x| x.unwrap()).collect(),
+        hound::SampleFormat::Int => {
+            let max = ((1i64 << (spec.bits_per_sample - 1)) - 1) as f32;
+            reader.into_samples::<i32>().map(|x| x.unwrap() as f32 / max).collect()
+        }
+    };
+    let left: Vec<f32> = samples.iter().step_by(2).copied().collect();
+    let right: Vec<f32> = samples.iter().skip(1).step_by(2).copied().collect();
+    (left, right, spec.sample_rate)
+}
+
+/// Loudness and peak of a WAV file, measured like analyze_mix.
+fn measure_wav(path: &Path) -> ondina_engine::AnalysisReport {
+    let (left, right, sr) = read_stereo(path);
+    let mut a = ondina_engine::Analyzer::new(sr as f32);
+    a.push(&left, &right);
+    a.report()
+}
+
+/// Largest absolute sample of a WAV file (linear).
+fn file_peak(path: &Path) -> f32 {
+    let (left, right, _) = read_stereo(path);
+    left.iter().chain(&right).fold(0.0f32, |a, b| a.max(b.abs()))
+}
+
+fn num(v: &Value) -> f64 {
+    v.as_f64().unwrap_or_else(|| panic!("not a number: {v}"))
+}
+
+#[test]
+fn bounce_to_a_loudness_target_measures_on_target() {
+    let (mut s, _) = loudness_session("loud_target_src.wav");
+    let out = tmp("loud_target.wav");
+    for bits in [32, 24] {
+        let r = ok(&mut s, "bounce", json!({"path": out.display().to_string(), "bit_depth": bits, "tail_sec": 0, "normalize_lufs": -14}));
+        let l = &r["loudness"];
+        assert_eq!(l["target_reached"], json!(true), "{r}");
+        let m = measure_wav(&out);
+        assert!((m.integrated_lufs + 14.0).abs() <= 0.5, "{bits} bit: {} LUFS {r}", m.integrated_lufs);
+        assert!(m.true_peak_dbtp <= -1.0 + 0.1, "{bits} bit: true peak {} {r}", m.true_peak_dbtp);
+        assert!((num(&l["lufs_after"]) - m.integrated_lufs as f64).abs() <= 0.2, "{bits} bit: {} {r}", m.integrated_lufs);
+        // master_analysis stays the measure of the mix before the gain.
+        assert!((num(&r["master_analysis"]["integrated_lufs"]) + 9.9).abs() <= 1.0, "{r}");
+        assert_eq!(r.get("warnings"), None, "{r}");
+    }
+}
+
+#[test]
+fn bounce_loudness_target_stops_at_the_peak_ceiling() {
+    let (mut s, track) = loudness_session("loud_ceiling_src.wav");
+    let out = tmp("loud_ceiling.wav");
+    let p = out.display().to_string();
+    let r = ok(&mut s, "bounce", json!({"path": p, "bit_depth": 32, "tail_sec": 0, "normalize_lufs": -8, "true_peak_ceiling_db": -3}));
+    assert_eq!(r["loudness"]["target_reached"], json!(false), "{r}");
+    assert!(num(&r["loudness"]["gain_db"]) < 0.0, "{r}");
+    let tp = measure_wav(&out).true_peak_dbtp;
+    assert!(tp <= -3.0 + 0.1, "true peak {tp} {r}");
+    // A quiet, dynamic mix: the boost stops at the default ceiling of -1 dBTP.
+    ok(&mut s, "set_volume", json!({"track_id": track, "db": -20}));
+    let r = ok(&mut s, "bounce", json!({"path": p, "bit_depth": 32, "tail_sec": 0, "normalize_lufs": -6}));
+    assert_eq!(r["loudness"]["target_reached"], json!(false), "{r}");
+    assert!(num(&r["loudness"]["gain_db"]) > 10.0, "{r}");
+    assert_eq!(num(&r["loudness"]["true_peak_ceiling_db"]), -1.0, "{r}");
+    let tp = measure_wav(&out).true_peak_dbtp;
+    assert!(tp <= -1.0 + 0.1, "true peak {tp} {r}");
+}
+
+#[test]
+fn bounce_without_a_loudness_target_is_unchanged() {
+    let (mut s, _) = loudness_session("loud_plain_src.wav");
+    let out = tmp("loud_plain.wav");
+    let p = out.display().to_string();
+    let plain = ok(&mut s, "bounce", json!({"path": p, "bit_depth": 32, "tail_sec": 0}));
+    assert_eq!(plain.get("loudness"), None, "{plain}");
+    assert_eq!(plain.get("warnings"), None, "{plain}");
+    let plain_peak = file_peak(&out);
+    let peak_db = 20.0 * (plain_peak as f64).log10();
+    assert!((peak_db - num(&plain["master_analysis"]["peak_dbfs"])).abs() <= 0.1, "{peak_db} {plain}");
+    let target = ok(&mut s, "bounce", json!({"path": p, "bit_depth": 32, "tail_sec": 0, "normalize_lufs": -14}));
+    assert_eq!(plain["duration_sec"], target["duration_sec"], "{plain} {target}");
+    // normalize=true still scales the peak to -1 dBFS.
+    let r = ok(&mut s, "bounce", json!({"path": p, "bit_depth": 32, "tail_sec": 0, "normalize": true}));
+    assert!((file_peak(&out) - 0.891).abs() < 1e-3, "{}", file_peak(&out));
+    assert_eq!(r.get("loudness"), None, "{r}");
+    // With both, normalize_lufs sets the level and says normalize was ignored.
+    let r = ok(&mut s, "bounce", json!({"path": p, "bit_depth": 32, "tail_sec": 0, "normalize": true, "normalize_lufs": -14}));
+    assert!(r.get("loudness").is_some(), "{r}");
+    assert!((file_peak(&out) - 0.891).abs() > 0.01, "{}", file_peak(&out));
+    let warnings = r["warnings"].as_array().unwrap_or_else(|| panic!("no warnings: {r}"));
+    assert!(warnings.iter().any(|w| w.as_str().unwrap().contains("normalize")), "{r}");
+    // A ceiling alone changes nothing, and says so.
+    let r = ok(&mut s, "bounce", json!({"path": p, "bit_depth": 32, "tail_sec": 0, "true_peak_ceiling_db": -2}));
+    let warnings = r["warnings"].as_array().unwrap_or_else(|| panic!("no warnings: {r}"));
+    assert!(warnings.iter().any(|w| w.as_str().unwrap().contains("true_peak_ceiling_db")), "{r}");
+    assert_eq!(r.get("loudness"), None, "{r}");
+    assert_eq!(file_peak(&out), plain_peak);
+}
+
+#[test]
+fn bounce_loudness_values_out_of_range_are_refused() {
+    let (mut s, _) = loudness_session("loud_refused_src.wav");
+    let out = tmp("loud_refused.wav");
+    for (field, value) in [("normalize_lufs", -31.0), ("normalize_lufs", -5.0), ("true_peak_ceiling_db", 0.5), ("true_peak_ceiling_db", -10.0)] {
+        let _ = std::fs::remove_file(&out);
+        let mut args = json!({"path": out.display().to_string(), "tail_sec": 0});
+        args[field] = json!(value);
+        let e = call(&mut s, "bounce", args).unwrap_err();
+        assert!(e.contains(field), "{field} {value}: {e}");
+        assert!(!out.exists(), "{field} {value}: the file was written");
+    }
+    let spec = tool_specs().into_iter().find(|t| t.name == "bounce").unwrap();
+    let req = spec.input_schema.get("required").and_then(|r| r.as_array()).cloned().unwrap_or_default();
+    for field in ["normalize_lufs", "true_peak_ceiling_db"] {
+        assert!(spec.input_schema["properties"].get(field).is_some(), "{field}");
+        assert!(!req.iter().any(|v| v == field), "{field}");
+    }
+}
