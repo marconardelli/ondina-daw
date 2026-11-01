@@ -24,7 +24,7 @@ fn lane(p: &Project, track: u64, target: &str) -> Vec<f32> {
 
 /// An instrument track with a synth, a bus and a send to it. Returns (track, synth plug-in id).
 fn setup(p: &mut Project) -> (u64, u64) {
-    let t = ops::add_track(p, TrackKind::Instrument, None, None, Some("analog_synth".into()), None, None).unwrap();
+    let t = ops::add_track(p, TrackKind::Instrument, None, None, Some("analog_synth"), None, None).unwrap();
     let bus = ops::add_track(p, TrackKind::Bus, None, None, None, None, None).unwrap();
     apply(p, Command::AddSend { track_id: t, bus_id: bus, level_db: None, pre_fader: None }).unwrap();
     let pid = p.track(t).unwrap().instrument.as_ref().unwrap().id;

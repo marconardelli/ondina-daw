@@ -43,7 +43,7 @@ pub fn check_render_span(tempo: &ondina_core::tempo::TempoMap, start: f64, end: 
 /// The seconds a render covers: never negative, never more than `MAX_RENDER_SEC` (callers check the range first
 /// with `check_render_span`; this only keeps an unchecked caller from asking for terabytes).
 fn render_span(tempo: &ondina_core::tempo::TempoMap, start: f64, end: f64) -> f64 {
-    (tempo.beat_to_sec(end) - tempo.beat_to_sec(start)).max(0.0).min(MAX_RENDER_SEC)
+    (tempo.beat_to_sec(end) - tempo.beat_to_sec(start)).clamp(0.0, MAX_RENDER_SEC)
 }
 
 /// Seconds to frames, rounding up. The small epsilon keeps exact lengths exact: 9.6 s at 44.1 kHz is
