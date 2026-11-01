@@ -14,7 +14,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::generate::{ArpMode, BassStyle, CompStyle, DrumStyle};
-use crate::model::{AutomationPoint, CcEvent, Id, LyricEvent, MidiRoute, Note, PatternRow, SurroundFormat, TrackKind};
+use crate::model::{AutomationPoint, CcEvent, Id, LyricEvent, MidiRoute, Note, PatternRow, Region, SurroundFormat, TrackKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "command", rename_all = "snake_case")]
@@ -191,6 +191,15 @@ pub enum Command {
     JoinRegions { region_ids: Vec<Id> },
     /// Duplicate a region `count` times (default 1), placed back-to-back after it or starting at `start`.
     DuplicateRegion { region_id: Id, start: Option<f64>, count: Option<u32> },
+    /// Paste a copy of a whole region onto a track at a beat position. Pass `region` as one entry of `tracks[].regions` from get_project_json, unchanged: notes, controller events, lyrics, transpose and velocity offset (MIDI), steps and swing (pattern), file, offset, gain, fades and reverse (audio), plus name, color, mute and loop count all come along. Its id, start and take are ignored: the copy gets a new id, starts at `start` and is not part of a take set. MIDI and pattern regions need an instrument track; audio regions need an audio track and a file_id listed in the project's audio_files. Returns region_id. One undo step.
+    PasteRegion {
+        /// Destination track: an instrument track for MIDI and pattern regions, an audio track for audio regions.
+        track_id: Id,
+        /// Where the copy starts, in beats.
+        start: f64,
+        /// A region object as returned by get_project_json (an entry of tracks[].regions).
+        region: Box<Region>,
+    },
     /// Change region properties. Only given fields change.
     SetRegionProperties {
         region_id: Id,
