@@ -6,7 +6,7 @@ assistant and a complete MCP API, so that every single operation is available to
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Platform: Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4)
 ![Rust](https://img.shields.io/badge/rust-stable-orange)
-![MCP tools](https://img.shields.io/badge/MCP%20tools-164-8a5cf6)
+![MCP tools](https://img.shields.io/badge/MCP%20tools-166-8a5cf6)
 [![Sponsor](https://img.shields.io/badge/sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/marconardelli)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-support-ff5e5b?logo=kofi&logoColor=white)](https://ko-fi.com/marconardelli)
 
@@ -60,7 +60,7 @@ Every row is available both in the GUI and as MCP tools (full list in [`MCP_TOOL
 | Audio and MIDI recording | WASAPI inputs, MIDI ports, Musical Typing | `record` `set_record_arm` `connect_midi_input` `send_live_midi` |
 | Comping | cycle recording creates one take per pass; comp by segments | `list_takes` `comp_takes` |
 | Arrangement | drag/copy/resize/split/join/loop regions, copy / cut / paste regions at the playhead (Ctrl+C / X / V, also onto another track), fades, chord track (type chords or roman numerals in place, drag to move and resize), section markers, region rename and color | `move_region` `paste_region` `split_region` `copy_section` `set_chord_progression` `update_chord` |
-| Piano roll and step sequencer | note editing, box selection, copy / cut / paste and arrow-key moves, Alt+drag copies, Alt+←/→ change the length, quantize / humanize / snap to key on the selection, harmony voice in the key (3rd, 5th, 6th, octave, above or below), Length menu (legato, remove overlaps, fixed, ×½, ×2) and Velocity menu (set or scale) on the selection, velocity lane, controller lane (sustain, mod wheel, expression, volume, pan, pitch bend); step sequencer: paint steps by dragging (one undo step per stroke), row menu (clear, every step / 2nd / 4th, offbeats), "+ Row" adds a drum sound | `add_notes` `quantize_notes` `add_harmony` `set_note_lengths` `replace_cc` `set_pattern_row` `add_pattern_row` |
+| Piano roll and step sequencer | note editing, box selection, copy / cut / paste and arrow-key moves, Alt+drag copies, Alt+←/→ change the length, quantize / humanize / snap to key on the selection, harmony voice in the key (3rd, 5th, 6th, octave, above or below), Length menu (legato, remove overlaps, fixed, ×½, ×2) and Velocity menu (set or scale) on the selection, velocity lane, controller lane (sustain, mod wheel, expression, volume, pan, pitch bend); step sequencer: paint steps by dragging (one undo step per stroke), row menu (clear, every step / 2nd / 4th, offbeats, mute, rename, change the sound, delete the row), M button to mute a row, "+ Row" adds a drum sound | `add_notes` `quantize_notes` `add_harmony` `set_note_lengths` `replace_cc` `set_pattern_row` `add_pattern_row` `update_pattern_row` `remove_pattern_row` |
 | MIDI transform and routing | conditional transforms; split/layer of MIDI input | `transform_notes` `set_midi_routes` |
 | Session players | drums (13 styles), bass, chords, arpeggios, melodies | `generate_drums` `generate_bass` `generate_chords` … |
 | Time and pitch | WSOLA time-stretch, pitch shift, varispeed, key-aware pitch correction, audio→MIDI (YIN) | `time_stretch_region` `pitch_shift_region` `varispeed_region` `pitch_correct_region` `audio_to_midi` |
@@ -216,7 +216,7 @@ request is a single undo step, and **↶ Undo AI edit** reverts it only when the
 (MCP clients get one undo step per tool call).
 
 1. **MCP (no key needed)** — any MCP-capable agent (Claude Code, Claude Desktop, other clients) drives Ondina with
-   all 164 tools. See below.
+   all 166 tools. See below.
 2. **Offline assistant** — the ✨ AI Assistant panel uses a **local language model** through an OpenAI-compatible
    server (llama.cpp, Ollama, LM Studio…). Ondina starts the bundled llama.cpp server automatically when it finds a
    `.gguf` model in `tools\llm` and stops it when Ondina closes. No account, nothing leaves your machine; small
@@ -251,7 +251,7 @@ Example `claude_desktop_config.json`:
 { "mcpServers": { "ondina": { "command": "C:\\path\\to\\ondina-mcp.exe" } } }
 ```
 
-The server exposes **tools** (164, annotated read-only/destructive), **resources** (`ondina://guide`,
+The server exposes **tools** (166, annotated read-only/destructive), **resources** (`ondina://guide`,
 `ondina://project`, `ondina://project/document`, `ondina://plugins`, `ondina://patches`) and **prompts**
 (`compose_song`, `mix_review`, `arrange_sections`). It listens on `127.0.0.1` only, rejects non-local `Origin`
 headers (DNS-rebinding protection), including `Origin: null` unless a token is set, and requires a bearer token when
