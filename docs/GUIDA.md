@@ -339,6 +339,27 @@ lunghezza, in blu) e i marker semplici (un punto, in marrone).
 Spostare un marker non sposta le regioni che ci stanno sotto. Per copiare o ripetere il materiale
 di una sezione usa il menu del clic destro.
 
+## Tonalità del progetto
+
+La tonalità del progetto si sceglie dal menu a tendina della barra di trasporto, che mostra quella attuale (per
+esempio "C Major"). La usano Snap to key, Harmony, il Transposer con "Lock to Project Key", il Chord Trigger con
+"Diatonic (Key)", i session player e i gradi della corsia accordi.
+
+- **Detect from MIDI**, la prima voce del menu, stima la tonalità dalle note delle parti MIDI delle tracce strumento
+  e la imposta come tonalità del progetto. Non contano le tracce Drum Kit, i pattern dello step sequencer, le
+  regioni mute e le celle di Live Loops. Le note lunghe e forti pesano più di quelle brevi e piano, e conta la
+  trasposizione della regione.
+- La barra di stato mostra la tonalità trovata, la confidenza (da 0 a 1) e le tonalità vicine. Le tonalità relative
+  (Do maggiore e La minore) hanno le stesse note e spesso escono vicine: se la parte suona minore, scegli la
+  relativa dal menu. Con poche note (meno di 8) o una confidenza bassa la barra lo dice.
+- Propone solo tonalità maggiori e minori: le scale modali (Dorian, Mixolydian) si scelgono a mano.
+- Una batteria suonata da un Sampler o da un plug-in VST3 non è riconosciuta come Drum Kit e le sue note entrano
+  nella stima.
+- Un Ctrl+Z riporta la tonalità di prima.
+
+Agenti e assistente usano il tool `detect_key`: `region_id` analizza una sola regione MIDI, `apply: true` imposta
+la tonalità trovata. Senza `apply` il tool non cambia nulla e restituisce la stima con le alternative.
+
 ## Corsia accordi
 
 La corsia accordi sta sotto la corsia marker, sopra le tracce. Mostra gli accordi della canzone e,

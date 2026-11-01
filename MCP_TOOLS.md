@@ -62,6 +62,11 @@ Set the project key, e.g. "C major", "A minor", "Eb mixolydian", "F# minor_penta
 
 Parameters: `key`
 
+### `detect_key` · read-only
+Estimate the key of the MIDI parts from their notes (Krumhansl-Kessler key profiles; major and minor keys only). Analyzes one MIDI region, or without region_id every unmuted MIDI region on instrument tracks, skipping Drum Kit tracks and step patterns. Returns the key, a confidence 0..1, low_confidence when there are few notes, and the 3 next candidates: relative keys (C major / A minor) are often close, so check them. apply=true also sets the project key (undoable).
+
+Parameters: `apply, region_id`
+
 ### `undo` · read-only
 Undo the last edit.
 

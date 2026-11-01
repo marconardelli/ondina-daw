@@ -2537,3 +2537,78 @@ fn de_esser_is_listed_added_and_applied_in_a_bounce() {
     assert!((-10.0..=-6.0).contains(&high), "7 kHz changed by {high} dB");
     assert!(low.abs() < 0.5, "200 Hz changed by {low} dB");
 }
+
+fn a_minor_melody_json() -> Value {
+    let melody = [(69, 1.0), (72, 1.0), (71, 1.0), (69, 1.0), (76, 1.0), (74, 1.0), (72, 1.0), (71, 1.0), (68, 1.0), (69, 1.0), (71, 1.0), (72, 1.0), (71, 1.0), (68, 1.0), (69, 2.0)];
+    let mut start = 0.0;
+    let notes: Vec<Value> = melody
+        .iter()
+        .map(|&(pitch, length)| {
+            let n = json!({"pitch": pitch, "velocity": 100, "start": start, "length": length});
+            start += length;
+            n
+        })
+        .collect();
+    Value::Array(notes)
+}
+
+fn drum_notes_json() -> Value {
+    let mut notes = vec![];
+    for i in 0..16 {
+        notes.push(json!({"pitch": 42, "velocity": 100, "start": i, "length": 0.5}));
+    }
+    for bar in 0..4 {
+        let b = bar as f64 * 4.0;
+        notes.push(json!({"pitch": 36, "velocity": 100, "start": b, "length": 0.5}));
+        notes.push(json!({"pitch": 38, "velocity": 100, "start": b + 2.0, "length": 0.5}));
+        notes.push(json!({"pitch": 37, "velocity": 100, "start": b + 3.5, "length": 0.5}));
+    }
+    notes.push(json!({"pitch": 49, "velocity": 100, "start": 0, "length": 2}));
+    notes.push(json!({"pitch": 49, "velocity": 100, "start": 8, "length": 2}));
+    Value::Array(notes)
+}
+
+#[test]
+fn detect_key_sets_the_project_key_in_one_undo_step() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
+    ok(&mut s, "create_midi_region", json!({"track_id": t, "start": 0, "length": 16, "notes": a_minor_melody_json()}));
+    let d = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Pop Drum Kit"}))["track_id"].as_u64().unwrap();
+    ok(&mut s, "create_midi_region", json!({"track_id": d, "start": 0, "length": 16, "notes": drum_notes_json()}));
+    ok(&mut s, "create_pattern_region", json!({"track_id": t, "start": 32}));
+
+    let (undo, rev) = (s.can_undo().map(String::from), s.revision);
+    for args in [json!({}), json!({"apply": false})] {
+        let r = ok(&mut s, "detect_key", args);
+        assert_eq!(r["key"], "A Minor", "{r}");
+        assert_eq!(r["applied"], false);
+        assert_eq!(s.can_undo().map(String::from), undo);
+        assert_eq!(s.revision, rev);
+        assert_eq!(s.project.key.name(), "C Major");
+    }
+
+    let r = ok(&mut s, "detect_key", json!({"apply": true}));
+    assert_eq!(r["applied"], true);
+    assert_eq!(s.project.key.name(), "A Minor");
+    assert_eq!(s.can_undo(), Some("detect_key"));
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(s.project.key.name(), "C Major");
+    assert!(tool_specs().iter().any(|t| t.name == "detect_key" && t.read_only));
+}
+
+#[test]
+fn detect_key_explains_what_it_cannot_read() {
+    let mut s = Session::new(false);
+    let d = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Pop Drum Kit"}))["track_id"].as_u64().unwrap();
+    let drum_region = ok(&mut s, "create_midi_region", json!({"track_id": d, "start": 0, "length": 16, "notes": drum_notes_json()}))["region_id"].as_u64().unwrap();
+    let pattern = ok(&mut s, "create_pattern_region", json!({"track_id": d, "start": 16}))["region_id"].as_u64().unwrap();
+    let err = call(&mut s, "detect_key", json!({})).unwrap_err();
+    assert!(err.contains("no MIDI notes"), "{err}");
+    let err = call(&mut s, "detect_key", json!({"region_id": drum_region})).unwrap_err();
+    assert!(err.contains("Drum Kit"), "{err}");
+    let undo = s.can_undo().map(String::from);
+    let err = call(&mut s, "detect_key", json!({"region_id": pattern, "apply": true})).unwrap_err();
+    assert!(err.contains("step pattern"), "{err}");
+    assert_eq!(s.can_undo().map(String::from), undo);
+    assert_eq!(s.project.key.name(), "C Major");
+}
