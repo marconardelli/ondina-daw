@@ -135,26 +135,50 @@ pub fn initial_view(notes: &[Note], rows: i32) -> (i32, f64) {
     (top.clamp(TOP_PITCH_MIN, TOP_PITCH_MAX), first.floor().max(0.0))
 }
 
+/// Key height that shows `span` pitch rows (and a row of margin) in a grid `grid_h` tall: the current height when
+/// they already fit, otherwise smaller, but never under the smallest key height.
+pub fn framing_key_height(span: i32, grid_h: f32, key_h: f32) -> f32 {
+    let need = (span.max(1) + 1) as f32;
+    if grid_h <= 0.0 || need * key_h <= grid_h {
+        return key_h;
+    }
+    (grid_h / need).clamp(KEY_H_MIN, key_h)
+}
+
 /// Remembers which region the piano roll last framed, so a region is framed when it is first shown
-/// and not again on every frame or when the same region is selected again.
+/// and not again on every frame or when the same region is selected again. While the person has not
+/// scrolled or zoomed it yet, a change of the grid's height (the panel settling on its size) frames it
+/// again, so the notes are never left cut off by a first frame of another size.
 #[derive(Debug, Default)]
 pub struct ViewFraming {
     framed: Option<Id>,
+    height: f32,
+    touched: bool,
 }
 
 impl ViewFraming {
-    /// True the first time `region` is shown since the last different region or `reset`.
-    pub fn take(&mut self, region: Id) -> bool {
-        if self.framed == Some(region) {
-            return false;
+    /// True the first time `region` is shown since the last different region or `reset`, and when the same,
+    /// untouched region is shown in a grid `grid_h` tall of another height.
+    pub fn take_at(&mut self, region: Id, grid_h: f32) -> bool {
+        let fresh = self.framed != Some(region);
+        let resized = !fresh && !self.touched && (grid_h - self.height).abs() > 0.5;
+        if fresh {
+            self.touched = false;
         }
         self.framed = Some(region);
-        true
+        self.height = grid_h;
+        fresh || resized
+    }
+
+    /// The person scrolled or zoomed the view: keep it as it is from now on.
+    pub fn touch(&mut self) {
+        self.touched = true;
     }
 
     /// Frame again the next time a region is shown (double-click on a region, new or opened project).
     pub fn reset(&mut self) {
         self.framed = None;
+        self.touched = false;
     }
 }
 
@@ -479,6 +503,39 @@ mod tests {
     }
 
     #[test]
+    fn framing_shrinks_the_keys_until_the_whole_range_shows() {
+        // two octaves in a small panel: the keys get smaller so every note shows
+        let kh = framing_key_height(25, 180.0, DEFAULT_KEY_H);
+        assert!(kh < DEFAULT_KEY_H);
+        assert!(visible_rows(180.0, kh) >= 25, "{kh}");
+        let notes: Vec<Note> = (0..25).map(|i| n(36 + i as u8, i as f64)).collect();
+        let (top, _) = initial_view(&notes, visible_rows(180.0, kh));
+        assert!(top >= 60 && top - visible_rows(180.0, kh) < 36, "top {top}");
+        // a range that fits keeps the key height; a huge one stops at the smallest keys
+        assert_eq!(framing_key_height(10, 400.0, DEFAULT_KEY_H), DEFAULT_KEY_H);
+        assert_eq!(framing_key_height(100, 120.0, DEFAULT_KEY_H), KEY_H_MIN);
+        assert_eq!(framing_key_height(10, 0.0, DEFAULT_KEY_H), DEFAULT_KEY_H);
+    }
+
+    #[test]
+    fn framing_follows_the_panel_settling_until_the_view_is_touched() {
+        let mut f = ViewFraming::default();
+        assert!(f.take_at(5, 300.0));
+        assert!(!f.take_at(5, 300.0));
+        // the panel got its real size a frame later: frame again
+        assert!(f.take_at(5, 180.0));
+        assert!(!f.take_at(5, 180.0));
+        // once scrolled, a resize keeps the person's view
+        f.touch();
+        assert!(!f.take_at(5, 240.0));
+        // another region starts untouched
+        assert!(f.take_at(6, 240.0));
+        assert!(f.take_at(6, 200.0));
+        f.reset();
+        assert!(f.take_at(6, 200.0));
+    }
+
+    #[test]
     fn framing_stays_in_range() {
         assert_eq!(initial_view(&[n(127, 0.0)], 40).0, 127);
         assert_eq!(initial_view(&[n(0, 0.0)], 10).0, 20);
@@ -487,13 +544,13 @@ mod tests {
     #[test]
     fn framing_happens_once_per_region() {
         let mut f = ViewFraming::default();
-        assert!(f.take(5));
-        assert!(!f.take(5));
-        assert!(f.take(6));
-        assert!(f.take(5));
-        assert!(!f.take(5));
+        assert!(f.take_at(5, 100.0));
+        assert!(!f.take_at(5, 100.0));
+        assert!(f.take_at(6, 100.0));
+        assert!(f.take_at(5, 100.0));
+        assert!(!f.take_at(5, 100.0));
         f.reset();
-        assert!(f.take(5));
+        assert!(f.take_at(5, 100.0));
     }
 
     #[test]

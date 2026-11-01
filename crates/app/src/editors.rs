@@ -17,7 +17,7 @@ use crate::note_clipboard as nc;
 use crate::note_drag::{self, VelocityStroke};
 use crate::note_selection;
 use crate::piano_roll_view::{
-    follow_scroll, grid_line, grid_step, initial_view, is_black, key_label, loop_local_beat, note_colors,
+    follow_scroll, framing_key_height, grid_line, grid_step, initial_view, is_black, key_label, loop_local_beat, note_colors,
     piano_roll_layout, playing_pattern_step, row_fill, row_line, scroll_pitch, velocity_colors, visible_rows,
     wheel_zoom, zoom_factor, zoom_pitch, zoom_time, GridLine, BLACK_KEY_INSET, KEY_BLACK, KEY_LABEL, KEY_LINE,
     KEY_WHITE, RULER_H, VEL_H,
@@ -143,7 +143,12 @@ impl OndinaApp {
         painter.rect_filled(full, Rounding::ZERO, theme::LANE_BG);
         // Frame the region's notes the first time it is shown; before the input so this frame already
         // draws the framed view.
-        if self.pr_framing.take(rid) {
+        if self.pr_framing.take_at(rid, grid.height()) {
+            let span = match (m.notes.iter().map(|n| n.pitch).min(), m.notes.iter().map(|n| n.pitch).max()) {
+                (Some(lo), Some(hi)) => i32::from(hi) - i32::from(lo) + 1,
+                _ => 1,
+            };
+            self.pr_key_height = framing_key_height(span, grid.height(), self.pr_key_height);
             let rows = visible_rows(grid.height(), self.pr_key_height).max(1);
             let (top, beat) = initial_view(&m.notes, rows);
             self.pr_top_pitch = top;
@@ -163,6 +168,9 @@ impl OndinaApp {
             let hover = hover.unwrap_or(grid.center());
             let dx = (hover.x - grid.left()).clamp(0.0, grid.width());
             let dy = (hover.y - grid.top()).clamp(0.0, grid.height());
+            if zoom.time != 0.0 || zoom.pitch != 0.0 || scroll != egui::Vec2::ZERO {
+                self.pr_framing.touch();
+            }
             if zoom.time != 0.0 {
                 (self.pr_scroll_beat, self.pr_px_per_beat) =
                     zoom_time(self.pr_scroll_beat, self.pr_px_per_beat, dx, zoom_factor(zoom.time));
@@ -549,8 +557,8 @@ impl OndinaApp {
             if *region == rid {
                 let to_y = |p: f32| grid.top() + (top_pitch as f32 + 1.0 - p) * kh;
                 let r = Rect::from_two_pos(pos2(beat_x(*b0, sb), to_y(*p0)), pos2(beat_x(*b1, sb), to_y(*p1)));
-                gpainter.rect_filled(r, Rounding::ZERO, Color32::from_rgba_unmultiplied(120, 170, 255, 40));
-                gpainter.rect_stroke(r, Rounding::ZERO, Stroke::new(1.2_f32, Color32::from_rgb(140, 185, 255)));
+                gpainter.rect_filled(r, Rounding::ZERO, theme::MARQUEE_FILL);
+                gpainter.rect_stroke(r, Rounding::ZERO, Stroke::new(1.2_f32, theme::MARQUEE_LINE));
             }
         }
         // velocity lane: a stem with a round head per note, in the track color
@@ -626,7 +634,7 @@ impl OndinaApp {
                 Some(s) if s.erase => {
                     if let Some((from, to)) = s.range() {
                         let r = Rect::from_min_max(pos2(beat_x(from, sb), body.top()), pos2(beat_x(to, sb), body.bottom()));
-                        cpainter.rect_filled(r, Rounding::ZERO, Color32::from_rgba_unmultiplied(220, 60, 60, 40));
+                        cpainter.rect_filled(r, Rounding::ZERO, theme::REC.gamma_multiply(0.16));
                     }
                 }
                 Some(s) => stroke_value = s.last_value(),
