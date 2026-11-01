@@ -7,6 +7,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-01
+
+### Added
+
+- Arrange window: copy, cut and paste whole regions. Select a region and press Ctrl+C or Ctrl+X, then Ctrl+V pastes
+  a copy at the playhead (snapped back to the grid) on the selected track, or on the track it came from when no
+  track is selected. The same actions are in the Edit menu (Copy Region, Cut Region, Paste Region). The copy keeps
+  everything: notes, controllers, lyrics, pattern steps, audio gain, fades and reverse, name, color and loops. Each
+  cut or paste is one undo step, and MIDI or pattern regions can be pasted into another open project.
+- For MCP clients and the assistant, a new `paste_region` tool places a copy of a region on any track.
+
+### Changed
+
+- Offline assistant: the local model can now humanize the selected notes, snap them to the project key and add
+  harmony, so requests like "humanize the selected notes" work without Claude. It gets 45 tools instead of 43.
+- The line under the assistant panel title shows which engine answers and how many tools it gets.
+- The local model is warned that Quantize reorders notes, so follow-up edits on the same selection hit the right
+  notes.
+
 ## [0.12.0] - 2026-10-31
 
 ### Added
@@ -389,7 +408,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/marconardelli/ondina-daw/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/marconardelli/ondina-daw/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/marconardelli/ondina-daw/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/marconardelli/ondina-daw/compare/v0.10.1...v0.10.2
