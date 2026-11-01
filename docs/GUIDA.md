@@ -22,6 +22,13 @@ Questa guida spiega come usare gli editor di Ondina con mouse, tastiera e menu.
   dell'assistente. Se dopo aver copiato in Ondina copi un'immagine in un altro programma, Ctrl+V nel piano roll
   non fa nulla finché non copi di nuovo le note.
 - Ctrl+A seleziona tutte le note.
+- Ctrl+D ripete le note selezionate subito dopo se stesse: le copie partono dalla fine della selezione (dall'inizio
+  della prima nota alla fine dell'ultima), arrotondata in su alla griglia dello snap (al massimo un beat; con lo snap
+  spento la durata esatta). Le copie che cadrebbero oltre la fine della regione si scartano. Le copie diventano la
+  selezione, quindi premendo ancora Ctrl+D la frase si ripete di nuovo; ogni ripetizione si annulla con un solo
+  Ctrl+Z. Una pausa dopo l'ultima nota non conta: per ripetere una battuta che finisce con una pausa usa lo snap 1/4
+  (l'ultima nota si arrotonda al beat) oppure copia e incolla col playhead. Senza note selezionate Ctrl+D duplica la
+  regione. Anche dal menu Edit ▸ Repeat Selected Notes.
 - Frecce ←/→: spostano le note selezionate di un passo di snap (1/16 con lo snap spento, 1/4 con Bar);
   ↑/↓ di un semitono, Maiusc+↑/↓ di un'ottava. Lo spostamento si ferma all'inizio della regione e ai limiti
   delle altezze MIDI senza cambiare la forma degli accordi.
@@ -767,7 +774,7 @@ cancellata. La finestra di recupero compare comunque se all'avvio trova copie ri
 | Maiusc+, / Maiusc+. | playhead al marker precedente / successivo (o all'inizio / alla fine della canzone) |
 | Ctrl+Z / Ctrl+Y | annulla / ripeti |
 | Ctrl+S / O / N | salva / apri / nuovo |
-| Ctrl+D | duplica la regione |
+| Ctrl+D | duplica la regione (con note selezionate nel piano roll: ripete le note) |
 | Ctrl+T | divide la regione selezionata al playhead |
 | Ctrl+B | bounce |
 | Ctrl+rotella | zoom orizzontale attorno al puntatore |

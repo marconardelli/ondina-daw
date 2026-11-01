@@ -133,7 +133,7 @@ impl OndinaApp {
         // toolbar
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("🎹 {} — {}", track.name, region.name)).strong())
-                .on_hover_text("Click on empty grid: add a note and select it (Ctrl/Shift: add it to the selection) · Wheel: scroll pitch · Shift+wheel: scroll time · Ctrl+wheel: zoom time · Ctrl+Shift+wheel: zoom pitch · Ctrl+C/X/V: copy/cut/paste · Ctrl+A: select all · ←/→: move by the snap step · ↑/↓: semitone · Shift+↑/↓: octave · Alt+←/→: shorten/lengthen by the snap step · Alt+drag: copy the notes · Controller lane: drag to draw, right-drag to erase");
+                .on_hover_text("Click on empty grid: add a note and select it (Ctrl/Shift: add it to the selection) · Wheel: scroll pitch · Shift+wheel: scroll time · Ctrl+wheel: zoom time · Ctrl+Shift+wheel: zoom pitch · Ctrl+C/X/V: copy/cut/paste · Ctrl+A: select all · Ctrl+D: repeat the selection · ←/→: move by the snap step · ↑/↓: semitone · Shift+↑/↓: octave · Alt+←/→: shorten/lengthen by the snap step · Alt+drag: copy the notes · Controller lane: drag to draw, right-drag to erase");
             ui.separator();
             ui.label("Note length");
             egui::ComboBox::from_id_salt("notelen").width(60.0).selected_text(len_label(self.note_len)).show_ui(ui, |ui| {
@@ -956,14 +956,15 @@ impl OndinaApp {
         let has_sel = !self.selected_notes.is_empty();
         let has_clip = self.note_clipboard.is_some();
         let arrows = nc::arrows_on(true, self.musical_typing, has_sel);
-        let (cut, copy, paste, all, length, nudge) = ctx.input_mut(|i| {
+        let (cut, copy, paste, repeat, all, length, nudge) = ctx.input_mut(|i| {
+            let repeat = nc::consume_repeat(i, has_sel);
             let cut = has_sel && take_event(&mut i.events, |e| matches!(e, egui::Event::Cut));
             let copy = has_sel && take_event(&mut i.events, |e| matches!(e, egui::Event::Copy));
             let paste = has_clip && take_event(&mut i.events, |e| matches!(e, egui::Event::Paste(_)));
             let all = i.consume_key(egui::Modifiers::COMMAND, Key::A);
             let length = if arrows { consume_alt_arrow(i) } else { None };
             let nudge = if arrows && length.is_none() { consume_arrow(i) } else { None };
-            (cut, copy, paste, all, length, nudge)
+            (cut, copy, paste, repeat, all, length, nudge)
         });
         if cut || copy {
             let Some(clip) = nc::copy(&m.notes, &self.selected_notes) else { return arrows };
@@ -993,6 +994,8 @@ impl OndinaApp {
                     self.status = format!("Pasted {count} notes");
                 }
             }
+        } else if repeat {
+            self.repeat_notes(rid, region.length, &m.notes);
         } else if all {
             self.selected_notes = nc::select_all(m.notes.len());
         } else if let Some(steps) = length {
@@ -1019,6 +1022,35 @@ impl OndinaApp {
         let stored = note_selection::region_notes(&self.view.project, rid);
         self.selected_notes = if stored == Some(edit.notes.as_slice()) { edit.selected } else { HashSet::new() };
         true
+    }
+
+    /// Ctrl+D with notes selected: the selected notes again right after themselves, one `AddNotes` (one undo step),
+    /// and the copies become the selection so the next Ctrl+D repeats the phrase again.
+    fn repeat_notes(&mut self, rid: Id, region_length: f64, notes: &[Note]) {
+        let Some(added) = nc::repeat_after(notes, &self.selected_notes, nc::grid(self.snap), region_length) else { return };
+        if added.is_empty() {
+            self.status = "Nothing repeated: the copies would start past the end of the region".into();
+            return;
+        }
+        let count = added.len();
+        let edit = nc::paste(notes, &added);
+        if self.apply_note_edit(rid, Command::AddNotes { region_id: rid, notes: added }, edit) {
+            self.status = format!("Repeated {count} notes");
+        }
+    }
+
+    /// Whether Edit ▸ Repeat Selected Notes acts: notes are selected in the piano roll shown in the Editor tab.
+    pub(crate) fn can_repeat_notes(&self) -> bool {
+        self.bottom == BottomTab::Editor && !self.extra.show_score && !self.selected_notes.is_empty() && self.drag.is_none()
+    }
+
+    /// Edit ▸ Repeat Selected Notes: what Ctrl+D does in the piano roll.
+    pub(crate) fn repeat_selected_notes(&mut self) {
+        let p = self.project();
+        let Some(rid) = self.selected_region else { return };
+        let Some((_, region)) = p.find_region(rid) else { return };
+        let RegionContent::Midi(m) = &region.content else { return };
+        self.repeat_notes(rid, region.length, &m.notes);
     }
 
     fn step_sequencer(

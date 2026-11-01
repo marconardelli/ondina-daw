@@ -143,7 +143,7 @@ extension: Ondina opens both.
   drag its right edge to resize; Esc during a drag (notes, note edges, box selection, velocities, a
   controller stroke) cancels it; Delete/Backspace removes the selection; Ctrl+C/Ctrl+X/Ctrl+V copy, cut
   and paste the selected notes (pasted at the playhead when it is inside the region, otherwise at their original
-  position; the copied notes also go to the system clipboard as JSON); Ctrl+A selects every note; ←/→ move the
+  position; the copied notes also go to the system clipboard as JSON); Ctrl+A selects every note; Ctrl+D repeats the selected notes right after themselves (rounded up to the snap grid, at most a beat; exact with snap off; copies past the region end are dropped), one undo step, and the copies become the selection so Ctrl+D again repeats the phrase again (without selected notes Ctrl+D duplicates the region); ←/→ move the
   selection by the snap step (1/16 with snap off), ↑/↓ by a semitone, Shift+↑/↓ by an octave; Alt+←/→ shorten or lengthen the selection by the snap step (never below one step); double-click or
   right-click deletes a single note; drag in the velocity lane to set velocities: every note the stroke crosses gets the value along the stroke, and a stroke that changes nothing leaves no undo step; below it the controller lane shows one controller of the region (pick it in the selector on the left, which also shows how many events each one has): the sustain pedal as bars where it is down, the others as a stepped line; drag to draw one event per snap step (1/32 with snap off), right-drag to erase, click to set or erase a single step; the curve after the stroke goes back to what it was, each stroke is one undo step and the CC button closes the lane (the built-in instruments respond only to sustain, on the Analog Synth and FM Synth; VST3 instruments get every controller); the selection stays on the same notes after Undo/Redo and assistant or MCP edits; the view opens on the region's notes (double-click the region to frame them again), the wheel scrolls pitch at the same speed both ways, Shift+wheel scrolls time, Ctrl+wheel zooms time around the pointer, Ctrl+Shift+wheel zooms pitch, and the playhead follows the repeats of a looped region.
 - **Score**: switch the editor to 𝄞 Score to see the selected region as notation, export MusicXML, assign lyrics.
@@ -189,7 +189,7 @@ extension: Ondina opens both.
 |---|---|---|---|
 | Space | play / stop | Ctrl+Z / Ctrl+Y | undo / redo |
 | R | record | Delete | delete selection |
-| C | toggle cycle | Ctrl+D | duplicate region |
+| C | toggle cycle | Ctrl+D | duplicate region (piano roll: repeat the selected notes) |
 | K | metronome | Ctrl+S / O / N | save / open / new |
 | Home | go to start | Ctrl+B | bounce |
 | Ctrl+wheel | zoom time around the pointer | Shift+wheel | scroll time |

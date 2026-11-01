@@ -4,7 +4,7 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
-use eframe::egui::Key;
+use eframe::egui::{self, Key};
 use ondina_core::model::{Note, Region};
 
 use crate::piano_roll_view::loop_local_beat;
@@ -85,6 +85,31 @@ pub fn paste(existing: &[Note], added: &[Note]) -> NoteEdit {
     let notes: Vec<Note> = existing.iter().chain(added).copied().collect();
     let marked: Vec<bool> = (0..notes.len()).map(|i| i >= existing.len()).collect();
     session_order(notes, &marked)
+}
+
+/// How far Ctrl+D moves the copies of the selected notes: from the start of the earliest to the end of the latest,
+/// rounded up to the grid so the copies stay on it and never start inside the phrase they repeat; the exact span
+/// with no grid. `None` without a valid selected note.
+pub fn repeat_offset(notes: &[Note], selected: &HashSet<usize>, grid: f64) -> Option<f64> {
+    let clip = copy(notes, selected)?;
+    let span = clip.notes.iter().map(|n| n.start + n.length).fold(0.0, f64::max);
+    let offset = if grid > 0.0 { (span / grid - 1e-6).ceil().max(1.0) * grid } else { span };
+    (offset > 1e-9).then_some(offset)
+}
+
+/// The selected notes again, right after themselves (`repeat_offset` later), without the copies that would begin
+/// past the end of the region, as a paste does. `None` without a valid selected note; empty when every copy would
+/// start past the end.
+pub fn repeat_after(notes: &[Note], selected: &HashSet<usize>, grid: f64, region_length: f64) -> Option<Vec<Note>> {
+    let clip = copy(notes, selected)?;
+    let offset = repeat_offset(notes, selected, grid)?;
+    Some(pasted_notes(&clip, clip.origin + offset, region_length))
+}
+
+/// Takes Ctrl+D from this frame's input when notes are selected, so `handle_keys` no longer sees it and does not
+/// duplicate the region. Without a selection the key stays for the region.
+pub fn consume_repeat(i: &mut egui::InputState, has_selection: bool) -> bool {
+    has_selection && i.consume_key(egui::Modifiers::COMMAND, Key::D)
 }
 
 /// How far the selected notes can move as a block: no note before 0 and every pitch in 0..127, so a chord keeps its
@@ -321,6 +346,73 @@ mod tests {
     }
 
     #[test]
+    fn repeat_after_moves_a_bar_by_its_length_on_the_grid() {
+        let bar = vec![n(60, 0.0, 1.0), n(62, 1.0, 1.0), n(64, 2.0, 1.0), n(65, 3.0, 1.0)];
+        let all = set(&[0, 1, 2, 3]);
+        assert_eq!(repeat_offset(&bar, &all, grid(0.25)), Some(4.0));
+        assert_eq!(repeat_after(&bar, &all, grid(0.25), 16.0).unwrap(), vec![n(60, 4.0, 1.0), n(62, 5.0, 1.0), n(64, 6.0, 1.0), n(65, 7.0, 1.0)]);
+        // the last note ends a little early: still a whole bar on a 1/4 grid, and on 1/16 rounded up to 4.0
+        let short = vec![n(60, 0.0, 1.0), n(62, 1.0, 1.0), n(64, 2.0, 1.0), n(65, 3.0, 0.9)];
+        assert_eq!(repeat_offset(&short, &all, grid(1.0)), Some(4.0));
+        assert_eq!(repeat_offset(&short, &all, grid(0.25)), Some(4.0));
+        // a phrase in the middle of the region goes right after itself
+        assert_eq!(repeat_after(&bar, &set(&[1, 2]), grid(0.25), 16.0).unwrap(), vec![n(62, 3.0, 1.0), n(64, 4.0, 1.0)]);
+        // the "Bar" snap repeats on a beat grid like the rest of the piano roll
+        assert_eq!(repeat_offset(&[n(60, 0.0, 1.5)], &set(&[0]), grid(4.0)), Some(2.0));
+    }
+
+    #[test]
+    fn repeat_after_without_grid_uses_the_exact_span() {
+        let notes = vec![n(60, 0.0, 0.3), n(62, 0.5, 0.2)];
+        let all = set(&[0, 1]);
+        let offset = repeat_offset(&notes, &all, 0.0).unwrap();
+        assert!((offset - 0.7).abs() < 1e-9);
+        let r = repeat_after(&notes, &all, 0.0, 8.0).unwrap();
+        assert!((r[0].start - 0.7).abs() < 1e-9 && (r[1].start - 1.2).abs() < 1e-9);
+        assert_eq!(repeat_offset(&notes, &all, grid(0.25)), Some(0.75));
+    }
+
+    #[test]
+    fn repeat_after_drops_copies_past_the_region_end() {
+        let bar = vec![n(60, 0.0, 1.0), n(62, 1.0, 1.0), n(64, 2.0, 1.0), n(65, 3.0, 1.0)];
+        let all = set(&[0, 1, 2, 3]);
+        assert_eq!(repeat_after(&bar, &all, 0.25, 6.0).unwrap(), vec![n(60, 4.0, 1.0), n(62, 5.0, 1.0)]);
+        assert_eq!(repeat_after(&bar, &all, 0.25, 4.0), Some(vec![]));
+    }
+
+    #[test]
+    fn repeat_after_needs_a_valid_selection() {
+        let notes = four();
+        assert_eq!(repeat_after(&notes, &set(&[]), 0.25, 8.0), None);
+        assert_eq!(repeat_after(&notes, &set(&[9]), 0.25, 8.0), None);
+        assert_eq!(repeat_offset(&notes, &set(&[]), 0.25), None);
+        assert_eq!(repeat_after(&notes, &set(&[9, 0]), 0.25, 8.0).unwrap(), vec![n(60, 0.5, 0.5)]);
+    }
+
+    fn ctrl_d_frame(mods: egui::Modifiers, has_selection: bool) -> (bool, bool) {
+        let ctx = egui::Context::default();
+        let mut raw = egui::RawInput { modifiers: mods, ..Default::default() };
+        raw.events.push(egui::Event::Key { key: Key::D, physical_key: None, pressed: true, repeat: false, modifiers: mods });
+        let mut out = (false, false);
+        let _ = ctx.run(raw, |ctx| {
+            let taken = ctx.input_mut(|i| consume_repeat(i, has_selection));
+            // what `handle_keys` reads afterwards: Ctrl+D for the region, or a bare D
+            let left = ctx.input(|i| i.key_pressed(Key::D));
+            out = (taken, left);
+        });
+        out
+    }
+
+    #[test]
+    fn ctrl_d_is_taken_only_with_selected_notes() {
+        let ctrl = egui::Modifiers::CTRL | egui::Modifiers::COMMAND;
+        assert_eq!(ctrl_d_frame(ctrl, true), (true, false));
+        assert_eq!(ctrl_d_frame(ctrl, false), (false, true));
+        // D alone never repeats the notes
+        assert_eq!(ctrl_d_frame(egui::Modifiers::NONE, true), (false, true));
+    }
+
+    #[test]
     fn nudge_left_stops_at_zero() {
         let notes = [n(60, 0.0, 0.5), n(62, 0.1, 0.5)];
         let e = nudge(&notes, &set(&[1]), -0.25, 0).unwrap();
@@ -509,6 +601,34 @@ mod tests {
         run(&mut s, "undo", json!({}), Source::Gui);
         assert_eq!(notes_of(&s.project, b), before_b);
         assert_eq!(notes_of(&s.project, a), before_a);
+    }
+
+    #[test]
+    fn repeat_is_one_undo_step_and_selects_the_copies() {
+        let (mut s, _, rid) = session_with(0.0, &four());
+        let before = notes_of(&s.project, rid);
+        let len = region_of(&s.project, rid).length;
+        let added = repeat_after(&before, &set(&[0, 1]), grid(0.25), len).unwrap();
+        assert_eq!(pitches_starts(&added), vec![(60, 1.5), (62, 2.5)]);
+        let edit = paste(&before, &added);
+        s.execute(Command::AddNotes { region_id: rid, notes: added }, Source::Gui).unwrap();
+        let stored = notes_of(&s.project, rid);
+        assert_eq!(stored, edit.notes);
+        // the copies are the new selection
+        let mut picked: Vec<(u8, f64)> = edit.selected.iter().map(|&i| (stored[i].pitch, stored[i].start)).collect();
+        picked.sort_by(|x, y| x.1.partial_cmp(&y.1).unwrap());
+        assert_eq!(picked, vec![(60, 1.5), (62, 2.5)]);
+        // Ctrl+D again repeats the phrase after the copies
+        let again = repeat_after(&stored, &edit.selected, grid(0.25), len).unwrap();
+        assert_eq!(pitches_starts(&again), vec![(60, 3.0), (62, 4.0)]);
+        let edit2 = paste(&stored, &again);
+        s.execute(Command::AddNotes { region_id: rid, notes: again }, Source::Gui).unwrap();
+        assert_eq!(notes_of(&s.project, rid), edit2.notes);
+        assert_eq!(notes_of(&s.project, rid).len(), 8);
+        run(&mut s, "undo", json!({}), Source::Gui);
+        assert_eq!(notes_of(&s.project, rid), stored);
+        run(&mut s, "undo", json!({}), Source::Gui);
+        assert_eq!(notes_of(&s.project, rid), before);
     }
 
     #[test]
