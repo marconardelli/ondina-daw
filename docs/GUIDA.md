@@ -260,6 +260,22 @@ locale o collegala a una lettera di unità.
 - Per esportare un loop di lunghezza esatta, senza coda, chiedi all'assistente o usa il tool MCP
   `bounce` con `tail_sec: 0`.
 
+## Carico DSP e sovraccarichi
+
+Nella barra di trasporto, accanto a **DSP nn%** (quanto del tempo a disposizione ha usato l'ultimo blocco
+audio), c'è il numero di **overload**: i blocchi che dall'ultimo Play hanno impiegato più tempo di quello
+concesso dalla scheda audio. Ognuno si può sentire come un clic o un buco nel suono.
+
+- A 0 il numero è grigio; appena c'è un sovraccarico diventa rosso.
+- Play lo azzera. Stop no: dopo Stop leggi quanti sovraccarichi ha avuto la riproduzione appena finita.
+- Se cresce, aumenta la dimensione del buffer nelle impostazioni della scheda audio, chiudi altri programmi
+  pesanti o togli qualche plug-in.
+- Il tool MCP `get_transport` riporta gli stessi valori in `dsp_load` e `dsp_overloads`.
+
+Quando una nota o una coda di riverbero si spegne, i filtri scendono verso numeri piccolissimi (sotto 1e-38) che
+il processore calcola molto più lentamente. Ondina li azzera mentre suona e durante i bounce: il carico non sale
+a fine nota o dopo Stop, e il suono non cambia (sono valori centinaia di dB sotto l'udibile).
+
 ## File scritti dall'assistente e dai tool MCP
 
 Quando l'assistente o un client MCP salva il progetto, fa un bounce o esporta un file, Ondina accetta

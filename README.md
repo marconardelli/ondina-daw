@@ -140,6 +140,10 @@ extension: Ondina opens both.
 - **Unsaved changes**: when the project has unsaved changes (the • in the title bar), closing the window, New,
   Open or a recent project first asks *Save*, *Don't Save* or *Cancel*. Esc cancels, Enter saves. A recording in
   progress is stopped and kept before the question.
+- **DSP meter**: the transport bar shows the DSP load of the last audio block and how many blocks since the last
+  Play took longer than the audio device allows (red when there are any; each one can be heard as a click).
+  `get_transport` reports the same numbers as `dsp_load` and `dsp_overloads`. Ondina flushes denormal numbers to
+  zero while it renders, live and in bounces, so reverb and filter tails that fade out do not raise the load.
 
 ### Keyboard shortcuts
 
