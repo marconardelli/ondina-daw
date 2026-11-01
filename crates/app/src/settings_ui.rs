@@ -255,7 +255,8 @@ impl OndinaApp {
             });
             dialog::hint(ui, "LUFS targets apply one gain to the whole mix and keep peaks under -1 dBTP, without a limiter.");
             ui.add_space(theme::SP_5);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let row = egui::vec2(ui.available_width(), dialog::BUTTON_H);
+            ui.allocate_ui_with_layout(row, egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if dialog::primary_button(ui, "Bounce\u{2026}").clicked() {
                     go = true;
                 }

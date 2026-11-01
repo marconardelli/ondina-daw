@@ -192,7 +192,8 @@ pub fn icon_title(ui: &mut Ui, icon: Icon, color: Color32, title: RichText) {
 /// What an empty view says: an icon, a short title and a hint on what to do, centered in the space it is given.
 pub fn empty_state(ui: &mut Ui, icon: Icon, title: &str, hint: &str) -> Response {
     let rect = ui.available_rect_before_wrap();
-    let height = rect.height().max(EMPTY_STATE_MIN_H);
+    // inside a scroll area the space below is unbounded: center in the part that shows
+    let height = rect.intersect(ui.clip_rect()).height().max(EMPTY_STATE_MIN_H);
     let (rect, resp) = ui.allocate_exact_size(vec2(rect.width(), height), Sense::hover());
     paint_empty_state(ui, rect, icon, title, hint);
     resp

@@ -103,7 +103,7 @@ pub fn hint(ui: &mut Ui, text: impl Into<String>) -> Response {
 /// A row with a fixed-width caption on the left and the control after it, so the controls of a dialog line up.
 pub fn row<R>(ui: &mut Ui, caption: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
     ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(vec2(CAPTION_W, ui.spacing().interact_size.y), egui::Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(vec2(CAPTION_W, BUTTON_H), egui::Sense::hover());
         ui.painter().text(
             rect.left_center(),
             egui::Align2::LEFT_CENTER,

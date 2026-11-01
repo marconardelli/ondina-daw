@@ -32,6 +32,7 @@ impl OndinaApp {
             return;
         };
         plugin_card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.label(RichText::new(info.name).font(egui::FontId::new(13.0, theme::semibold())).color(theme::TEXT));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -94,6 +95,7 @@ impl OndinaApp {
         let pid = inst.id;
         plugin_card()
             .show(ui, |ui| {
+                ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(format!("VST3 · {}", plugins::plugin_label(inst)))
