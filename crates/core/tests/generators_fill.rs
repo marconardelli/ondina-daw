@@ -91,3 +91,22 @@ fn set_pattern_row_refuses_a_string_that_does_not_match_the_steps() {
     // bar lines and spaces are only for reading
     apply(&mut p, Command::SetPatternRow { region_id: rid, row: 0, pattern: "o.o. o.o. | o.o. o.o.".into() }).unwrap();
 }
+
+#[test]
+fn generators_refuse_a_start_that_is_not_a_usable_beat_and_answer_at_once() {
+    let (mut p, t) = with_chord_track();
+    let before = serde_json::to_string(&p).unwrap();
+    let t0 = std::time::Instant::now();
+    for start in [1e18, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -4.0] {
+        assert!(resolve_chords(&p, start, 8, &None, None).is_err(), "{start}");
+        let err = apply(&mut p, Command::GenerateBass { track_id: t, start, bars: 8, style: BassStyle::Root, chords: None, beats_per_chord: None, octave: None, seed: Some(1) }).unwrap_err();
+        assert!(err.contains("start"), "{start}: {err}");
+        let err = apply(&mut p, Command::GenerateDrums { track_id: t, start, bars: 8, style: ondina_core::generate::DrumStyle::Rock, intensity: None, fill: None, seed: Some(1) }).unwrap_err();
+        assert!(err.contains("start"), "{start}: {err}");
+    }
+    assert!(t0.elapsed().as_secs() < 5, "took {:?}", t0.elapsed());
+    assert_eq!(serde_json::to_string(&p).unwrap(), before);
+    // far but usable: the progression still repeats there
+    let tc = resolve_chords(&p, 16.0 * 1000.0, 4, &None, None).unwrap();
+    assert_eq!(tc.iter().map(|c| c.chord.root).collect::<Vec<_>>(), vec![9, 5, 0, 7]);
+}

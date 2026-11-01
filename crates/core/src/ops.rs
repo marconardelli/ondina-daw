@@ -407,6 +407,7 @@ fn parse_step_string(s: &str, steps: usize) -> Vec<u8> {
 /// silent halfway while the answer said `bars: 8` was the surprise to avoid.
 pub fn resolve_chords(project: &Project, start: f64, bars: u32, chords: &Option<Vec<String>>, beats_per_chord: Option<f64>) -> Result<Vec<TimedChord>, String> {
     check_generated_bars(bars)?;
+    check_generated_start(start)?;
     if let Some(per) = beats_per_chord {
         if !per.is_finite() || per < MIN_BEATS_PER_CHORD {
             return Err(format!("beats_per_chord must be at least {MIN_BEATS_PER_CHORD} beats"));
@@ -437,12 +438,19 @@ pub fn resolve_chords(project: &Project, start: f64, bars: u32, chords: &Option<
     let last_end = track.iter().map(|c| c.beat + c.length).fold(f64::NEG_INFINITY, f64::max);
     let period = last_end - first;
     let mut out: Vec<TimedChord> = vec![];
-    if period.is_finite() && period > 0.0 {
-        // pass 0 is the chord track as it is; the passes after it repeat it until `end`
+    if period.is_finite() && period > 0.0 && first.is_finite() {
+        // Pass 0 is the chord track as it is; the passes after it repeat it until `end`. `start` and `end` are
+        // checked above (finite, at most MAX_GENERATOR_START + 512 bars) and the period is at least
+        // MIN_BEATS_PER_CHORD when it repeats, so the pass numbers stay small whole numbers; the integer counter
+        // bounds the loop whatever the chord track holds.
         let repeats = period >= MIN_BEATS_PER_CHORD;
-        let mut pass = if repeats { ((start - first) / period).floor().max(0.0) } else { 0.0 };
-        while first + pass * period < end && out.len() < MAX_RESOLVED_CHORDS {
-            let shift = pass * period;
+        let first_pass = if repeats { ((start - first) / period).floor().max(0.0) as u64 } else { 0 };
+        let passes = if repeats { (((end - start) / period).ceil() as u64).saturating_add(2).min(MAX_CHORD_PASSES) } else { 1 };
+        for k in 0..passes {
+            let shift = (first_pass + k) as f64 * period;
+            if first + shift >= end || out.len() >= MAX_RESOLVED_CHORDS {
+                break;
+            }
             for c in &track {
                 let (b0, b1) = (c.beat + shift, c.beat + c.length + shift);
                 if b0 >= end || b1 <= start {
@@ -453,10 +461,6 @@ pub fn resolve_chords(project: &Project, start: f64, bars: u32, chords: &Option<
                     out.push(TimedChord { start: s - start, length: e - s, chord: ch });
                 }
             }
-            if !repeats {
-                break;
-            }
-            pass += 1.0;
         }
     }
     if out.is_empty() {
@@ -499,6 +503,19 @@ pub fn resolve_chord_symbol(sym: &str, key: Key) -> Result<String, String> {
 
 /// Most chords `resolve_chords` hands to a generator (a chord track of tiny chords repeated over 512 bars).
 const MAX_RESOLVED_CHORDS: usize = 65_536;
+/// Most passes of the chord track `resolve_chords` makes (512 bars of the longest bar over the shortest period).
+const MAX_CHORD_PASSES: u64 = 1 << 22;
+/// Latest beat a generator may start at (about 140 hours at 120 BPM): far enough for any song, small enough that
+/// beat arithmetic stays exact.
+pub const MAX_GENERATOR_START: f64 = 1_000_000.0;
+
+fn check_generated_start(start: f64) -> Result<(), String> {
+    if !start.is_finite() || !(0.0..=MAX_GENERATOR_START).contains(&start) {
+        return Err(format!("start must be a beat position between 0 and {MAX_GENERATOR_START} (got {start})"));
+    }
+    Ok(())
+}
+
 /// Most bars one generator call writes.
 pub const MAX_GENERATED_BARS: u32 = 512;
 /// Shortest chord a generator follows (a sixteenth note): shorter ones would only multiply the work.
@@ -1648,6 +1665,7 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
         // generators
         GenerateDrums { track_id, start, bars, style, intensity, fill, seed } => {
             check_generated_bars(*bars)?;
+            check_generated_start(*start)?;
             let bpb = project.time_signature.beats_per_bar();
             let seed = seed_or_random(*seed);
             let notes = generate::drums(*style, (*bars).max(1), bpb, intensity.unwrap_or(0.5).clamp(0.0, 1.0), fill.unwrap_or(true), seed);
