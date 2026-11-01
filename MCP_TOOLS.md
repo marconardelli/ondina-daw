@@ -418,7 +418,7 @@ Set one step of a pattern region: velocity 0 = off.
 Parameters: `region_id, row, step, velocity`
 
 ### `set_pattern_row`
-Set a whole pattern row from a string: 'x' accent, 'o' normal, 'g' ghost, '.' off. E.g. "x...x...x...x...". One character per step of the pattern (spaces and '|' are ignored): a string with more or fewer steps is refused.
+Set a whole pattern row from a string: 'x' accent, 'o' normal, 'g' ghost, '.' off. E.g. "x...x...x...x...". Exactly one character per step (spaces and '|' ignored), else refused.
 
 Parameters: `pattern, region_id, row`
 
@@ -448,27 +448,27 @@ Convert a pattern region into a regular MIDI region.
 Parameters: `region_id`
 
 ### `generate_drums`
-Session drummer: generate a drum groove as a MIDI region on a (drum) instrument track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512; start is a beat from 0 to 1000000.
+Session drummer: generate a drum groove as a MIDI region on a (drum) instrument track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. Limits: bars <= 512, start 0..1000000.
 
 Parameters: `bars, fill, intensity, seed, start, style, track_id`
 
 ### `generate_bass`
-Session bassist: generate a bass line following `chords` (one symbol per `beats_per_chord`, default one bar) or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512; start is a beat from 0 to 1000000. beats_per_chord is at least 0.25. The chord track repeats after its last chord, so every bar asked for is filled.
+Session bassist: generate a bass line following `chords` (one symbol per `beats_per_chord`, default one bar) or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. Limits: bars <= 512, start 0..1000000, beats_per_chord >= 0.25. The chord track repeats to fill all bars.
 
 Parameters: `bars, beats_per_chord, chords, octave, seed, start, style, track_id`
 
 ### `generate_chords`
-Session keyboard player: generate chord comping following `chords` or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512; start is a beat from 0 to 1000000. beats_per_chord is at least 0.25. The chord track repeats after its last chord, so every bar asked for is filled.
+Session keyboard player: generate chord comping following `chords` or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. Limits: bars <= 512, start 0..1000000, beats_per_chord >= 0.25. The chord track repeats to fill all bars.
 
 Parameters: `bars, beats_per_chord, center_pitch, chords, seed, start, style, track_id`
 
 ### `generate_arpeggio`
-Generate an arpeggio following `chords` or the chord track. rate in beats (0.25 = 1/16). Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512; start is a beat from 0 to 1000000. beats_per_chord is at least 0.25. The chord track repeats after its last chord, so every bar asked for is filled.
+Generate an arpeggio following `chords` or the chord track. rate in beats (0.25 = 1/16). Returns region_id, seed, start, bars; pass the returned seed to get the same part again. Limits: bars <= 512, start 0..1000000, beats_per_chord >= 0.25. The chord track repeats to fill all bars.
 
 Parameters: `bars, beats_per_chord, center_pitch, chords, mode, octaves, rate, seed, start, track_id`
 
 ### `generate_melody`
-Generate a melody in the project key over `chords` or the chord track. density 0..1. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512; start is a beat from 0 to 1000000. beats_per_chord is at least 0.25. The chord track repeats after its last chord, so every bar asked for is filled.
+Generate a melody in the project key over `chords` or the chord track. density 0..1. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. Limits: bars <= 512, start 0..1000000, beats_per_chord >= 0.25. The chord track repeats to fill all bars.
 
 Parameters: `bars, beats_per_chord, chords, density, octave, seed, start, track_id`
 
@@ -543,12 +543,12 @@ Insert empty time at a position, pushing later material.
 Parameters: `at_beat, length`
 
 ### `bounce`
-Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed). After the end the render goes on until reverb and delay tails fade below about -90 dBFS (at least 2 s, at most 20 s: a sound that never fades, like a note held past the end or a noisy plug-in, stops at 20 s). tail_sec sets an exact tail instead: 0 cuts exactly at end, e.g. to export a loop. normalize=true scales the peak to -1 dBFS. normalize_lufs brings the integrated loudness to a target with one gain for the whole mix (no limiter), keeping the peak under true_peak_ceiling_db: the result's loudness reports gain_db, lufs_after, true_peak_after and target_reached (false when the ceiling stopped the gain: the mix needs a limiter, e.g. auto_master, to get that loud). The peak is the analyze_mix estimate; 16 and 24 bit dither can add about one LSB. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
+Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed). After the end the render goes on until reverb and delay tails fade below about -90 dBFS (at least 2 s, at most 20 s: a sound that never fades, like a note held past the end or a noisy plug-in, stops at 20 s). tail_sec sets an exact tail instead: 0 cuts exactly at end, e.g. to export a loop. normalize=true scales the peak to -1 dBFS. normalize_lufs brings the integrated loudness to a target with one gain for the whole mix (no limiter), keeping the peak under true_peak_ceiling_db: the result's loudness reports gain_db, lufs_after, true_peak_after and target_reached (false when the ceiling stopped the gain: the mix needs a limiter, e.g. auto_master, to get that loud). The peak is the analyze_mix estimate; 16 and 24 bit dither can add about one LSB. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. At most 60 minutes of song per render.
 
 Parameters: `bit_depth, end, normalize, normalize_lufs, path, start, tail_sec, track_ids, true_peak_ceiling_db`
 
 ### `bounce_in_place`
-Render a track to audio and place it on a new audio track (bounce in place). The source track is muted. Reverb and delay tails are kept: the render goes on until they fade (at least 2 s, at most 20 s after the last region). A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
+Render a track to audio and place it on a new audio track (bounce in place). The source track is muted. Reverb and delay tails are kept: the render goes on until they fade (at least 2 s, at most 20 s after the last region). At most 60 minutes of song per render.
 
 Parameters: `track_id`
 
@@ -563,7 +563,7 @@ Import a Standard MIDI File, creating instrument tracks (channel 10 becomes a dr
 Parameters: `at_beat, path`
 
 ### `analyze_mix` · read-only
-Render offline and analyze: integrated loudness (LUFS), true-peak estimate, RMS, crest factor, stereo correlation, low/mid/high spectral balance for the master and each track. Use it to "listen" to the mix. A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
+Render offline and analyze: integrated loudness (LUFS), true-peak estimate, RMS, crest factor, stereo correlation, low/mid/high spectral balance for the master and each track. Use it to "listen" to the mix. At most 60 minutes of song per render.
 
 Parameters: `end, start`
 
@@ -678,7 +678,7 @@ Get the Live Loops grid: scenes, cells (per track/scene) and which cells are pla
 Parameters: none
 
 ### `add_scene`
-Add a scene (row) to the Live Loops grid. The grid has at most 256 scenes.
+Add a scene (row) to the Live Loops grid. At most 256 scenes.
 
 Parameters: `name`
 
@@ -693,7 +693,7 @@ Remove a scene and its cells.
 Parameters: `scene`
 
 ### `create_live_cell`
-Create a Live Loops cell on a track and scene: empty MIDI (length in beats), with notes, or copied from an existing region. scene is 0..255 (the grid has at most 256 scenes); missing scenes up to it are added.
+Create a Live Loops cell on a track and scene: empty MIDI (length in beats), with notes, or copied from an existing region. scene 0..255; missing scenes are added.
 
 Parameters: `from_region_id, length, name, notes, scene, track_id`
 
@@ -743,17 +743,17 @@ Position a track in 3D space for surround/binaural mixing (azimuth degrees: 0 fr
 Parameters: `azimuth, elevation, object, spread, track_id`
 
 ### `bounce_surround`
-Bounce a multichannel surround WAV (channel order L R C LFE Ls Rs, plus Lrs Rrs for 7.1, plus Ltf Rtf Ltr Rtr for 7.1.4). Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
+Bounce a multichannel surround WAV (channel order L R C LFE Ls Rs, plus Lrs Rrs for 7.1, plus Ltf Rtf Ltr Rtr for 7.1.4). Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. At most 60 minutes of song per render.
 
 Parameters: `format, path`
 
 ### `bounce_binaural`
-Bounce a binaural (headphone spatial audio) stereo WAV from the 3D positions. Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
+Bounce a binaural (headphone spatial audio) stereo WAV from the 3D positions. Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. At most 60 minutes of song per render.
 
 Parameters: `path`
 
 ### `export_adm`
-Export an ADM BWF master (ITU-R BS.2076 metadata in a BW64 file, 48 kHz / 24-bit), the interchange format used for Dolby Atmos deliveries: a 7.1.2 channel bed plus one audio object per object track, with time-varying positions from the surround automation. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
+Export an ADM BWF master (ITU-R BS.2076 metadata in a BW64 file, 48 kHz / 24-bit), the interchange format used for Dolby Atmos deliveries: a 7.1.2 channel bed plus one audio object per object track, with time-varying positions from the surround automation. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. At most 60 minutes of song per render.
 
 Parameters: `end, path, start`
 
@@ -783,7 +783,7 @@ Extract the movie frame at a song position as an image (path ending in .png, .jp
 Parameters: `beat, path`
 
 ### `export_movie`
-Export the movie with the bounced mix as soundtrack (path ending in .mp4, .mov, .mkv or .m4v; requires ffmpeg on PATH). A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
+Export the movie with the bounced mix as soundtrack (path ending in .mp4, .mov, .mkv or .m4v; requires ffmpeg on PATH). At most 60 minutes of song per render.
 
 Parameters: `path`
 
