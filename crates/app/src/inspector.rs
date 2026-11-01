@@ -9,12 +9,19 @@ use crate::app::{OndinaApp, LeftTab};
 use crate::mixer::effect_menu;
 use crate::region_edit::{self, ColorChoice};
 use crate::theme;
+use crate::widgets::{self, Icon};
 
 impl OndinaApp {
     pub fn left_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.left, LeftTab::Inspector, "ℹ Inspector");
-            ui.selectable_value(&mut self.left, LeftTab::Library, "📚 Library");
+            for (tab, icon, text) in [
+                (LeftTab::Inspector, Icon::Inspector, "Inspector"),
+                (LeftTab::Library, Icon::Library, "Library"),
+            ] {
+                if widgets::icon_selectable(ui, self.left == tab, icon, text, None).clicked() {
+                    self.left = tab;
+                }
+            }
         });
         ui.separator();
         egui::ScrollArea::vertical()
@@ -303,7 +310,7 @@ impl OndinaApp {
                             }
                         });
                     }
-                    ui.menu_button("＋ MIDI effect", |ui| {
+                    widgets::icon_menu_button(ui, Icon::Effect, "MIDI effect", |ui| {
                         for info in plugins::registry()
                             .iter()
                             .filter(|p| p.category == PluginCategory::MidiEffect)
@@ -529,7 +536,7 @@ impl OndinaApp {
                 });
             });
         }
-        ui.menu_button("＋ Add effect", |ui| {
+        widgets::icon_menu_button(ui, Icon::Effect, "Add effect", |ui| {
             effect_menu(ui, |kind| {
                 self.pending_effect(owner, kind);
             });

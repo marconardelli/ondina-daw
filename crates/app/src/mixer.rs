@@ -8,6 +8,7 @@ use eframe::egui::{self, vec2, Color32, RichText, Rounding, Sense};
 use crate::app::{OndinaApp, LeftTab};
 use crate::arrange::draw_meter;
 use crate::theme;
+use crate::widgets::{self, Icon};
 
 const STRIP_W: f32 = 108.0;
 
@@ -47,7 +48,7 @@ impl OndinaApp {
         let color = track.map(|t| theme::rgb(t.color)).unwrap_or(theme::ACCENT);
         egui::Frame::none()
             .fill(if selected {
-                Color32::from_rgb(52, 56, 64)
+                theme::SELECTED_BG
             } else {
                 theme::LANE_ALT
             })
@@ -156,7 +157,7 @@ impl OndinaApp {
                             }
                         });
                     }
-                    ui.menu_button(RichText::new("＋ effect").small(), |ui| {
+                    widgets::icon_menu_button(ui, Icon::Effect, RichText::new("effect").small(), |ui| {
                         effect_menu(ui, |kind| {
                             self.cmd(Command::AddEffect {
                                 track_id: id,
@@ -212,7 +213,7 @@ impl OndinaApp {
                             .filter(|b| b.kind == TrackKind::Bus && b.id != id)
                             .map(|b| (b.id, b.name.clone()))
                             .collect();
-                        ui.menu_button(RichText::new("＋ send").small(), |ui| {
+                        widgets::icon_menu_button(ui, Icon::Send, RichText::new("send").small(), |ui| {
                             for (bid, bname) in &buses {
                                 if ui.button(bname).clicked() {
                                     self.cmd(Command::AddSend {

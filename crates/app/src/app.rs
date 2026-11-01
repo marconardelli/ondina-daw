@@ -30,6 +30,7 @@ use crate::note_clipboard as nc;
 use crate::note_selection;
 use crate::region_clipboard as rc;
 use crate::transport_keys as tk;
+use crate::widgets::{self, Icon};
 
 /// Tooltip of the overload counter in the transport bar.
 const OVERLOAD_HINT: &str = "Audio blocks since the last Play that took longer than the audio device allows. Each one can be heard as a click. If the count grows, raise the buffer size in the audio device's settings or remove heavy plug-ins.";
@@ -2008,17 +2009,18 @@ impl OndinaApp {
                 );
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .selectable_label(
-                        self.show_assistant,
-                        RichText::new("✨ AI Assistant").color(theme::AI),
-                    )
-                    .clicked()
+                if widgets::icon_selectable(
+                    ui,
+                    self.show_assistant,
+                    Icon::Ai,
+                    RichText::new("AI Assistant").color(theme::AI),
+                    Some(theme::AI),
+                )
+                .clicked()
                 {
                     self.show_assistant = !self.show_assistant;
                 }
-                if ui
-                    .selectable_label(self.bottom == BottomTab::Live, "🔲 Live Loops")
+                if widgets::icon_selectable(ui, self.bottom == BottomTab::Live, Icon::ClipGrid, "Live Loops", None)
                     .clicked()
                 {
                     self.bottom = if self.bottom == BottomTab::Live {
@@ -2027,8 +2029,7 @@ impl OndinaApp {
                         BottomTab::Live
                     };
                 }
-                if ui
-                    .selectable_label(self.bottom == BottomTab::Mixer, "🎚 Mixer")
+                if widgets::icon_selectable(ui, self.bottom == BottomTab::Mixer, Icon::Mixer, "Mixer", None)
                     .clicked()
                 {
                     self.bottom = if self.bottom == BottomTab::Mixer {
@@ -2037,8 +2038,7 @@ impl OndinaApp {
                         BottomTab::Mixer
                     };
                 }
-                if ui
-                    .selectable_label(self.bottom == BottomTab::Editor, "🎹 Editor")
+                if widgets::icon_selectable(ui, self.bottom == BottomTab::Editor, Icon::Piano, "Editor", None)
                     .clicked()
                 {
                     self.bottom = if self.bottom == BottomTab::Editor {
@@ -2047,7 +2047,7 @@ impl OndinaApp {
                         BottomTab::Editor
                     };
                 }
-                if ui.selectable_label(self.show_left, "ℹ Inspector").clicked() {
+                if widgets::icon_selectable(ui, self.show_left, Icon::Inspector, "Inspector", None).clicked() {
                     self.show_left = !self.show_left;
                 }
             });

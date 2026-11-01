@@ -15,6 +15,7 @@ use crate::piano_roll_view::{wheel_zoom, zoom_factor};
 use crate::region_edit::{self, region_name_field, FadeGeom, FadeHandle};
 use crate::session_players::{self, Player};
 use crate::theme;
+use crate::widgets::{self, Icon};
 
 const HEADER_W: f32 = 210.0;
 const RULER_H: f32 = 30.0;
@@ -762,7 +763,7 @@ impl OndinaApp {
                 lane,
                 Rounding::ZERO,
                 if sel {
-                    Color32::from_rgb(50, 54, 62)
+                    theme::SELECTED_LANE
                 } else if i % 2 == 0 {
                     theme::LANE
                 } else {
@@ -1684,7 +1685,7 @@ impl OndinaApp {
             rect,
             Rounding::ZERO,
             if selected {
-                Color32::from_rgb(58, 62, 72)
+                theme::SELECTED_BG
             } else {
                 theme::PANEL
             },
@@ -1732,20 +1733,22 @@ impl OndinaApp {
                     .map(|i| i.kind == "drum_synth")
                     .unwrap_or(false)
                 {
-                    "🥁"
+                    Icon::Drums
                 } else {
-                    "🎹"
+                    Icon::Piano
                 }
             }
-            TrackKind::Audio => "🎤",
-            TrackKind::Bus => "🔀",
+            TrackKind::Audio => Icon::Mic,
+            TrackKind::Bus => Icon::Bus,
         };
         // decided after the double-click above, so the field opens on the same frame
         let renaming = self.edits.track_rename.as_ref().is_some_and(|e| e.id == t.id);
-        let name_pos = pos2(rect.left() + 10.0, rect.top() + 12.0);
+        let icon_rect = Rect::from_min_size(pos2(rect.left() + 9.0, rect.top() + 5.0), vec2(14.0, 14.0));
+        let name_pos = pos2(icon_rect.right() + 5.0, rect.top() + 12.0);
         let mut field = None;
+        widgets::paint_icon(painter, icon, icon_rect, theme::ICON);
         if renaming {
-            let ir = painter.text(name_pos, Align2::LEFT_CENTER, icon, FontId::proportional(12.5), Color32::WHITE);
+            let ir = icon_rect;
             let r = Rect::from_min_max(
                 pos2(ir.right() + 4.0, rect.top() + 3.0),
                 pos2(name_right, rect.top() + 21.0),
@@ -1757,7 +1760,7 @@ impl OndinaApp {
             painter.with_clip_rect(name_clip).text(
                 name_pos,
                 Align2::LEFT_CENTER,
-                format!("{icon} {}", t.name),
+                &t.name,
                 FontId::proportional(12.5),
                 Color32::WHITE,
             );
