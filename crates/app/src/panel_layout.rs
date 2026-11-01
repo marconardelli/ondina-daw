@@ -1,6 +1,7 @@
 //! The main window's panels: the Inspector / Library on the left, the assistant on the right and the Editor, Mixer
 //! or Clip Grid at the bottom. Each one can be resized with the splitter on its edge and closed; the limits below
 //! keep the arrangement usable on a 1500 px window, and the sizes the person drags to are kept in the settings.
+//! The Mixer keeps a height of its own, taller than the Editor's and the Clip Grid's.
 
 use eframe::egui::{self, pos2, vec2, Id, LayerId, Order, Rect, Rounding};
 use ondina_studio::PanelSizes;
@@ -20,19 +21,22 @@ pub const CENTER_MIN: f32 = 520.0;
 pub const ARRANGE_MIN_H: f32 = 150.0;
 /// The bottom panel never takes more than this share of the space under the control bar.
 pub const BOTTOM_MAX_SHARE: f32 = 0.72;
+/// Share of the space under the control bar the Mixer opens with before the person resizes it.
+pub const MIXER_SHARE: f32 = 0.6;
 /// Length and thickness of the grip drawn in the middle of each splitter.
 pub const GRIP: (f32, f32) = (40.0, 3.0);
 
 const LEFT_ID: &str = "left";
 const ASSISTANT_ID: &str = "assistant";
 const BOTTOM_ID: &str = "bottom";
+const MIXER_ID: &str = "bottom-mixer";
 
-/// The smallest height that shows what a bottom panel is for: a useful piano roll, a whole mixer strip, a row of
-/// clips.
+/// The smallest height that shows what a bottom panel is for: a useful piano roll, whole mixer strips (at their
+/// most compact, fader included), a row of clips.
 pub fn bottom_min(tab: BottomTab) -> f32 {
     match tab {
         BottomTab::Editor => 220.0,
-        BottomTab::Mixer => 300.0,
+        BottomTab::Mixer => crate::mixer::compact_panel_height().ceil(),
         BottomTab::Live => 180.0,
         BottomTab::Hidden => 0.0,
     }
@@ -76,6 +80,36 @@ pub fn bottom_range(tab: BottomTab, area_h: f32) -> (f32, f32) {
 /// piano roll shows more than a handful of rows on a 1000 px tall window.
 pub fn default_bottom(area_h: f32) -> f32 {
     (area_h * 0.42).clamp(280.0, 520.0)
+}
+
+/// The height the Mixer opens with before the person has resized it: about three fifths of the area, and at least
+/// what shows every row of the strips (the range of [`bottom_range`] still applies).
+pub fn default_mixer(area_h: f32) -> f32 {
+    (area_h * MIXER_SHARE).max(crate::mixer::full_panel_height().ceil())
+}
+
+/// The height bottom panel `tab` opens with before the person has resized it.
+pub fn default_height(tab: BottomTab, area_h: f32) -> f32 {
+    match tab {
+        BottomTab::Mixer => default_mixer(area_h),
+        _ => default_bottom(area_h),
+    }
+}
+
+/// Where the height of bottom panel `tab` is kept: the Mixer's apart, the Editor and the Clip Grid share one.
+pub fn saved_height(sizes: &mut PanelSizes, tab: BottomTab) -> &mut Option<f32> {
+    match tab {
+        BottomTab::Mixer => &mut sizes.mixer,
+        _ => &mut sizes.bottom,
+    }
+}
+
+/// The egui panel of bottom panel `tab`: one per kept height, so each opens at its own.
+fn bottom_id(tab: BottomTab) -> &'static str {
+    match tab {
+        BottomTab::Mixer => MIXER_ID,
+        _ => BOTTOM_ID,
+    }
 }
 
 /// The size a panel opens with: the remembered one when it is a real size, otherwise `default`.
@@ -180,9 +214,10 @@ impl OndinaApp {
             remember(&mut sizes.left, resp.response.rect.width(), dragging);
         }
         if self.bottom != BottomTab::Hidden {
-            let range = bottom_range(self.bottom, area.height());
-            let start = clamp_to(initial(sizes.bottom, default_bottom(area.height())), range);
-            let resp = egui::TopBottomPanel::bottom(BOTTOM_ID)
+            let tab = self.bottom;
+            let range = bottom_range(tab, area.height());
+            let start = clamp_to(initial(*saved_height(&mut sizes, tab), default_height(tab, area.height())), range);
+            let resp = egui::TopBottomPanel::bottom(bottom_id(tab))
                 .resizable(true)
                 .frame(panel_frame())
                 .default_height(start)
@@ -195,9 +230,9 @@ impl OndinaApp {
                     }
                     BottomTab::Hidden => {}
                 });
-            let (hot, dragging) = splitter_state(ctx, Id::new(BOTTOM_ID));
+            let (hot, dragging) = splitter_state(ctx, Id::new(bottom_id(tab)));
             paint_grip(ctx, Edge::Top, resp.response.rect, hot);
-            remember(&mut sizes.bottom, resp.response.rect.height(), dragging);
+            remember(saved_height(&mut sizes, tab), resp.response.rect.height(), dragging);
         }
         sizes.left_open = Some(self.show_left);
         sizes.assistant_open = Some(self.show_assistant);
@@ -243,7 +278,46 @@ mod tests {
         // the mixer needs a whole strip
         assert!(bottom_range(BottomTab::Mixer, 840.0).0 > bottom_range(BottomTab::Live, 840.0).0);
         // a tiny area: the minimum still holds
-        assert_eq!(bottom_range(BottomTab::Mixer, 300.0), (300.0, 300.0));
+        let mixer_min = bottom_min(BottomTab::Mixer);
+        assert_eq!(bottom_range(BottomTab::Mixer, 300.0), (mixer_min, mixer_min));
+        // the Mixer's minimum shows whole strips at their most compact, fader included
+        assert!(mixer_min >= crate::mixer::compact_panel_height());
+    }
+
+    #[test]
+    fn the_mixer_keeps_a_height_of_its_own() {
+        let mut sizes = PanelSizes { bottom: Some(340.0), mixer: Some(560.0), ..Default::default() };
+        assert_eq!(*saved_height(&mut sizes, BottomTab::Editor), Some(340.0));
+        assert_eq!(*saved_height(&mut sizes, BottomTab::Live), Some(340.0));
+        assert_eq!(*saved_height(&mut sizes, BottomTab::Mixer), Some(560.0));
+        // dragging the Mixer leaves the Editor's height alone, and the other way round
+        assert!(remember(saved_height(&mut sizes, BottomTab::Mixer), 500.0, true));
+        assert_eq!((sizes.bottom, sizes.mixer), (Some(340.0), Some(500.0)));
+        assert!(remember(saved_height(&mut sizes, BottomTab::Editor), 300.0, true));
+        assert_eq!((sizes.bottom, sizes.mixer), (Some(300.0), Some(500.0)));
+        // each height group is its own egui panel, so switching shows the other height at once
+        assert_ne!(bottom_id(BottomTab::Mixer), bottom_id(BottomTab::Editor));
+        assert_eq!(bottom_id(BottomTab::Live), bottom_id(BottomTab::Editor));
+    }
+
+    #[test]
+    fn the_mixer_opens_tall_enough_for_whole_strips() {
+        // 1000 px tall window: about 810 px under the control bar
+        let area = 810.0;
+        let range = bottom_range(BottomTab::Mixer, area);
+        let mixer = clamp_to(initial(None, default_height(BottomTab::Mixer, area)), range);
+        let editor = clamp_to(initial(None, default_height(BottomTab::Editor, area)), bottom_range(BottomTab::Editor, area));
+        assert!(mixer >= area * MIXER_SHARE - 0.01, "{mixer}");
+        assert!(mixer > editor);
+        // every row of every strip shows, and the arrangement keeps its minimum
+        assert!(mixer >= crate::mixer::full_panel_height(), "{mixer} < {}", crate::mixer::full_panel_height());
+        assert!(area - mixer >= ARRANGE_MIN_H);
+        // a short window: the panel limits win over the default, never under the compact strips
+        let small = 600.0;
+        let h = clamp_to(default_mixer(small), bottom_range(BottomTab::Mixer, small));
+        assert!(h <= bottom_range(BottomTab::Mixer, small).1 && h >= bottom_min(BottomTab::Mixer));
+        // a remembered Mixer height wins over the default
+        assert_eq!(clamp_to(initial(Some(470.0), default_mixer(area)), range), 470.0);
     }
 
     #[test]

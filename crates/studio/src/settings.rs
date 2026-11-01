@@ -48,8 +48,10 @@ pub struct PanelSizes {
     pub left: Option<f32>,
     /// Assistant on the right.
     pub assistant: Option<f32>,
-    /// Editor, Mixer or Clip Grid at the bottom (one height for the three).
+    /// Editor or Clip Grid at the bottom (one height for the two).
     pub bottom: Option<f32>,
+    /// The Mixer at the bottom: taller than the Editor, so it keeps its own height.
+    pub mixer: Option<f32>,
     /// Whether the side panel was open when Ondina closed (`None`: open, the first time).
     pub left_open: Option<bool>,
     /// Whether the assistant was open.
@@ -221,6 +223,18 @@ mod tests {
         assert_eq!(back.panels, s.panels);
         let partial: Settings = serde_json::from_str(r#"{"panels":{"left":300}}"#).unwrap();
         assert_eq!(partial.panels, PanelSizes { left: Some(300.0), ..Default::default() });
+    }
+
+    #[test]
+    fn the_mixer_height_is_kept_apart_and_older_files_load_without_it() {
+        // a settings file written before the Mixer had its own height
+        let old: Settings = serde_json::from_str(r#"{"panels":{"bottom":340,"bottom_panel":"mixer"}}"#).unwrap();
+        assert_eq!(old.panels.bottom, Some(340.0));
+        assert_eq!(old.panels.mixer, None);
+        let mut s = old;
+        s.panels.mixer = Some(520.0);
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!((back.panels.bottom, back.panels.mixer), (Some(340.0), Some(520.0)));
     }
 
     #[test]
