@@ -31,7 +31,8 @@ Files written by MCP clients and the assistant are checked too. `save_project`, 
 extension of their file type: `.ondina` (or the older `.aurora`); `.mid` or `.midi`; `.musicxml` or `.xml`; `.wav`. When the path has no
 extension, Ondina adds it. Network shares, `\\?\` device paths, URLs, NTFS streams and any other extension are
 refused before anything is written. `save_project` never overwrites an existing file that is not an Ondina project,
-and it refuses to save over a project that was opened from a network share (save it from the app instead). Two limits
+and neither do the files it writes next to it (the temporary file always has a new name, and the `.bak` copy replaces
+only an earlier save); it also refuses to save over a project that was opened from a network share (save it from the app instead). Two limits
 remain: a drive letter mapped to a network share counts as a local drive, and a tool can still overwrite an existing
 file of its own type (for example a `.wav`). The app's own menus and dialogs are not restricted, so you can still save
 or bounce to a NAS from the Save dialog.

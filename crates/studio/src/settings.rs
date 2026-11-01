@@ -30,11 +30,16 @@ pub struct Settings {
     /// Before Save replaces a project file, its previous version is kept next to it as `<file>.bak`
     /// (one copy, replaced at every save).
     pub keep_save_backup: bool,
+    /// True when settings.json exists but could not be read (or could not be set aside after failing to parse):
+    /// these are the defaults, and `save_to`/`try_save`/`save` leave the file alone until the person presses
+    /// Save settings in the Settings window (`save_replacing`).
+    #[serde(skip)]
+    pub file_unread: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { api_key: None, model: crate::ai::DEFAULT_MODEL.into(), effort: "medium".into(), mcp_enabled: true, mcp_port: 3917, audio_output: None, recent_projects: vec![], ui_scale: 1.0, provider: "auto".into(), local_url: "http://127.0.0.1:8080/v1".into(), local_model: "local".into(), vst3_folders: vec![], autosave_minutes: 3, keep_save_backup: true }
+        Settings { api_key: None, model: crate::ai::DEFAULT_MODEL.into(), effort: "medium".into(), mcp_enabled: true, mcp_port: 3917, audio_output: None, recent_projects: vec![], ui_scale: 1.0, provider: "auto".into(), local_url: "http://127.0.0.1:8080/v1".into(), local_model: "local".into(), vst3_folders: vec![], autosave_minutes: 3, keep_save_backup: true, file_unread: false }
     }
 }
 
@@ -51,21 +56,24 @@ impl Settings {
 
     /// Reads the settings at `path`. A missing file gives the defaults silently. A file that exists but does not
     /// parse is renamed to `<name>.broken`, so the next save does not write over it, and the second value says so.
+    /// A file that cannot be read (after a few tries) or set aside gives the defaults with `file_unread` set, so
+    /// they are not written over it.
     pub fn load_from(path: &Path) -> (Settings, Option<String>) {
-        let bytes = match std::fs::read(path) {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+        let unread = || Settings { file_unread: true, ..Default::default() };
+        let bytes = match crate::fs_safe::read_retrying(path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Settings::default(), None),
-            Err(e) => return (Settings::default(), Some(format!("⚠ Settings could not be read ({e}): default settings are in use"))),
+            Err(e) => return (unread(), Some(format!("⚠ Settings could not be read ({e}): default settings are in use, and {name} is left as it is until you press Save settings in Settings"))),
         };
         if let Ok(s) = serde_json::from_slice::<Settings>(&bytes) {
             return (s, None);
         }
         let broken = crate::fs_safe::sibling(path, ".broken");
-        let notice = match std::fs::rename(path, &broken) {
-            Ok(()) => format!("⚠ Settings could not be read: the file was kept as {} and default settings are in use", broken.display()),
-            Err(e) => format!("⚠ Settings could not be read and could not be set aside ({e}): default settings are in use"),
-        };
-        (Settings::default(), Some(notice))
+        match std::fs::rename(path, &broken) {
+            Ok(()) => (Settings::default(), Some(format!("⚠ Settings could not be read: the file was kept as {} and default settings are in use", broken.display()))),
+            Err(e) => (unread(), Some(format!("⚠ Settings could not be read and could not be set aside ({e}): default settings are in use, and {name} is left as it is until you press Save settings in Settings"))),
+        }
     }
 
     /// The settings and, when the file could not be used, the line for the status bar.
@@ -81,7 +89,28 @@ impl Settings {
     }
 
     /// Writes the settings to `path` through `fs_safe::write_replace`: a failure leaves the previous file as it was.
+    /// Refused while `file_unread` is set, so defaults never replace settings that could not be read.
     pub fn save_to(&self, path: &Path) -> Result<(), String> {
+        if self.file_unread {
+            return Err(format!("{} could not be read when Ondina started and is left as it is: press Save settings in Settings to replace it", path.display()));
+        }
+        self.write_to(path)
+    }
+
+    /// The Settings window's Save: writes even when the file could not be read at startup, because the person chose
+    /// to replace it with what the window shows. The flag is cleared only when the write succeeds.
+    pub fn save_replacing_to(&mut self, path: &Path) -> Result<(), String> {
+        self.write_to(path)?;
+        self.file_unread = false;
+        Ok(())
+    }
+
+    /// `save_replacing_to` on the usual file.
+    pub fn save_replacing(&mut self) -> Result<(), String> {
+        self.save_replacing_to(&Self::path())
+    }
+
+    fn write_to(&self, path: &Path) -> Result<(), String> {
         if let Some(d) = path.parent() {
             std::fs::create_dir_all(d).map_err(|e| format!("cannot create {}: {e}", d.display()))?;
         }
@@ -269,5 +298,85 @@ mod tests {
         assert!(notice.is_some());
         assert!(!p.exists());
         assert!(dir.join("settings.json.broken").is_file());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn settings_held_by_another_program_are_not_saved_over() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = test_dir("held");
+        let p = dir.join("settings.json");
+        Settings { mcp_port: 4200, api_key: Some("sk-keep".into()), ..Default::default() }.save_to(&p).unwrap();
+        let before = std::fs::read(&p).unwrap();
+        let handle = std::fs::OpenOptions::new().read(true).share_mode(0).open(&p).unwrap();
+        let (s, notice) = Settings::load_from(&p);
+        drop(handle);
+        assert!(s.file_unread);
+        assert_eq!(s.mcp_port, 3917);
+        let n = notice.expect("a notice for the status bar");
+        assert!(n.contains("Save settings"), "{n}");
+        assert!(s.save_to(&p).is_err());
+        assert_eq!(std::fs::read(&p).unwrap(), before);
+        assert_eq!(names(&dir), vec!["settings.json"]);
+        let mut s = s;
+        s.save_replacing_to(&p).unwrap();
+        assert!(!s.file_unread);
+        let (back, again) = Settings::load_from(&p);
+        assert_eq!(back.mcp_port, 3917);
+        assert_eq!(again, None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn settings_released_quickly_are_read_on_a_retry() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = test_dir("released");
+        let p = dir.join("settings.json");
+        Settings { mcp_port: 4300, ..Default::default() }.save_to(&p).unwrap();
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let locked = p.clone();
+        let holder = std::thread::spawn(move || {
+            let handle = std::fs::OpenOptions::new().read(true).share_mode(0).open(&locked).unwrap();
+            held_tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            drop(handle);
+        });
+        held_rx.recv().unwrap();
+        let (s, notice) = Settings::load_from(&p);
+        holder.join().unwrap();
+        assert_eq!(notice, None);
+        assert_eq!(s.mcp_port, 4300);
+        assert!(!s.file_unread);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn unparsable_settings_that_cannot_be_set_aside_are_not_saved_over() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = test_dir("cannot_set_aside");
+        let p = dir.join("settings.json");
+        let truncated = r#"{"api_key": "sk-ant-"#;
+        std::fs::write(&p, truncated).unwrap();
+        let handle = std::fs::OpenOptions::new().read(true).share_mode(1).open(&p).unwrap();
+        let (s, notice) = Settings::load_from(&p);
+        let n = notice.expect("a notice for the status bar");
+        assert!(n.contains("could not be set aside"), "{n}");
+        assert!(n.contains("Save settings"), "{n}");
+        assert!(s.file_unread);
+        assert!(s.save_to(&p).is_err());
+        drop(handle);
+        assert!(s.save_to(&p).is_err());
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), truncated);
+        assert!(!dir.join("settings.json.broken").exists());
+    }
+
+    #[test]
+    fn fresh_settings_save_as_before() {
+        let dir = test_dir("fresh");
+        let p = dir.join("settings.json");
+        let s = Settings::default();
+        assert!(!s.file_unread);
+        s.save_to(&p).unwrap();
+        assert!(p.is_file());
     }
 }

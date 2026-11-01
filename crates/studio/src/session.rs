@@ -114,6 +114,10 @@ impl Session {
         let project = Project::new("Untitled");
         let pool = AudioPool::new();
         let engine = Engine::new(Arc::new(project.clone()), Arc::new(pool.clone()), audio);
+        let (settings, notice) = crate::Settings::load_reporting();
+        if let Some(n) = notice {
+            eprintln!("[ondina] {n}");
+        }
         Session {
             project,
             path: None,
@@ -135,7 +139,7 @@ impl Session {
             midi_target: Arc::new(AtomicU64::new(0)),
             midi_conn: None,
             midi_input_name: None,
-            settings: crate::Settings::load(),
+            settings,
             untrusted_vst3: HashSet::new(),
             midi_routes: Arc::new(parking_lot::RwLock::new(vec![])),
             record_start: 0.0,
@@ -751,7 +755,7 @@ impl Session {
             }
         }
         let s = save_project_string(&self.project)?;
-        let done = crate::fs_safe::replace_with_backup(&path, s.as_bytes(), self.settings.keep_save_backup)?;
+        let done = crate::fs_safe::replace_with_checked_backup(&path, s.as_bytes(), self.settings.keep_save_backup, is_ondina_project_file)?;
         self.path = Some(path.clone());
         self.dirty = false;
         self.revision += 1;

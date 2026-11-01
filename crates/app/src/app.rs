@@ -2074,6 +2074,11 @@ impl OndinaApp {
     fn windows(&mut self, ctx: &egui::Context) {
         let mut open = self.show_settings;
         egui::Window::new("Settings").open(&mut open).resizable(false).show(ctx, |ui| {
+            if self.settings.file_unread {
+                ui.label(RichText::new("⚠ settings.json could not be read when Ondina started.").color(theme::ACCENT));
+                ui.label(RichText::new("The defaults are in use. The file is left as it is until you press Save settings, which replaces it.").small().color(theme::TEXT_DIM));
+                ui.separator();
+            }
             ui.heading("AI assistant");
             ui.horizontal(|ui| {
                 ui.label("Anthropic API key");
@@ -2158,7 +2163,7 @@ impl OndinaApp {
             ui.separator();
             if ui.button("Save settings").clicked() {
                 self.settings.api_key = if self.api_key_buf.trim().is_empty() { None } else { Some(self.api_key_buf.trim().to_string()) };
-                let saved = self.settings.try_save();
+                let saved = self.settings.save_replacing();
                 if let Some(mut s) = self.session.try_lock_for(Duration::from_millis(300)) {
                     s.settings = self.settings.clone();
                 }
