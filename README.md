@@ -118,7 +118,7 @@ extension: Ondina opens both.
   (Alt+drag ignores the grid, double-click removes the fade); the fade curves are drawn over the waveform. The ruler has a cycle strip on top: drag the cycle to move it, drag an edge to resize it, click
   it to turn cycle on or off and drag on the empty strip to draw a new one (Shift+drag anywhere on the ruler still
   draws one); click or drag the lower half, with the bar numbers, to move the playhead. Drag a track header up or
-  down to reorder the tracks (a line shows where it lands, Esc cancels) and double-click a track's name to rename it in place. In the marker lane click a section to jump to it,
+  down to reorder the tracks (a line shows where it lands) and double-click a track's name to rename it in place. In the marker lane click a section to jump to it,
   right-click it to cycle, repeat or delete it, drag it to move it, drag its right edge to resize it and
   double-click it to rename it; double-click the empty lane to add a 4-bar section. Right-click a region and choose
   Rename… to type a new name over it (Enter or a click elsewhere confirms, Esc cancels), or Color to pick one of 12
@@ -126,10 +126,12 @@ extension: Ondina opens both.
   Shift+wheel (or a horizontal wheel) scrolls time, Ctrl+wheel zooms time around the pointer and Ctrl+Shift+wheel
   makes the tracks taller or shorter around the one under the pointer; View > Zoom In, Zoom Out, Zoom to Fit, Taller
   Tracks and Shorter Tracks do the same from the menu. On short tracks the M/S/R buttons move next to the name and
-  the volume slider is left to the mixer.
+  the volume slider is left to the mixer. Esc during a drag (a region, a fade, a marker, a chord, the cycle or a
+  track header) cancels it: everything goes back to where it was.
 - **Piano roll**: click on empty space to add a note (length from the toolbar); click a note to select it,
   Ctrl/Shift+click to add to the selection; drag on empty space to box-select (stacked notes included); drag a note
-  to move it, drag its right edge to resize; Delete/Backspace removes the selection; Ctrl+C/Ctrl+X/Ctrl+V copy, cut
+  to move it, drag its right edge to resize; Esc during a drag (notes, note edges, box selection, velocities, a
+  controller stroke) cancels it; Delete/Backspace removes the selection; Ctrl+C/Ctrl+X/Ctrl+V copy, cut
   and paste the selected notes (pasted at the playhead when it is inside the region, otherwise at their original
   position; the copied notes also go to the system clipboard as JSON); Ctrl+A selects every note; ←/→ move the
   selection by the snap step (1/16 with snap off), ↑/↓ by a semitone, Shift+↑/↓ by an octave; double-click or
@@ -155,7 +157,7 @@ extension: Ondina opens both.
 | Ctrl+C / X / V | copy / cut / paste notes (piano roll) | Ctrl+A | select all notes (piano roll) |
 | ← / → | move selected notes by the snap step | ↑ / ↓ (Shift: octave) | transpose selected notes |
 | `,` / `.` | playhead to previous / next bar | Shift+, / Shift+. | playhead to previous / next marker |
-| Ctrl+T | split selected region at playhead | | |
+| Ctrl+T | split selected region at playhead | Esc (while dragging) | cancel the drag |
 
 Musical Typing: `A W S E D F T G Y H U J K` play notes, `Z` / `X` change octave.
 
