@@ -532,7 +532,7 @@ impl OndinaApp {
                 }
                 Part::Input => {
                     paint_label(ui, r, "INPUT");
-                    ui.add_space(LABEL_H - ROW_GAP);
+                    ui.add_space(LABEL_H);
                     if let Some((_, t)) = track {
                         match t.kind {
                             TrackKind::Instrument => {
@@ -557,7 +557,7 @@ impl OndinaApp {
                     let label =
                         if effects_scroll(n, master) { format!("EFFECTS \u{00B7} {n}") } else { "EFFECTS".into() };
                     paint_label(ui, r, &label);
-                    ui.add_space(LABEL_H - ROW_GAP);
+                    ui.add_space(LABEL_H);
                     let rows = if master { MASTER_FX_ROWS } else { FX_ROWS };
                     egui::ScrollArea::vertical()
                         .id_salt(("mixer-fx", id))
@@ -573,7 +573,7 @@ impl OndinaApp {
                 }
                 Part::Sends => {
                     paint_label(ui, r, "SENDS");
-                    ui.add_space(LABEL_H - ROW_GAP);
+                    ui.add_space(LABEL_H);
                     let buses = Self::buses_for(p, id);
                     egui::ScrollArea::vertical()
                         .id_salt(("mixer-sends", id))

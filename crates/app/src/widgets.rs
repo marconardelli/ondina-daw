@@ -119,6 +119,12 @@ pub fn meter_fill(db: f32) -> f32 {
     1.0 - db_to_fader(db)
 }
 
+/// Whether a peak-hold marker at `db` is drawn: not when it has fallen to the bottom of the bar, where it would only
+/// sit on the floor of a silent meter.
+pub fn hold_marker_shown(db: f32) -> bool {
+    meter_fill(db) > 0.01
+}
+
 /// How long the peak marker stays put before it falls.
 pub const PEAK_HOLD_SECS: f32 = 1.5;
 /// How fast the peak marker falls after the hold time.
@@ -1012,7 +1018,7 @@ pub fn stereo_meter(ui: &mut Ui, size: Vec2, levels: [f32; 2], holds: &mut [Peak
         let bar = Rect::from_min_max(pos2(x0, rect.top() + clip_h + 2.0), pos2(x0 + bar_w, rect.bottom()));
         p.rect_filled(bar, Rounding::same(2.0), theme::LCD);
         paint_meter_fill(p, bar, meter_fill(*level));
-        if hold.db > f32::NEG_INFINITY {
+        if hold_marker_shown(hold.db) {
             let y = bar.bottom() - meter_fill(hold.db) * bar.height();
             let c = if hold.db > 0.0 { theme::REC } else { theme::SOLO };
             p.rect_filled(
@@ -1326,6 +1332,14 @@ mod tests {
         assert_eq!(meter_color(0.0), theme::METER_LOW);
         assert_eq!(meter_color(1.0), theme::REC);
         assert_eq!(meter_color(0.9), theme::SOLO);
+    }
+
+    #[test]
+    fn hold_marker_hides_on_the_floor() {
+        assert!(!hold_marker_shown(f32::NEG_INFINITY));
+        assert!(!hold_marker_shown(-200.0));
+        assert!(hold_marker_shown(-48.0));
+        assert!(hold_marker_shown(0.0));
     }
 
     #[test]
