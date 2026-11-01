@@ -502,19 +502,38 @@ impl OndinaApp {
     }
 
     // ============================================================== VST3 browser
+    /// Scan the VST3 folders (the standard ones, the user's and tools\vst3) and refresh the library list.
+    fn scan_vst3_library(&mut self) {
+        let extra = vec!["tools/vst3".to_string()];
+        if let Some(v) = self.exec(Command::ScanVst3 {
+            extra_paths: Some(extra),
+        }) {
+            self.extra.vst_list =
+                v["plugins"].as_array().cloned().unwrap_or_default();
+        }
+    }
+
+    /// Store a new list of VST3 folders in both copies of the settings and on disk. False (nothing
+    /// changed) when the session is busy.
+    fn store_vst3_folders(&mut self, folders: Vec<String>) -> bool {
+        let Some(mut s) = self.session.try_lock_for(std::time::Duration::from_millis(300)) else {
+            self.status = "Session busy (AI/MCP running) — try again".into();
+            return false;
+        };
+        s.settings.vst3_folders = folders.clone();
+        drop(s);
+        self.settings.vst3_folders = folders;
+        self.settings.save();
+        true
+    }
+
     pub fn vst_library(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("Third-party VST3")
             .default_open(true)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     if ui.button("Scan VST3 plug-ins").clicked() {
-                        let extra = vec!["tools/vst3".to_string()];
-                        if let Some(v) = self.exec(Command::ScanVst3 {
-                            extra_paths: Some(extra),
-                        }) {
-                            self.extra.vst_list =
-                                v["plugins"].as_array().cloned().unwrap_or_default();
-                        }
+                        self.scan_vst3_library();
                     }
                     if ui.button("Add from file…").clicked() {
                         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
@@ -528,7 +547,47 @@ impl OndinaApp {
                             }
                         }
                     }
+                    if ui
+                        .button("Add folder…")
+                        .on_hover_text("Add a folder of VST3 plug-ins. MCP clients and the assistant may load plug-ins only from the standard VST3 folders and the folders added here.")
+                        .clicked()
+                    {
+                        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                            match ondina_dsp::vst3::check_user_folder(&dir.display().to_string()) {
+                                Ok(f) => {
+                                    let mut list = self.settings.clone();
+                                    if !list.add_vst3_folder(&f) {
+                                        self.status = format!("{f} is already in the VST3 folders");
+                                    } else if self.store_vst3_folders(list.vst3_folders) {
+                                        self.status = format!("VST3 folder added: {f}");
+                                        self.scan_vst3_library();
+                                    }
+                                }
+                                Err(e) => self.status = format!("Folder not added: {e}"),
+                            }
+                        }
+                    }
                 });
+                if !self.settings.vst3_folders.is_empty() {
+                    ui.label(RichText::new("Plug-in folders").small().color(theme::TEXT_DIM));
+                    let mut remove: Option<String> = None;
+                    for f in self.settings.vst3_folders.clone() {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&f).small());
+                            if ui.small_button("✕").on_hover_text("Remove this folder").clicked() {
+                                remove = Some(f.clone());
+                            }
+                        });
+                    }
+                    if let Some(f) = remove {
+                        let mut list = self.settings.clone();
+                        list.remove_vst3_folder(&f);
+                        if self.store_vst3_folders(list.vst3_folders) {
+                            self.status = format!("VST3 folder removed: {f}");
+                            self.scan_vst3_library();
+                        }
+                    }
+                }
                 for pl in self.extra.vst_list.clone() {
                     ui.horizontal(|ui| {
                         let inst = pl["instrument"].as_bool().unwrap_or(false);
