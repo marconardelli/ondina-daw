@@ -30,11 +30,58 @@ fn pick_voice(slots: &[VoiceSlot], note: u8) -> usize {
     slots.iter().enumerate().min_by_key(|(_, s)| s.age).map(|(i, _)| i).unwrap_or(0)
 }
 
-/// Sustain pedal helper.
-#[derive(Default)]
+/// MIDI controller number of the sustain pedal.
+const SUSTAIN_CC: u8 = 64;
+
+/// Sustain pedal (CC 64) state. A fixed table of keys instead of a list, so the pedal never allocates on the audio
+/// thread and a key released many times under the pedal is remembered once.
 struct Sustain {
     down: bool,
-    held: Vec<u8>,
+    /// Keys released while the pedal was down and still waiting for it to come up.
+    held: [bool; 128],
+}
+
+impl Default for Sustain {
+    fn default() -> Self {
+        Sustain { down: false, held: [false; 128] }
+    }
+}
+
+impl Sustain {
+    /// A key went down: it is played again, so the pedal no longer owns it.
+    fn key_down(&mut self, pitch: u8) {
+        if let Some(h) = self.held.get_mut(pitch as usize) {
+            *h = false;
+        }
+    }
+
+    /// A key went up. True when the pedal is down and keeps the note sounding; the caller then skips the release.
+    fn key_up(&mut self, pitch: u8) -> bool {
+        match self.held.get_mut(pitch as usize) {
+            Some(h) if self.down => {
+                *h = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// CC 64 value. True only when the pedal has just come up: the caller then releases every key `take` returns.
+    fn set_pedal(&mut self, value: u8) -> bool {
+        let was_down = self.down;
+        self.down = value >= 64;
+        was_down && !self.down
+    }
+
+    /// True (once) when `pitch` was waiting for the pedal.
+    fn take(&mut self, pitch: u8) -> bool {
+        self.held.get_mut(pitch as usize).is_some_and(std::mem::take)
+    }
+
+    fn clear(&mut self) {
+        self.down = false;
+        self.held = [false; 128];
+    }
 }
 
 // ============================================================================ Analog Synth
@@ -145,6 +192,15 @@ impl AnalogSynth {
             v.fenv.set(p.fa, p.fd, p.fs, p.fr, sr);
         }
     }
+    fn release_note(&mut self, pitch: u8) {
+        for (i, s) in self.slots.iter_mut().enumerate() {
+            if s.active && s.gate && s.note == pitch {
+                s.gate = false;
+                self.voices[i].amp.release();
+                self.voices[i].fenv.release();
+            }
+        }
+    }
 }
 
 impl Instrument for AnalogSynth {
@@ -185,6 +241,7 @@ impl Instrument for AnalogSynth {
     }
 
     fn note_on(&mut self, pitch: u8, velocity: u8) {
+        self.sustain.key_down(pitch);
         let i = pick_voice(&self.slots, pitch);
         self.age += 1;
         self.slots[i] = VoiceSlot { note: pitch, gate: true, age: self.age, active: true };
@@ -205,32 +262,23 @@ impl Instrument for AnalogSynth {
     }
 
     fn note_off(&mut self, pitch: u8) {
-        if self.sustain.down {
-            self.sustain.held.push(pitch);
-            return;
-        }
-        for (i, s) in self.slots.iter_mut().enumerate() {
-            if s.active && s.gate && s.note == pitch {
-                s.gate = false;
-                self.voices[i].amp.release();
-                self.voices[i].fenv.release();
-            }
+        if !self.sustain.key_up(pitch) {
+            self.release_note(pitch);
         }
     }
 
     fn control_change(&mut self, cc: u8, value: u8) {
-        if cc == 64 {
-            self.sustain.down = value >= 64;
-            if !self.sustain.down {
-                for n in std::mem::take(&mut self.sustain.held) {
-                    self.note_off(n);
+        if cc == SUSTAIN_CC && self.sustain.set_pedal(value) {
+            for pitch in 0..128u8 {
+                if self.sustain.take(pitch) {
+                    self.release_note(pitch);
                 }
             }
         }
     }
 
     fn all_notes_off(&mut self) {
-        self.sustain = Sustain::default();
+        self.sustain.clear();
         for (i, s) in self.slots.iter_mut().enumerate() {
             s.gate = false;
             self.voices[i].amp.release();
@@ -239,6 +287,7 @@ impl Instrument for AnalogSynth {
     }
 
     fn reset(&mut self) {
+        self.sustain.clear();
         for (i, s) in self.slots.iter_mut().enumerate() {
             *s = VoiceSlot::default();
             self.voices[i].amp.kill();
@@ -339,6 +388,15 @@ impl FmSynth {
             v.idx_env.set(0.001, self.idx_decay, self.idx_sus, self.r, self.sr);
         }
     }
+    fn release_note(&mut self, pitch: u8) {
+        for (i, s) in self.slots.iter_mut().enumerate() {
+            if s.active && s.gate && s.note == pitch {
+                s.gate = false;
+                self.voices[i].amp.release();
+                self.voices[i].idx_env.release();
+            }
+        }
+    }
 }
 
 impl Instrument for FmSynth {
@@ -362,6 +420,7 @@ impl Instrument for FmSynth {
         self.update();
     }
     fn note_on(&mut self, pitch: u8, velocity: u8) {
+        self.sustain.key_down(pitch);
         let i = pick_voice(&self.slots, pitch);
         self.age += 1;
         self.slots[i] = VoiceSlot { note: pitch, gate: true, age: self.age, active: true };
@@ -377,30 +436,21 @@ impl Instrument for FmSynth {
         v.idx_env.trigger();
     }
     fn note_off(&mut self, pitch: u8) {
-        if self.sustain.down {
-            self.sustain.held.push(pitch);
-            return;
-        }
-        for (i, s) in self.slots.iter_mut().enumerate() {
-            if s.active && s.gate && s.note == pitch {
-                s.gate = false;
-                self.voices[i].amp.release();
-                self.voices[i].idx_env.release();
-            }
+        if !self.sustain.key_up(pitch) {
+            self.release_note(pitch);
         }
     }
     fn control_change(&mut self, cc: u8, value: u8) {
-        if cc == 64 {
-            self.sustain.down = value >= 64;
-            if !self.sustain.down {
-                for n in std::mem::take(&mut self.sustain.held) {
-                    self.note_off(n);
+        if cc == SUSTAIN_CC && self.sustain.set_pedal(value) {
+            for pitch in 0..128u8 {
+                if self.sustain.take(pitch) {
+                    self.release_note(pitch);
                 }
             }
         }
     }
     fn all_notes_off(&mut self) {
-        self.sustain = Sustain::default();
+        self.sustain.clear();
         for (i, s) in self.slots.iter_mut().enumerate() {
             s.gate = false;
             self.voices[i].amp.release();
@@ -408,6 +458,7 @@ impl Instrument for FmSynth {
         }
     }
     fn reset(&mut self) {
+        self.sustain.clear();
         for (i, s) in self.slots.iter_mut().enumerate() {
             *s = VoiceSlot::default();
             self.voices[i].amp.kill();
@@ -478,6 +529,7 @@ pub struct Organ {
     horn_delay_r: DelayLine,
     split: OnePole,
     perc_ready: bool,
+    sustain: Sustain,
 }
 
 impl Organ {
@@ -507,11 +559,24 @@ impl Organ {
             horn_delay_r: DelayLine::new((sr * 0.01) as usize),
             split,
             perc_ready: true,
+            sustain: Sustain::default(),
         };
         for v in &mut o.voices {
             v.env.set(0.004, 0.01, 1.0, 0.03, sr);
         }
         o
+    }
+    /// Held by the pedal counts as held for the single-trigger percussion.
+    fn release_note(&mut self, pitch: u8) {
+        for (i, s) in self.slots.iter_mut().enumerate() {
+            if s.active && s.gate && s.note == pitch {
+                s.gate = false;
+                self.voices[i].env.release();
+            }
+        }
+        if !self.slots.iter().any(|s| s.active && s.gate) {
+            self.perc_ready = true;
+        }
     }
 }
 
@@ -531,6 +596,7 @@ impl Instrument for Organ {
         }
     }
     fn note_on(&mut self, pitch: u8, _velocity: u8) {
+        self.sustain.key_down(pitch);
         let i = pick_voice(&self.slots, pitch);
         self.age += 1;
         // single-trigger percussion: only when no other key is held
@@ -545,17 +611,21 @@ impl Instrument for Organ {
         self.perc_ready = false;
     }
     fn note_off(&mut self, pitch: u8) {
-        for (i, s) in self.slots.iter_mut().enumerate() {
-            if s.active && s.gate && s.note == pitch {
-                s.gate = false;
-                self.voices[i].env.release();
-            }
+        if !self.sustain.key_up(pitch) {
+            self.release_note(pitch);
         }
-        if !self.slots.iter().any(|s| s.active && s.gate) {
-            self.perc_ready = true;
+    }
+    fn control_change(&mut self, cc: u8, value: u8) {
+        if cc == SUSTAIN_CC && self.sustain.set_pedal(value) {
+            for pitch in 0..128u8 {
+                if self.sustain.take(pitch) {
+                    self.release_note(pitch);
+                }
+            }
         }
     }
     fn all_notes_off(&mut self) {
+        self.sustain.clear();
         for (i, s) in self.slots.iter_mut().enumerate() {
             s.gate = false;
             self.voices[i].env.release();
@@ -663,6 +733,7 @@ pub struct PluckSynth {
     body2: Biquad,
     body1r: Biquad,
     body2r: Biquad,
+    sustain: Sustain,
 }
 
 impl PluckSynth {
@@ -685,6 +756,15 @@ impl PluckSynth {
             body2: Biquad::new(BiquadKind::Peak, 220.0, 1.5, 4.0, sr),
             body1r: Biquad::new(BiquadKind::Peak, 115.0, 1.2, 6.0, sr),
             body2r: Biquad::new(BiquadKind::Peak, 230.0, 1.5, 4.0, sr),
+            sustain: Sustain::default(),
+        }
+    }
+    fn release_note(&mut self, pitch: u8) {
+        for (i, s) in self.slots.iter_mut().enumerate() {
+            if s.active && s.gate && s.note == pitch {
+                s.gate = false;
+                self.voices[i].released = true;
+            }
         }
     }
 }
@@ -702,6 +782,7 @@ impl Instrument for PluckSynth {
         }
     }
     fn note_on(&mut self, pitch: u8, velocity: u8) {
+        self.sustain.key_down(pitch);
         let i = pick_voice(&self.slots, pitch);
         self.age += 1;
         self.slots[i] = VoiceSlot { note: pitch, gate: true, age: self.age, active: true };
@@ -734,14 +815,21 @@ impl Instrument for PluckSynth {
         v.last = 0.0;
     }
     fn note_off(&mut self, pitch: u8) {
-        for (i, s) in self.slots.iter_mut().enumerate() {
-            if s.active && s.gate && s.note == pitch {
-                s.gate = false;
-                self.voices[i].released = true;
+        if !self.sustain.key_up(pitch) {
+            self.release_note(pitch);
+        }
+    }
+    fn control_change(&mut self, cc: u8, value: u8) {
+        if cc == SUSTAIN_CC && self.sustain.set_pedal(value) {
+            for pitch in 0..128u8 {
+                if self.sustain.take(pitch) {
+                    self.release_note(pitch);
+                }
             }
         }
     }
     fn all_notes_off(&mut self) {
+        self.sustain.clear();
         for (i, s) in self.slots.iter_mut().enumerate() {
             s.gate = false;
             self.voices[i].released = true;
@@ -802,16 +890,25 @@ pub struct Sampler {
     voices: Vec<SamplerVoice>,
     slots: Vec<VoiceSlot>,
     age: u64,
+    sustain: Sustain,
 }
 
 impl Sampler {
     pub fn new(sr: f32) -> Self {
         let n = 16;
-        Sampler { sr, data: None, root: 60.0, tune: 0.0, a: 0.002, d: 0.3, s: 1.0, r: 0.2, looping: false, vel_sens: 0.8, level: db_to_gain(-6.0), voices: vec![SamplerVoice::default(); n], slots: vec![VoiceSlot::default(); n], age: 0 }
+        Sampler { sr, data: None, root: 60.0, tune: 0.0, a: 0.002, d: 0.3, s: 1.0, r: 0.2, looping: false, vel_sens: 0.8, level: db_to_gain(-6.0), voices: vec![SamplerVoice::default(); n], slots: vec![VoiceSlot::default(); n], age: 0, sustain: Sustain::default() }
     }
     fn update(&mut self) {
         for v in &mut self.voices {
             v.env.set(self.a, self.d, self.s, self.r, self.sr);
+        }
+    }
+    fn release_note(&mut self, pitch: u8) {
+        for (i, s) in self.slots.iter_mut().enumerate() {
+            if s.active && s.gate && s.note == pitch {
+                s.gate = false;
+                self.voices[i].env.release();
+            }
         }
     }
 }
@@ -837,6 +934,7 @@ impl Instrument for Sampler {
         self.reset();
     }
     fn note_on(&mut self, pitch: u8, velocity: u8) {
+        self.sustain.key_down(pitch);
         let Some(data) = &self.data else { return };
         let i = pick_voice(&self.slots, pitch);
         self.age += 1;
@@ -848,20 +946,28 @@ impl Instrument for Sampler {
         v.env.trigger();
     }
     fn note_off(&mut self, pitch: u8) {
-        for (i, s) in self.slots.iter_mut().enumerate() {
-            if s.active && s.gate && s.note == pitch {
-                s.gate = false;
-                self.voices[i].env.release();
+        if !self.sustain.key_up(pitch) {
+            self.release_note(pitch);
+        }
+    }
+    fn control_change(&mut self, cc: u8, value: u8) {
+        if cc == SUSTAIN_CC && self.sustain.set_pedal(value) {
+            for pitch in 0..128u8 {
+                if self.sustain.take(pitch) {
+                    self.release_note(pitch);
+                }
             }
         }
     }
     fn all_notes_off(&mut self) {
+        self.sustain.clear();
         for (i, s) in self.slots.iter_mut().enumerate() {
             s.gate = false;
             self.voices[i].env.release();
         }
     }
     fn reset(&mut self) {
+        self.sustain.clear();
         for (i, s) in self.slots.iter_mut().enumerate() {
             *s = VoiceSlot::default();
             self.voices[i].env.kill();
@@ -980,6 +1086,165 @@ mod tests {
             let with_cc = script(make().as_mut(), true);
             assert!(plain.0 == with_cc.0 && plain.1 == with_cc.1, "{name}: controllers that are not pedal-down changed the render");
             assert_eq!(energy(&plain.0, &plain.1).to_bits(), bits, "{name}: render energy changed");
+        }
+    }
+
+    #[test]
+    fn sustain_table_marks_keys_once() {
+        let mut s = Sustain::default();
+        assert!(!s.key_up(60));
+        assert!(!s.take(60));
+        assert!(!s.set_pedal(127));
+        for _ in 0..3 {
+            assert!(s.key_up(60));
+        }
+        assert!(s.take(60));
+        assert!(!s.take(60));
+        assert!(s.key_up(61));
+        s.key_down(61);
+        assert!(!s.take(61));
+        assert!(!s.set_pedal(100));
+        assert!(s.set_pedal(10));
+        assert!(!s.set_pedal(0));
+        s.set_pedal(127);
+        assert!(!s.key_up(200));
+        assert!(s.key_up(5));
+        s.clear();
+        assert!(!s.down);
+        assert!(!s.take(5));
+    }
+
+    const KEYBOARDS: [&str; 5] = ["analog", "fm", "organ", "pluck", "sampler"];
+
+    /// A Sampler with a looping sine, so its silence after the pedal comes from the release, not the sample end.
+    fn looping_sampler() -> Sampler {
+        let mut s = Sampler::new(SR);
+        let sine = (0..96000).map(|i| (i as f32 * std::f32::consts::TAU * 220.0 / 48000.0).sin() * 0.5).collect();
+        s.set_sample(Some(Arc::new(AudioData { sample_rate: 48000, channels: vec![sine] })));
+        s.set_param("loop", 1.0);
+        s
+    }
+
+    fn keyboard(name: &str) -> Box<dyn Instrument> {
+        match name {
+            "analog" => Box::new(AnalogSynth::new(SR)),
+            "fm" => Box::new(FmSynth::new(SR)),
+            "organ" => Box::new(Organ::new(SR)),
+            "pluck" => Box::new(PluckSynth::new(SR)),
+            "sampler" => Box::new(looping_sampler()),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn pedal_holds_released_notes_on_every_keyboard() {
+        for name in KEYBOARDS {
+            let mut pedal = keyboard(name);
+            pedal.control_change(64, 127);
+            pedal.note_on(60, 100);
+            energy_ms(pedal.as_mut(), 100);
+            pedal.note_off(60);
+            energy_ms(pedal.as_mut(), 600);
+            let held = energy_ms(pedal.as_mut(), 100);
+
+            let mut free = keyboard(name);
+            free.note_on(60, 100);
+            energy_ms(free.as_mut(), 100);
+            free.note_off(60);
+            energy_ms(free.as_mut(), 600);
+            let free = energy_ms(free.as_mut(), 100);
+            assert!(held > 1e-4 && held > 100.0 * free, "{name}: held {held} vs free {free}");
+
+            pedal.control_change(64, 0);
+            energy_ms(pedal.as_mut(), 1500);
+            let after = energy_ms(pedal.as_mut(), 100);
+            assert!(after <= held * 1e-6, "{name}: {after} still sounding after the pedal (held {held})");
+        }
+    }
+
+    fn voices_on(slots: &[VoiceSlot], note: u8) -> usize {
+        slots.iter().filter(|s| s.active && s.note == note).count()
+    }
+
+    /// The same key pressed three times under the pedal: one voice, and nothing left once the pedal comes up.
+    fn repress<I: Instrument>(mut inst: I, slots: fn(&I) -> &[VoiceSlot], name: &str, adsr: bool) {
+        inst.control_change(64, 127);
+        let mut first = 0.0;
+        for round in 0..3 {
+            inst.note_on(60, 100);
+            let e = energy_ms(&mut inst, 20);
+            if round == 0 {
+                first = e;
+            }
+            inst.note_off(60);
+            render_ms(&mut inst, 20);
+            assert_eq!(voices_on(slots(&inst), 60), 1, "{name}: round {round}");
+        }
+        inst.control_change(64, 0);
+        render_ms(&mut inst, 1500);
+        if adsr {
+            assert_eq!(voices_on(slots(&inst), 60), 0, "{name}: voice still active after the pedal");
+        }
+        let after = energy_ms(&mut inst, 100);
+        assert!(first > 0.0 && after <= first * 1e-6, "{name}: {after} still sounding (attack {first})");
+    }
+
+    #[test]
+    fn repressed_note_keeps_one_voice_and_ends_with_the_pedal() {
+        repress(AnalogSynth::new(SR), |s| &s.slots, "analog", true);
+        repress(FmSynth::new(SR), |s| &s.slots, "fm", true);
+        repress(Organ::new(SR), |s| &s.slots, "organ", true);
+        repress(PluckSynth::new(SR), |s| &s.slots, "pluck", false);
+        repress(looping_sampler(), |s| &s.slots, "sampler", true);
+    }
+
+    #[test]
+    fn pedal_up_keeps_a_key_that_is_still_down() {
+        for name in KEYBOARDS {
+            // pressed again under the pedal and still held when the pedal comes up
+            let mut kept = keyboard(name);
+            kept.control_change(64, 127);
+            kept.note_on(60, 100);
+            render_ms(kept.as_mut(), 50);
+            kept.note_off(60);
+            kept.note_on(60, 100);
+            kept.control_change(64, 0);
+            render_ms(kept.as_mut(), 600);
+            let held = energy_ms(kept.as_mut(), 100);
+
+            // the same without pressing it again: the pedal releases it
+            let mut gone = keyboard(name);
+            gone.control_change(64, 127);
+            gone.note_on(60, 100);
+            render_ms(gone.as_mut(), 50);
+            gone.note_off(60);
+            gone.control_change(64, 0);
+            render_ms(gone.as_mut(), 600);
+            let released = energy_ms(gone.as_mut(), 100);
+            assert!(held > 1e-4 && held > 100.0 * released, "{name}: held {held} vs released {released}");
+
+            kept.note_off(60);
+            render_ms(kept.as_mut(), 1500);
+            let after = energy_ms(kept.as_mut(), 100);
+            assert!(after <= held * 1e-6, "{name}: {after} still sounding after the key (held {held})");
+        }
+    }
+
+    #[test]
+    fn pedal_with_more_notes_than_voices_ends_silent() {
+        for name in KEYBOARDS {
+            let mut inst = keyboard(name);
+            inst.control_change(64, 127);
+            for p in 40..64 {
+                inst.note_on(p, 100);
+                render_ms(inst.as_mut(), 10);
+                inst.note_off(p);
+            }
+            let held = energy_ms(inst.as_mut(), 100);
+            inst.control_change(64, 0);
+            render_ms(inst.as_mut(), 2000);
+            let after = energy_ms(inst.as_mut(), 100);
+            assert!(held > 1e-4 && after <= held * 1e-6, "{name}: {after} still sounding (held {held})");
         }
     }
 }
