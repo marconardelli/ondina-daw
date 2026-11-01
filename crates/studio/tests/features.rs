@@ -1865,3 +1865,40 @@ fn open_plugin_editor_refuses_a_vst3_blocked_by_an_mcp_open() {
     let e = s.execute(Command::OpenPluginEditor { plugin_id: inst }, Source::Gui).unwrap_err();
     assert!(e.contains("open the project from the app"), "{e}");
 }
+
+#[test]
+fn session_players_phrase_in_bars_of_a_three_four_project() {
+    use ondina_core::model::RegionContent;
+    let mut s = Session::new(false);
+    ok(&mut s, "set_time_signature", json!({"numerator": 3, "denominator": 4}));
+    ok(&mut s, "set_chord_progression", json!({"start": 0, "chords": ["C", "Am", "F", "G"]}));
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();
+
+    let bass = ok(&mut s, "generate_bass", json!({"track_id": t, "start": 0, "bars": 4, "style": "syncopated", "seed": 1}))["region_id"].as_u64().unwrap();
+    let keys = ok(&mut s, "generate_chords", json!({"track_id": t, "start": 0, "bars": 4, "style": "pop", "seed": 2}))["region_id"].as_u64().unwrap();
+    let mel = ok(&mut s, "generate_melody", json!({"track_id": t, "start": 0, "bars": 4, "density": 0.5, "seed": 3}))["region_id"].as_u64().unwrap();
+
+    for (what, rid) in [("bass", bass), ("chords", keys), ("melody", mel)] {
+        let (_, region) = s.project.find_region(rid).unwrap();
+        assert_eq!(region.length, 12.0, "{what}: four bars of 3/4");
+        let RegionContent::Midi(m) = &region.content else { panic!("{what} region is not MIDI") };
+        for k in 0..4 {
+            let downbeat = 3.0 * k as f64;
+            assert!(m.notes.iter().any(|n| (n.start - downbeat).abs() < 1e-9), "{what}: bar {k} has no note on its first beat");
+        }
+        for n in &m.notes {
+            let bar_end = ((n.start / 3.0 + 1e-9).floor() + 1.0) * 3.0;
+            assert!(n.start + n.length <= bar_end + 1e-9, "{what}: {n:?} crosses a 3/4 bar line");
+        }
+        if what == "bass" {
+            for n in &m.notes {
+                let off = n.start - (n.start / 3.0 + 1e-9).floor() * 3.0;
+                assert!([0.0, 0.75, 1.5, 2.0, 2.5].iter().any(|o| (off - o).abs() < 1e-9), "bass offset {off} is not in the 3/4 cell");
+            }
+        }
+    }
+
+    ok(&mut s, "undo", json!({}));
+    assert!(s.project.find_region(mel).is_none(), "one undo removes the melody region");
+    assert!(s.project.find_region(keys).is_some());
+}
