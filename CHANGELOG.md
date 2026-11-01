@@ -7,6 +7,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-31
+
+### Added
+
+- Drag and drop from Explorer: drop audio files (wav, aiff, flac, mp3, ogg, m4a, caf) on an audio track and they
+  land at that point, snapped to the grid; below the last track or on an instrument or bus track they go on a new
+  audio track. While you drag, a line and a label show the file name, the track and where it will land. Several
+  files go one after the other, up to 8 per drop, and one Ctrl+Z removes the whole drop. A MIDI file is imported
+  at the beat under the pointer, and a project file opens (asking to save unsaved changes first). Files dropped
+  outside the arrangement go to the playhead.
+
+### Changed
+
+- Piano roll: a note drawn with a click is selected right away, so the arrow keys, Alt+Left/Right, Delete and
+  Ctrl+C/X act on it at once. With Ctrl or Shift the new note is added to the selection, and a click past the end
+  of the region clears it.
+- For MCP clients and the assistant, `add_notes` now returns the indices of the added notes, ready to pass to
+  transpose, quantize, humanize, velocity or remove tools.
+
 ## [0.11.0] - 2026-10-31
 
 ### Added
@@ -370,7 +389,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/marconardelli/ondina-daw/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/marconardelli/ondina-daw/compare/v0.10.2...v0.11.0
 [0.10.2]: https://github.com/marconardelli/ondina-daw/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/marconardelli/ondina-daw/compare/v0.10.0...v0.10.1
