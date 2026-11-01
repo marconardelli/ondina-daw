@@ -438,6 +438,13 @@ elenco.
 - Anche le cartelle extra della scansione devono stare su un disco locale: quelle su una condivisione di rete
   vengono saltate.
 - Se tieni i plug-in su un NAS, copiali in una cartella locale e aggiungili di nuovo.
+- Nel mixer e nell'inspector ogni VST3 si vede col suo nome: quello che il plug-in ha dato quando l'hai
+  aggiunto, oppure il nome del bundle. Se il nome è troppo lungo per lo slot, passandoci sopra col mouse lo leggi
+  intero.
+- Nel mixer un doppio clic su un insert VST3 o sullo strumento VST3 apre la finestra del plug-in. Sull'insert
+  puoi anche usare il tasto destro → **Open plug-in window**. Il clic singolo seleziona il plug-in come prima.
+- Un plug-in che non viene caricato è barrato e in grigio, nel mixer e nell'inspector: passandoci sopra col
+  mouse leggi il motivo. La sua finestra non si apre.
 
 ## Assistente con modello locale
 
