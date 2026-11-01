@@ -2,6 +2,7 @@
 
 pub mod ai;
 pub(crate) mod activity;
+pub mod fs_safe;
 pub mod local_ai;
 pub mod mcp;
 pub mod prompts;
