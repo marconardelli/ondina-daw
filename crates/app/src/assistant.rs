@@ -10,7 +10,7 @@ use ondina_studio::Source;
 use crate::app::{ChatItem, OndinaApp};
 use crate::chrome;
 use crate::theme;
-use crate::widgets::Icon;
+use crate::widgets::{self, Icon};
 
 const QUICK: &[(&str, &str)] = &[
     ("Compose an idea", "Compose an 8-bar musical idea in a style that fits the project (or pick a modern pop style if the project is empty): chords on the chord track, drums, bass, keys and a melody. Keep it tasteful and explain briefly."),
@@ -130,9 +130,16 @@ impl OndinaApp {
 
     /// An "Ask the AI" button, disabled (with the reason on hover) while no model is connected or the assistant is
     /// busy. True when clicked.
-    pub fn ai_button(&self, ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> bool {
+    pub fn ai_button(&self, ui: &mut egui::Ui, text: &str) -> bool {
         let blocked = ask_blocked_reason(self.ai_engine(), self.ai.busy);
-        let resp = ui.add_enabled(blocked.is_none(), egui::Button::new(text));
+        let enabled = blocked.is_none();
+        let fg = if enabled { theme::AI_TEXT } else { theme::TEXT_DISABLED };
+        let b = egui::Button::new(widgets::leading_icon_text(ui, RichText::new(text).color(fg)))
+            .fill(theme::AI_BG)
+            .stroke(Stroke::new(1.0_f32, theme::AI_BORDER))
+            .rounding(Rounding::same(theme::R_LG));
+        let resp = ui.add_enabled(enabled, b);
+        widgets::paint_leading_icon(ui, &resp, Icon::Ai, if enabled { theme::AI } else { theme::TEXT_DISABLED });
         match blocked {
             Some(why) => resp.on_disabled_hover_text(why).clicked(),
             None => resp.clicked(),
@@ -208,10 +215,10 @@ impl OndinaApp {
             };
             chrome::status_pill(ui, engine.label(), dot, fill, fg).on_hover_text(tip);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if chrome::header_button(ui, "×", "Hide the assistant").clicked() {
+                if chrome::header_button(ui, Icon::Close, "Hide the assistant").clicked() {
                     self.show_assistant = false;
                 }
-                if chrome::header_button(ui, "⚙", "AI settings").clicked() {
+                if chrome::header_button(ui, Icon::Settings, "AI settings").clicked() {
                     self.show_settings = true;
                 }
                 let new_chat = egui::Button::new(RichText::new("New chat").color(theme::ICON))
@@ -280,16 +287,24 @@ impl OndinaApp {
                     });
                 }
                 ChatItem::Tool { name, ok, input, result } => {
-                    let head = RichText::new(format!("{} {}", if *ok { "✓" } else { "✗" }, name))
+                    let head = RichText::new(name.as_str())
                         .font(theme::number_font())
                         .color(if *ok { theme::PLAY } else { theme::REC });
-                    egui::CollapsingHeader::new(head).id_salt((name, input.len(), result.len(), input.as_ptr() as usize)).show(ui, |ui| {
+                    let header = egui::CollapsingHeader::new(head).id_salt((name, input.len(), result.len(), input.as_ptr() as usize)).show(ui, |ui| {
                         ui.label(RichText::new(format!("in: {input}")).font(theme::number_font()));
                         ui.label(RichText::new(format!("out: {result}")).font(theme::number_font()).color(theme::TEXT_2));
                     });
+                    // the result mark after the tool's name, where a check or a cross glyph used to be
+                    let r = header.header_response.rect;
+                    let at = egui::Rect::from_center_size(egui::pos2(r.right() - 10.0, r.center().y), vec2(11.0, 11.0));
+                    let (icon, color) = if *ok { (Icon::Check, theme::PLAY) } else { (Icon::Close, theme::REC) };
+                    widgets::paint_icon(ui.painter(), icon, at, color);
                 }
                 ChatItem::Error(e) => {
-                    ui.label(RichText::new(format!("⚠ {e}")).color(theme::REC));
+                    ui.horizontal_top(|ui| {
+                        widgets::icon(ui, Icon::Warning, 14.0, theme::REC);
+                        ui.label(RichText::new(e.as_str()).color(theme::REC));
+                    });
                 }
             }
             ui.add_space(3.0);
@@ -314,8 +329,8 @@ impl OndinaApp {
         for l in recent {
             ui.allocate_ui_with_layout(vec2(w, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = theme::SP_4;
-                let (mark, color) = if l.ok { ("✓", theme::PLAY) } else { ("✗", theme::REC) };
-                ui.label(RichText::new(mark).font(theme::number_font()).color(color));
+                let (mark, color) = if l.ok { (Icon::Check, theme::PLAY) } else { (Icon::Close, theme::REC) };
+                widgets::icon(ui, mark, 11.0, color);
                 ui.label(RichText::new(&l.command).font(theme::number_font()).color(theme::ICON));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let age = short_age(l.at.elapsed().as_secs());
@@ -358,12 +373,11 @@ impl OndinaApp {
                     } else {
                         "The last edit was not made by the assistant: use Ctrl+Z to undo it"
                     };
-                    if ui
-                        .add_enabled(can_undo_turn, egui::Button::new(RichText::new("↶ Undo AI edit").size(theme::SIZE_NUMBER)).frame(false))
-                        .on_hover_text(hover)
-                        .on_disabled_hover_text(why_not)
-                        .clicked()
-                    {
+                    let undo_text = widgets::leading_icon_text(ui, RichText::new("Undo AI edit").size(theme::SIZE_NUMBER));
+                    let undo = ui.add_enabled(can_undo_turn, egui::Button::new(undo_text).frame(false));
+                    let color = if can_undo_turn { ui.style().interact(&undo).text_color() } else { theme::TEXT_DISABLED };
+                    widgets::paint_leading_icon(ui, &undo, Icon::Undo, color);
+                    if undo.on_hover_text(hover).on_disabled_hover_text(why_not).clicked() {
                         self.cmd(ondina_core::Command::Undo {});
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

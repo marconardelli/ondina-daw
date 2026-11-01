@@ -11,6 +11,7 @@ use crate::editors::{len_label, HARMONY_MENU, PIANO_ROLL_HELP};
 use crate::note_clipboard as nc;
 use crate::note_menus::{self, VelocityChoice};
 use crate::theme;
+use crate::widgets;
 
 /// A tool of the toolbar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +54,13 @@ impl Tool {
             Tool::SnapToKey => 8,
             Tool::Harmony => 9,
         }
+    }
+}
+
+impl Tool {
+    /// Tools shown as a drop-down (their label ends with a chevron).
+    pub fn is_dropdown(self) -> bool {
+        matches!(self, Tool::DrawLength | Tool::QuantizeGrid | Tool::Length | Tool::Velocity | Tool::Harmony)
     }
 }
 
@@ -146,15 +154,15 @@ impl OndinaApp {
 
     fn tool_text(&self, t: Tool, rid: Id) -> String {
         match t {
-            Tool::DrawLength => format!("Note {} \u{25BE}", len_label(self.note_len)),
-            Tool::QuantizeGrid => format!("{} \u{25BE}", len_label(quantize_grid(self.pr_quantize, self.snap))),
+            Tool::DrawLength => format!("Note {}", len_label(self.note_len)),
+            Tool::QuantizeGrid => len_label(quantize_grid(self.pr_quantize, self.snap)).to_string(),
             Tool::Quantize => "Q".into(),
             Tool::Humanize => "Humanize".into(),
             Tool::Transpose => transpose_label(self.pr_transpose_run.shown(rid, &self.pr_selection().1)),
-            Tool::Length => "Length \u{25BE}".into(),
-            Tool::Velocity => "Velocity \u{25BE}".into(),
+            Tool::Length => "Length".into(),
+            Tool::Velocity => "Velocity".into(),
             Tool::SnapToKey => "Snap to key".into(),
-            Tool::Harmony => "Harmony \u{25BE}".into(),
+            Tool::Harmony => "Harmony".into(),
         }
     }
 
@@ -163,10 +171,11 @@ impl OndinaApp {
         let text_w = |s: &str| ui.painter().layout_no_wrap(s.to_owned(), theme::body_font(), theme::TEXT).size().x;
         let pad = 2.0 * ui.spacing().button_padding.x;
         let text = self.tool_text(t, rid);
+        let chevron = if t.is_dropdown() { widgets::CHEVRON_W + text_w(" ") } else { 0.0 };
         match t {
-            Tool::QuantizeGrid => text_w("Quantize") + ui.spacing().item_spacing.x + text_w(&text) + pad,
+            Tool::QuantizeGrid => text_w("Quantize") + ui.spacing().item_spacing.x + text_w(&text) + chevron + pad,
             Tool::Transpose => 2.0 * STEP_W + self.transpose_mid_w(ui, &text),
-            _ => text_w(&text).max(TOOL_H - pad) + pad,
+            _ => (text_w(&text) + chevron).max(TOOL_H - pad) + pad,
         }
     }
 
@@ -181,12 +190,12 @@ impl OndinaApp {
         let text = self.tool_text(t, rid);
         match t {
             Tool::DrawLength => {
-                ui.menu_button(text, |ui| self.draw_length_items(ui))
+                widgets::dropdown_menu_button(ui, text, |ui| self.draw_length_items(ui))
                     .response
-                    .on_hover_text("Note length: how long the notes you draw are (and Length ▸ Fixed)");
+                    .on_hover_text("Note length: how long the notes you draw are (and Length, Fixed)");
             }
             Tool::QuantizeGrid => {
-                ui.menu_button(text, |ui| self.grid_items(ui))
+                widgets::dropdown_menu_button(ui, text, |ui| self.grid_items(ui))
                     .response
                     .on_hover_text("Quantize grid used by Q (Follow snap: the snap value)");
                 ui.label(RichText::new("Quantize").color(theme::TEXT_3));
@@ -205,12 +214,12 @@ impl OndinaApp {
             }
             Tool::Transpose => self.transpose_group(ui, rid, sel, &sorted, &text),
             Tool::Length => {
-                ui.menu_button(text, |ui| self.length_items(ui, rid, sel))
+                widgets::dropdown_menu_button(ui, text, |ui| self.length_items(ui, rid, sel))
                     .response
                     .on_hover_text("Change the length of the selected notes (all notes when nothing is selected). Starts and pitches stay.");
             }
             Tool::Velocity => {
-                ui.menu_button(text, |ui| self.velocity_items(ui, rid, sel))
+                widgets::dropdown_menu_button(ui, text, |ui| self.velocity_items(ui, rid, sel))
                     .response
                     .on_hover_text("Set or scale the velocity of the selected notes (all notes when nothing is selected)");
             }
@@ -224,7 +233,7 @@ impl OndinaApp {
                 }
             }
             Tool::Harmony => {
-                ui.menu_button(text, |ui| self.harmony_items(ui, rid, sel))
+                widgets::dropdown_menu_button(ui, text, |ui| self.harmony_items(ui, rid, sel))
                     .response
                     .on_hover_text("Add a voice in the project key to the selected notes (all notes when nothing is selected). The new notes become the selection.");
             }
@@ -270,8 +279,7 @@ impl OndinaApp {
     /// The "⋯" menu: the tools that did not fit, then the ones that only live here.
     fn more_menu(&mut self, ui: &mut egui::Ui, region: &Region, m: &MidiContent, hidden: &[Tool]) {
         let rid = region.id;
-        let button = egui::Button::new("\u{22EF}").min_size(vec2(MORE_W, TOOL_H));
-        let menu = egui::menu::menu_custom_button(ui, button, |ui| {
+        let menu = widgets::more_menu_button(ui, vec2(MORE_W, TOOL_H), None, |ui| {
             ui.set_min_width(200.0);
             let (sel, sorted) = self.pr_selection();
             let mut close = false;
@@ -309,7 +317,7 @@ impl OndinaApp {
                 self.extra.show_transform = true;
                 close = true;
             }
-            if self.ai_button(ui, RichText::new("✨ AI: continue / improve").color(theme::AI)) {
+            if self.ai_button(ui, "AI: continue / improve") {
                 self.ask_ai(ondina_studio::prompts::CONTINUE_IMPROVE.into());
                 close = true;
             }

@@ -9,6 +9,7 @@ use ondina_studio::Source;
 
 use crate::app::OndinaApp;
 use crate::theme;
+use crate::widgets::{self, Icon};
 
 /// Remembers when the document was last saved, from what the session reports frame by frame: a clean document that
 /// was dirty a moment ago, or that got a new path, has just been saved; a new document starts with no save time.
@@ -63,6 +64,14 @@ pub fn rate_text(hz: u32) -> String {
     }
 }
 
+/// A status line that starts with the warning sign: drawn with the warning icon instead of the glyph.
+pub fn split_warning(status: &str) -> (bool, &str) {
+    match status.strip_prefix('\u{26A0}') {
+        Some(rest) => (true, rest.trim_start()),
+        None => (false, status),
+    }
+}
+
 const MCP_GREEN: Color32 = theme::PLAY;
 
 fn dot(ui: &mut Ui, color: Color32) {
@@ -114,7 +123,12 @@ impl OndinaApp {
             }
             if !self.status.is_empty() {
                 ui.add_space(theme::SP_5);
-                ui.add(egui::Label::new(RichText::new(&self.status).size(theme::SIZE_NUMBER).color(theme::TEXT_2)).truncate());
+                let (warning, text) = split_warning(&self.status);
+                if warning {
+                    widgets::icon(ui, Icon::Warning, 12.0, theme::MONITOR);
+                }
+                let color = if warning { theme::MONITOR } else { theme::TEXT_2 };
+                ui.add(egui::Label::new(RichText::new(text).size(theme::SIZE_NUMBER).color(color)).truncate());
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let state = save_state_text(self.view.dirty, self.view.path.is_some(), self.save_clock.since(now));
@@ -134,6 +148,13 @@ impl OndinaApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warnings_lose_their_glyph_for_the_icon() {
+        assert_eq!(split_warning("\u{26A0} Autosave failed: disk full"), (true, "Autosave failed: disk full"));
+        assert_eq!(split_warning("Saved"), (false, "Saved"));
+        assert_eq!(split_warning(""), (false, ""));
+    }
 
     #[test]
     fn save_clock_starts_on_a_save_and_resets_with_a_new_document() {

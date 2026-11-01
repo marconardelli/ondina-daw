@@ -747,41 +747,51 @@ impl OndinaApp {
             return;
         };
         let mut open = true;
-        egui::Window::new("Mix Analysis").open(&mut open).default_width(520.0).show(ctx, |ui| {
+        crate::dialog::window("Mix Analysis").open(&mut open).default_width(520.0).show(ctx, |ui| {
             let m = &rep["master"];
-            egui::Grid::new("mixrep").striped(true).show(ui, |ui| {
+            chrome::section_label(ui, "Master");
+            egui::Grid::new("mixrep").striped(true).spacing(vec2(theme::SP_6, theme::SP_2)).show(ui, |ui| {
                 for (label, key, decimals, unit) in ANALYSIS_ROWS {
-                    ui.label(label);
-                    ui.label(RichText::new(report_number(&m[key], decimals, unit)).monospace());
+                    ui.label(RichText::new(label).color(theme::TEXT_2));
+                    ui.label(RichText::new(report_number(&m[key], decimals, unit)).font(theme::number_font()).color(theme::TEXT));
                     ui.end_row();
                 }
-                ui.label("Spectral balance low/mid/high");
-                ui.label(RichText::new(balance_text(&m["spectral_balance_pct"])).monospace());
+                ui.label(RichText::new("Spectral balance low/mid/high").color(theme::TEXT_2));
+                ui.label(RichText::new(balance_text(&m["spectral_balance_pct"])).font(theme::number_font()).color(theme::TEXT));
                 ui.end_row();
             });
-            ui.separator();
-            for a in rep["advice"].as_array().cloned().unwrap_or_default() {
-                ui.label(format!("• {}", a.as_str().unwrap_or("")));
+            let advice = rep["advice"].as_array().cloned().unwrap_or_default();
+            if !advice.is_empty() {
+                ui.add_space(theme::SP_4);
+                chrome::section_label(ui, "Advice");
+                for a in advice {
+                    ui.horizontal_top(|ui| {
+                        let (dot, _) = ui.allocate_exact_size(vec2(8.0, 14.0), Sense::hover());
+                        ui.painter().circle_filled(dot.center(), 2.0, theme::ACCENT);
+                        ui.label(RichText::new(a.as_str().unwrap_or("")).color(theme::TEXT));
+                    });
+                }
             }
-            ui.separator();
+            ui.add_space(theme::SP_4);
+            chrome::section_label(ui, "Tracks");
             egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
-                egui::Grid::new("trk").striped(true).show(ui, |ui| {
-                    ui.label(RichText::new("Track").strong());
-                    ui.label(RichText::new("Peak").strong());
-                    ui.label(RichText::new("Loudness").strong());
-                    ui.label(RichText::new("Low/Mid/High").strong());
+                egui::Grid::new("trk").striped(true).spacing(vec2(theme::SP_6, theme::SP_2)).show(ui, |ui| {
+                    for head in ["Track", "Peak", "Loudness", "Low/Mid/High"] {
+                        ui.label(theme::label_text(head));
+                    }
                     ui.end_row();
                     for t in rep["tracks"].as_array().cloned().unwrap_or_default() {
                         let a = &t["analysis"];
                         ui.label(t["name"].as_str().unwrap_or(""));
-                        ui.label(RichText::new(report_number(&a["peak_dbfs"], 1, "dBFS")).monospace());
-                        ui.label(RichText::new(report_number(&a["integrated_lufs"], 1, "LUFS")).monospace());
-                        ui.label(RichText::new(balance_text(&a["spectral_balance_pct"])).monospace());
+                        ui.label(RichText::new(report_number(&a["peak_dbfs"], 1, "dBFS")).font(theme::number_font()));
+                        ui.label(RichText::new(report_number(&a["integrated_lufs"], 1, "LUFS")).font(theme::number_font()));
+                        ui.label(RichText::new(balance_text(&a["spectral_balance_pct"])).font(theme::number_font()));
                         ui.end_row();
                     }
                 });
             });
-            if self.ai_button(ui, RichText::new("✨ Ask the AI to fix the mix").color(theme::AI)) {
+            ui.add_space(theme::SP_4);
+            if self.ai_button(ui, "Ask the AI to fix the mix") {
                 self.ask_ai(ondina_studio::prompts::FIX_MIX.into());
             }
         });

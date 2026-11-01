@@ -10,7 +10,41 @@ use crate::chrome;
 use crate::inspector_strip::{sections, Section, OPEN_REGION_SECTION, OPEN_TRACK_SECTION};
 use crate::region_edit::{self, ColorChoice};
 use crate::theme;
-use crate::widgets::Icon;
+use crate::widgets::{self, Icon};
+
+/// Whether a Library patch matches the search: every word of `filter` in its name or category, any case.
+pub fn patch_matches(name: &str, category: &str, filter: &str) -> bool {
+    let hay = format!("{name} {category}").to_lowercase();
+    filter.split_whitespace().all(|w| hay.contains(&w.to_lowercase()))
+}
+
+/// The Library's search field: a sunken box with a lens, and a clear button while it has text.
+fn library_search(ui: &mut egui::Ui, filter: &mut String) {
+    egui::Frame::none()
+        .fill(theme::INSET)
+        .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
+        .rounding(theme::R_LG)
+        .inner_margin(egui::Margin::symmetric(theme::SP_3, theme::SP_2))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                widgets::icon(ui, Icon::Search, 13.0, theme::TEXT_3);
+                let clear_w = if filter.is_empty() { 0.0 } else { 22.0 };
+                ui.add(
+                    egui::TextEdit::singleline(filter)
+                        .frame(false)
+                        .hint_text("Search patches")
+                        .desired_width(ui.available_width() - clear_w),
+                );
+                if !filter.is_empty()
+                    && widgets::icon_only_button(ui, Icon::Close, 16.0, theme::TEXT_3)
+                        .on_hover_text("Clear the search")
+                        .clicked()
+                {
+                    filter.clear();
+                }
+            });
+        });
+}
 
 impl OndinaApp {
     pub fn left_ui(&mut self, ui: &mut egui::Ui) {
@@ -22,7 +56,7 @@ impl OndinaApp {
         chrome::header_strip(ui, chrome::HEADER_H, |ui| {
             chrome::icon_title(ui, icon, theme::TEXT_2, RichText::new(title).color(theme::TEXT_2));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if chrome::header_button(ui, "‹", "Hide the side panel").clicked() {
+                if chrome::header_button(ui, Icon::ChevronLeft, "Hide the side panel").clicked() {
                     self.show_left = false;
                 }
             });
@@ -40,34 +74,42 @@ impl OndinaApp {
     fn library(&mut self, ui: &mut egui::Ui) {
         let p = self.project();
         let target = self.selected_track.and_then(|t| p.track(t)).cloned();
-        ui.label(
-            RichText::new(match &target {
-                Some(t) => format!(
-                    "Click a patch to load it on '{}', or ➕ for a new track.",
-                    t.name
-                ),
-                None => "Click ➕ to create a track with the patch.".into(),
-            })
-            .small()
-            .color(theme::TEXT_DIM),
-        );
+        let hint = match &target {
+            Some(t) => format!("Click a patch to load it on '{}', or + to put it on a new track.", t.name),
+            None => "Click + to create a track with the patch.".into(),
+        };
+        ui.label(RichText::new(hint).size(theme::SIZE_NUMBER).color(theme::TEXT_3));
+        ui.add_space(theme::SP_2);
+        library_search(ui, &mut self.library_filter);
+        ui.add_space(theme::SP_2);
         self.vst_library(ui);
-        let mut cats: Vec<&str> = plugins::PATCHES.iter().map(|p| p.category).collect();
+        let filter = self.library_filter.clone();
+        let matching: Vec<_> = plugins::PATCHES.iter().filter(|x| patch_matches(x.name, x.category, &filter)).collect();
+        if matching.is_empty() {
+            chrome::empty_state(
+                ui,
+                Icon::Search,
+                &format!("No patches match \u{201c}{}\u{201d}", filter.trim()),
+                "Try another word, such as bass, piano or drums.",
+            );
+            return;
+        }
+        let mut cats: Vec<&str> = matching.iter().map(|p| p.category).collect();
         cats.sort();
         cats.dedup();
         for c in cats {
             egui::CollapsingHeader::new(c)
+                .id_salt(("library-cat", c))
                 .default_open(true)
                 .show(ui, |ui| {
-                    for patch in plugins::PATCHES.iter().filter(|x| x.category == c) {
+                    for patch in matching.iter().filter(|x| x.category == c) {
                         ui.horizontal(|ui| {
                             let kind = if patch.instrument.is_some() {
                                 TrackKind::Instrument
                             } else {
                                 TrackKind::Audio
                             };
-                            if ui
-                                .small_button("➕")
+                            if widgets::icon_only_button(ui, Icon::Plus, 18.0, theme::TEXT_2)
                                 .on_hover_text("New track with this patch")
                                 .clicked()
                             {
@@ -380,4 +422,20 @@ impl OndinaApp {
 fn separator(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
     ui.painter().rect_filled(rect, 0.0, theme::CONTROL);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn library_search_matches_every_word_in_name_or_category() {
+        assert!(patch_matches("Warm Bass", "Bass", ""));
+        assert!(patch_matches("Warm Bass", "Bass", "  "));
+        assert!(patch_matches("Warm Bass", "Bass", "warm"));
+        assert!(patch_matches("Grand Piano", "Keys", "keys piano"));
+        assert!(patch_matches("Grand Piano", "Keys", "PIA"));
+        assert!(!patch_matches("Grand Piano", "Keys", "piano drums"));
+        assert!(!patch_matches("Grand Piano", "Keys", "zzz"));
+    }
 }

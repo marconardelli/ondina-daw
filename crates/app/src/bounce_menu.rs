@@ -75,7 +75,7 @@ pub fn status(result: &Value, path: &str, loudness: Loudness) -> String {
     }
     for w in result["warnings"].as_array().into_iter().flatten() {
         if let Some(w) = w.as_str() {
-            s.push_str(&format!(" · ⚠ {w}"));
+            s.push_str(&format!(" · Warning: {w}"));
         }
     }
     s

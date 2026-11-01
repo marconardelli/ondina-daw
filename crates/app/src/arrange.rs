@@ -17,7 +17,7 @@ use crate::piano_roll_view::{wheel_zoom, zoom_factor};
 use crate::region_edit::{self, region_name_field, FadeGeom, FadeHandle};
 use crate::session_players::{self, Player};
 use crate::theme;
-use crate::widgets;
+use crate::widgets::{self, Icon};
 
 const HEADER_W: f32 = 224.0;
 const RULER_H: f32 = 30.0;
@@ -908,7 +908,7 @@ impl OndinaApp {
                     }
                     ui.separator();
                 }
-                if self.ai_button(ui, "✨ Ask AI to write a part for this track") {
+                if self.ai_button(ui, "Ask AI to write a part for this track") {
                     self.selected_track = Some(tid);
                     ui.close_menu();
                     self.ask_ai(ondina_studio::prompts::WRITE_PART.into());
@@ -1249,7 +1249,7 @@ impl OndinaApp {
                         ui.close_menu();
                     }
                     ui.separator();
-                    if self.ai_button(ui, "✨ Ask AI to vary this region") {
+                    if self.ai_button(ui, "Ask AI to vary this region") {
                         self.selected_region = Some(rid);
                         ui.close_menu();
                         self.ask_ai(ondina_studio::prompts::VARY_REGION.into());
@@ -1567,16 +1567,13 @@ impl OndinaApp {
             );
             child.menu_button("+  Add track", |ui| self.add_track_menu(ui));
             if p.tracks.is_empty() {
-                let c = pos2(
-                    timeline_x + (full.right() - timeline_x) / 2.0,
-                    tracks_top + 120.0,
-                );
-                painter.text(
-                    c,
-                    Align2::CENTER_CENTER,
-                    "Empty project — add a track, or ask the AI assistant to compose something ✨",
-                    FontId::proportional(15.0),
-                    theme::TEXT_DIM,
+                let area = Rect::from_min_max(pos2(timeline_x, tracks_top), pos2(full.right(), (tracks_top + 260.0).min(full.bottom())));
+                crate::chrome::paint_empty_state(
+                    ui,
+                    area,
+                    Icon::Audio,
+                    "No tracks yet",
+                    "Use + Add track, drop audio or MIDI files here, or ask the assistant to compose something.",
                 );
             }
         }
@@ -1833,8 +1830,7 @@ impl OndinaApp {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             let short = choices.iter().find(|(s, _)| s.target == *current).map_or("Volume", |(s, _)| s.short.as_str());
-            child
-                .menu_button(format!("{short} ⏷"), |ui| {
+            widgets::dropdown_menu_button(&mut child, short, |ui| {
                     if let Some(target) = automation_lane_menu(ui, choices, current) {
                         self.automation.choose(tid, &target);
                         ui.close_menu();

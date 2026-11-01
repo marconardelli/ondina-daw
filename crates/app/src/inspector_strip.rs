@@ -150,12 +150,7 @@ impl OndinaApp {
                     .truncate(),
                 );
             });
-            let options = egui::Button::new(RichText::new("⋯").color(theme::TEXT_2))
-                .fill(theme::CONTROL)
-                .stroke(Stroke::NONE)
-                .rounding(Rounding::same(theme::R_MD))
-                .min_size(vec2(24.0, 24.0));
-            egui::menu::menu_custom_button(ui, options, |ui| self.track_options(ui, t))
+            widgets::more_menu_button(ui, vec2(24.0, 24.0), Some(theme::CONTROL), |ui| self.track_options(ui, t))
                 .response
                 .on_hover_text("Track options");
         });

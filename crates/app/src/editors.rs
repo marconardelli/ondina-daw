@@ -24,12 +24,12 @@ use crate::piano_roll_view::{
 };
 use crate::step_paint::{self, cell_at, RowFill, RowRename, StepCell, StepStroke, DRUM_SOUNDS, PAINT_VELOCITY};
 use crate::theme;
-use crate::widgets::{self, StateKind};
+use crate::widgets::{self, Icon, StateKind};
 
 /// Mouse and keyboard help of the piano roll (hover on the help entry of its "⋯" menu and on the editor header's
 /// name).
 /// Mouse help of the step sequencer (hover on "Help" in its toolbar).
-const STEP_HELP: &str = "Click: on/off · Drag: paint · Right-click a step: accent → normal → ghost → off · M: mute the row · Click a name: preview · Right-click a name or ⋯: row menu · The number next to M: the row's sound";
+const STEP_HELP: &str = "Click: on/off · Drag: paint · Right-click a step: accent → normal → ghost → off · M: mute the row · Click a name: preview · Right-click a name or the dots button: row menu · The number next to M: the row's sound";
 /// Step cell size and the row name's width.
 const STEP_W: f32 = 22.0;
 const STEP_H: f32 = 20.0;
@@ -95,9 +95,12 @@ impl OndinaApp {
 
     fn editor_body(&mut self, ui: &mut egui::Ui, p: &std::sync::Arc<Project>, found: Option<(Track, Region)>) {
         let Some((track, region)) = found else {
-            ui.centered_and_justified(|ui| {
-                ui.label(RichText::new("Select a region to edit it (double-click an instrument lane to create one)").color(theme::TEXT_DIM));
-            });
+            crate::chrome::empty_state(
+                ui,
+                Icon::Piano,
+                "Select a region to edit it",
+                "Click a region in the tracks, or double-click an instrument lane to create one.",
+            );
             self.edits.row_rename = None;
             return;
         };
@@ -671,12 +674,16 @@ impl OndinaApp {
         if tresp.hovered() {
             painter.rect_filled(toggle_rect.shrink(1.0), Rounding::same(theme::R_SM), theme::HOVER);
         }
+        let toggle_color = if tresp.hovered() { theme::TEXT } else { theme::TEXT_2 };
+        let chevron = if self.cc_lane.open { Icon::ChevronDown } else { Icon::ChevronRight };
+        let chevron_rect = Rect::from_center_size(pos2(toggle_rect.left() + 10.0, toggle_rect.center().y), vec2(10.0, 10.0));
+        widgets::paint_icon(&painter, chevron, chevron_rect, toggle_color);
         painter.text(
-            pos2(toggle_rect.left() + 6.0, toggle_rect.center().y),
+            pos2(toggle_rect.left() + 18.0, toggle_rect.center().y),
             Align2::LEFT_CENTER,
-            format!("{} CC", if self.cc_lane.open { "\u{25BE}" } else { "\u{25B8}" }),
+            "CC",
             theme::label_font(),
-            if tresp.hovered() { theme::TEXT } else { theme::TEXT_2 },
+            toggle_color,
         );
         if tresp.clicked() {
             self.cc_lane.open = !self.cc_lane.open;
@@ -993,7 +1000,7 @@ impl OndinaApp {
             if ui.button("Convert to MIDI").clicked() {
                 self.cmd(Command::ConvertPatternToMidi { region_id: rid });
             }
-            if self.ai_button(ui, RichText::new("✨ AI: write a groove").color(theme::AI)) {
+            if self.ai_button(ui, "AI: write a groove") {
                 self.ask_ai(ondina_studio::prompts::WRITE_GROOVE.into());
             }
             ui.label(RichText::new("Help").color(theme::TEXT_3)).on_hover_text(STEP_HELP);
@@ -1079,8 +1086,7 @@ impl OndinaApp {
                         egui::menu::menu_custom_button(ui, sound, |ui| self.sound_items(ui, rid, ri, row))
                             .response
                             .on_hover_text(format!("Sound: {} ({}) · click to choose another", row.pitch, note_name(row.pitch)));
-                        let more = egui::Button::new(RichText::new("\u{22EF}").color(theme::TEXT_2)).min_size(vec2(22.0, STEP_H));
-                        egui::menu::menu_custom_button(ui, more, |ui| self.row_menu(ui, track.id, rid, ri, row, pt))
+                        widgets::more_menu_button(ui, vec2(22.0, STEP_H), None, |ui| self.row_menu(ui, track.id, rid, ri, row, pt))
                             .response
                             .on_hover_text("Row menu");
                         for (si, v) in row.steps.iter().enumerate() {

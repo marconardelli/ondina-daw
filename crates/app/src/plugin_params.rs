@@ -8,6 +8,16 @@ use ondina_core::plugins;
 
 use crate::app::OndinaApp;
 use crate::theme;
+use crate::widgets::{self, Icon};
+
+/// The card the parameters of the selected plug-in sit in.
+fn plugin_card() -> egui::Frame {
+    egui::Frame::none()
+        .fill(theme::RAISED)
+        .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
+        .rounding(theme::R_XL)
+        .inner_margin(theme::SP_5)
+}
 
 impl OndinaApp {
     pub(crate) fn plugin_editor(&mut self, ui: &mut egui::Ui, p: &Project, pid: Id) {
@@ -21,11 +31,11 @@ impl OndinaApp {
         let Some(info) = plugins::find(&inst.kind) else {
             return;
         };
-        egui::Frame::none().fill(theme::LANE).rounding(4.0).inner_margin(6.0).show(ui, |ui| {
+        plugin_card().show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(info.name).strong().color(theme::ACCENT));
+                ui.label(RichText::new(info.name).font(egui::FontId::new(13.0, theme::semibold())).color(theme::TEXT));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("✕").clicked() {
+                    if widgets::icon_only_button(ui, Icon::Close, 18.0, theme::TEXT_3).on_hover_text("Close the parameters").clicked() {
                         self.selected_plugin = None;
                     }
                 });
@@ -72,7 +82,7 @@ impl OndinaApp {
                 }
             });
             ui.horizontal(|ui| {
-                if self.ai_button(ui, RichText::new("✨ AI: design a sound").color(theme::AI)) {
+                if self.ai_button(ui, "AI: design a sound") {
                     self.ask_ai(ondina_studio::prompts::design_sound(pid, info.name));
                 }
             });
@@ -82,19 +92,16 @@ impl OndinaApp {
     /// Generic parameter editor for third-party VST3 plug-ins (normalized 0..1 values).
     fn vst3_editor(&mut self, ui: &mut egui::Ui, inst: &PluginInstance) {
         let pid = inst.id;
-        egui::Frame::none()
-            .fill(theme::LANE)
-            .rounding(4.0_f32)
-            .inner_margin(6.0)
+        plugin_card()
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(format!("VST3 · {}", plugins::plugin_label(inst)))
-                        .strong()
-                        .color(theme::ACCENT),
+                        .font(egui::FontId::new(13.0, theme::semibold()))
+                        .color(theme::TEXT),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("✕").clicked() {
+                        if widgets::icon_only_button(ui, Icon::Close, 18.0, theme::TEXT_3).on_hover_text("Close the parameters").clicked() {
                             self.selected_plugin = None;
                         }
                     });
@@ -131,8 +138,8 @@ impl OndinaApp {
                     }
                 }
                 ui.horizontal(|ui| {
-                    ui.label("🔍");
-                    ui.text_edit_singleline(&mut self.vst_filter);
+                    widgets::icon(ui, Icon::Search, 13.0, theme::TEXT_3);
+                    ui.add(egui::TextEdit::singleline(&mut self.vst_filter).hint_text("Filter parameters"));
                 });
                 let filter = self.vst_filter.to_lowercase();
                 let matching: Vec<&Vst3Param> = inst

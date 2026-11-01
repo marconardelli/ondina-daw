@@ -11,7 +11,10 @@ use eframe::egui::{
 use serde_json::Value;
 
 use crate::app::OndinaApp;
+use crate::chrome;
+use crate::dialog;
 use crate::theme;
+use crate::widgets::{self, Icon};
 
 #[derive(Default)]
 pub struct ExtraState {
@@ -78,6 +81,17 @@ fn score_first_bar(region_start: f64, beats_per_bar: f64) -> usize {
     (region_start / beats_per_bar).floor().max(0.0) as usize + 1
 }
 
+/// What the Clip Grid says when there is nothing to launch: no track to hold cells, or no scene row yet.
+pub fn clip_grid_empty(tracks: usize, scenes: usize) -> Option<(&'static str, &'static str)> {
+    if tracks == 0 {
+        Some(("No tracks for the Clip Grid", "Add an instrument or audio track: each track gets a column of cells."))
+    } else if scenes == 0 {
+        Some(("No scenes yet", "Press + Scene to add a row of cells, then click a cell to fill it."))
+    } else {
+        None
+    }
+}
+
 /// Diatonic step number (C4 = 28).
 fn diatonic(p: u8) -> i32 {
     (p as i32 / 12) * 7 + LETTER[(p % 12) as usize]
@@ -100,27 +114,35 @@ impl OndinaApp {
                     }
                 }
             });
-            if ui.button("➕ Scene").clicked() {
+            if widgets::icon_button(ui, Icon::Plus, "Scene", None).on_hover_text("Add a scene (a row of cells launched together)").clicked() {
                 self.cmd(Command::AddScene { name: None });
             }
-            if ui.button("⏹ Stop all cells").clicked() {
+            if widgets::icon_button(ui, Icon::Stop, "Stop all cells", None).clicked() {
                 self.cmd(Command::StopLiveCells { track_id: None });
             }
-            if ui.button("⏺ Commit performance to timeline").on_hover_text("Write what the grid played into regular regions").clicked() {
+            if widgets::icon_button(ui, Icon::Record, "Commit performance to timeline", Some(theme::REC)).on_hover_text("Write what the grid played into regular regions").clicked() {
                 if let Some(v) = self.exec(Command::CommitLivePerformance {}) {
                     self.status = format!("Committed {} regions", v["created_regions"].as_array().map(|a| a.len()).unwrap_or(0));
                 }
             }
-            if self.ai_button(ui, RichText::new("✨ AI: fill the grid").color(theme::AI)) {
+            if self.ai_button(ui, "AI: fill the grid") {
                 self.ask_ai(ondina_studio::prompts::FILL_GRID.into());
             }
         });
         ui.separator();
+        let grid_tracks = p.tracks.iter().filter(|t| t.kind != TrackKind::Bus).count();
+        if let Some((title, hint)) = clip_grid_empty(grid_tracks, p.live.scenes.len()) {
+            chrome::empty_state(ui, Icon::ClipGrid, title, hint);
+            return;
+        }
         egui::ScrollArea::both().show(ui, |ui| {
             egui::Grid::new("livegrid").spacing(vec2(4.0, 4.0)).show(ui, |ui| {
                 ui.label("");
                 for (si, name) in p.live.scenes.iter().enumerate() {
-                    let resp = ui.add_sized(vec2(110.0, 22.0), egui::Button::new(RichText::new(format!("▶ {name}")).small()));
+                    let text = widgets::leading_icon_text(ui, RichText::new(name.as_str()).size(theme::SIZE_NUMBER));
+                    let resp = ui.add_sized(vec2(110.0, 22.0), egui::Button::new(text));
+                    widgets::paint_leading_icon(ui, &resp, Icon::Play, theme::PLAY);
+                    let resp = resp.on_hover_text("Launch this scene");
                     if resp.clicked() {
                         self.cmd(Command::LaunchScene { scene: si });
                     }
@@ -135,7 +157,7 @@ impl OndinaApp {
                 for t in p.tracks.iter().filter(|t| t.kind != TrackKind::Bus) {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(crate::mixer::short(&t.name, 12)).color(theme::rgb(t.color)));
-                        if ui.small_button("⏹").on_hover_text("Stop this track's cell").clicked() {
+                        if widgets::icon_only_button(ui, Icon::Stop, 18.0, theme::TEXT_2).on_hover_text("Stop this track's cell").clicked() {
                             self.cmd(Command::StopLiveCells { track_id: Some(t.id) });
                         }
                     });
@@ -592,7 +614,7 @@ impl OndinaApp {
                     for f in self.settings.vst3_folders.clone() {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(&f).small());
-                            if ui.small_button("✕").on_hover_text("Remove this folder").clicked() {
+                            if widgets::icon_only_button(ui, Icon::Close, 16.0, theme::TEXT_3).on_hover_text("Remove this folder").clicked() {
                                 remove = Some(f.clone());
                             }
                         });
@@ -609,7 +631,7 @@ impl OndinaApp {
                 for pl in self.extra.vst_list.clone() {
                     ui.horizontal(|ui| {
                         let inst = pl["instrument"].as_bool().unwrap_or(false);
-                        ui.label(if inst { "🎹" } else { "🎛" });
+                        widgets::icon(ui, if inst { Icon::Piano } else { Icon::Effect }, 14.0, theme::TEXT_2);
                         ui.label(format!(
                             "{} · {}",
                             pl["name"].as_str().unwrap_or(""),
@@ -617,7 +639,7 @@ impl OndinaApp {
                         ));
                         let path = pl["path"].as_str().unwrap_or("").to_string();
                         if inst {
-                            if ui.small_button("➕ track").clicked() {
+                            if widgets::icon_button(ui, Icon::Plus, "Track", None).on_hover_text("New instrument track with this plug-in").clicked() {
                                 if let Some(v) = self.exec(Command::AddTrack {
                                     kind: TrackKind::Instrument,
                                     name: pl["name"].as_str().map(|s| s.to_string()),
@@ -638,7 +660,7 @@ impl OndinaApp {
                                 }
                             }
                         } else if ui
-                            .small_button("➕ insert")
+                            .add(egui::Button::new("Insert"))
                             .on_hover_text("Insert on the selected track (or master)")
                             .clicked()
                         {
@@ -723,7 +745,7 @@ impl OndinaApp {
                     target_db: Some(-1.0),
                 });
             }
-            if ui.button("✂ Stem Splitter").clicked() {
+            if widgets::icon_button(ui, Icon::Scissors, "Stem Splitter", None).clicked() {
                 if let Some(v) = self.exec(Command::SplitStems {
                     region_id: rid,
                     engine: None,
@@ -751,7 +773,7 @@ impl OndinaApp {
         if self.extra.show_video {
             let mut open = true;
             let p = self.project();
-            egui::Window::new("🎬 Movie")
+            dialog::window("Movie")
                 .open(&mut open)
                 .default_size([360.0, 240.0])
                 .show(ctx, |ui| {
@@ -861,7 +883,7 @@ impl OndinaApp {
         // ---- MIDI transform
         if self.extra.show_transform {
             let mut open = true;
-            egui::Window::new("MIDI Transform")
+            dialog::window("MIDI Transform")
                 .open(&mut open)
                 .show(ctx, |ui| {
                     let Some(rid) = self.selected_region else {
@@ -948,7 +970,7 @@ impl OndinaApp {
         if self.extra.show_routes {
             let mut open = true;
             let p = self.project();
-            egui::Window::new("MIDI Environment (input routing)").open(&mut open).show(ctx, |ui| {
+            dialog::window("MIDI Environment").open(&mut open).show(ctx, |ui| {
                 ui.label(RichText::new("Keyboard splits and layers: each route sends a note range of the MIDI input to a track.").small().color(theme::TEXT_DIM));
                 let mut routes = p.midi_routes.clone();
                 let mut changed = false;
@@ -957,7 +979,7 @@ impl OndinaApp {
                     ui.horizontal(|ui| {
                         let tname = p.track(r.track_id).map(|t| t.name.clone()).unwrap_or("?".into());
                         ui.label(format!("{}: notes {}–{}  transpose {:+}  → {}", r.name, r.note_min.unwrap_or(0), r.note_max.unwrap_or(127), r.transpose, tname));
-                        if ui.small_button("×").clicked() {
+                        if widgets::icon_only_button(ui, Icon::Close, 16.0, theme::TEXT_3).on_hover_text("Remove this route").clicked() {
                             remove = Some(i);
                         }
                     });
