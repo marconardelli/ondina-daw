@@ -127,6 +127,26 @@ note. Ogni voce si annulla con un Ctrl+Z.
 - L'assistente (con Claude) e i client MCP fanno lo stesso con `set_note_lengths` (per esempio "rendi legato il
   basso") e `set_note_velocities`.
 
+## Step sequencer
+
+Una regione pattern (per esempio quella creata su una traccia Pop Drum Kit) si apre nello step sequencer: una riga
+per suono di batteria, una cella per step.
+
+- **Clic** su una cella: la accende (velocity 100) o la spegne. **Clic destro**: accento (120) → normale (90) →
+  ghost (45) → spenta.
+- **Trascinamento**: tieni premuto il tasto sinistro su una cella e passa sulle altre. Se la prima cella era
+  spenta il tratto le accende tutte, se era accesa le spegne. Il tratto può attraversare più righe e un movimento
+  veloce non salta celle. Le celle cambiano colore subito, il progetto cambia al rilascio: un Ctrl+Z annulla
+  l'intero tratto. Le celle non toccate tengono la loro velocity; un tratto che non cambia nulla non lascia passi
+  di undo. **Esc** col tasto ancora premuto annulla il tratto.
+- **Clic sul nome** della riga: suona il suono. **Clic destro sul nome**: menu con **Preview** e cinque
+  riempimenti che riscrivono la riga intera a velocity normale: **Clear row**, **Every step**, **Every 2nd step**,
+  **Every 4th step** e **Offbeats** (il "e" di ogni battito: con step da 1/16 gli step 3, 7, 11, 15). Ogni voce si
+  annulla con un Ctrl+Z.
+- **+ Row**, sotto la griglia: elenco dei 25 suoni del Drum Kit con la loro altezza General MIDI (per esempio
+  *Ride · 51*). La riga nuova compare in fondo, vuota. Per togliere una riga non c'è ancora un comando.
+- L'assistente e i client MCP fanno lo stesso con `set_pattern_step`, `set_pattern_row` e `add_pattern_row`.
+
 ## Tracce nell'arrangiamento
 
 A sinistra di ogni traccia c'è la sua intestazione, con il nome, i pulsanti M (mute), S (solo) e
