@@ -508,6 +508,30 @@ Un campo di testo aperto (rinomina di marker, tracce o regioni, nome della regio
 accordo) si chiude senza applicare nulla quando apri o crei un altro progetto, anche se lo fanno
 l'assistente o un client MCP.
 
+## Salvataggio sicuro e copia precedente
+
+Quando salvi, Ondina scrive prima il progetto in un file temporaneo accanto (`Brano.ondina.tmp`), si
+assicura che sia tutto sul disco e solo allora lo mette al posto del vecchio. Se il disco è pieno, se
+Ondina si chiude o salta la corrente durante il salvataggio, il progetto che avevi resta com'era. La riga
+di stato dice perché il salvataggio non è riuscito (per esempio `not enough disk space`) e il pallino "•"
+resta nel titolo.
+
+Prima di sostituire un progetto che esiste già, Ondina tiene la versione precedente accanto, con `.bak`
+in fondo al nome: `Brano.ondina.bak`. Ce n'è una sola: a ogni salvataggio prende il posto della
+precedente. Vale anche quando salvano l'assistente o un client MCP.
+
+Per tornare alla versione precedente: in Esplora file copia `Brano.ondina.bak`, rinomina la copia in, per
+esempio, `Brano (precedente).ondina` (Windows chiede conferma per il cambio di estensione) e aprila con
+File > Open.
+
+La copia si spegne in Settings, sezione **Autosave**, con **Keep a backup of the previous save** (acceso
+all'inizio), poi **Save settings**.
+
+Le impostazioni (`%APPDATA%\OndinaDAW\settings.json`) si scrivono nello stesso modo. Se all'avvio il file
+non si legge (per esempio è rimasto troncato), Ondina lo rinomina in `settings.json.broken`, parte con le
+impostazioni di default e lo dice nella riga di stato: chiave API, cartelle VST3 e file recenti si possono
+recuperare da quel file.
+
 ## Salvataggio automatico e recupero
 
 Mentre lavori, Ondina scrive ogni 3 minuti una copia del progetto non salvato, in background: non
