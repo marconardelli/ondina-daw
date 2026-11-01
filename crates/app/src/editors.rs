@@ -899,6 +899,7 @@ impl OndinaApp {
             let count = clip.notes.len();
             ctx.copy_text(nc::clip_text(&clip));
             self.note_clipboard = Some(clip);
+            self.region_clipboard = None;
             if cut {
                 let mut idx: Vec<usize> = self.selected_notes.iter().copied().collect();
                 idx.sort_unstable();

@@ -1,5 +1,5 @@
 //! Model-level execution for the extended command set: comping, score/MusicXML, lyrics,
-//! Live Loops grid editing, surround settings, movie settings, MIDI Transform and routing.
+//! Live Loops grid editing, surround settings, movie settings, MIDI Transform, routing and region paste.
 
 use serde_json::{json, Value};
 
@@ -266,8 +266,96 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
         }
         GetMidiRoutes {} => ok(json!({"routes": project.midi_routes})),
 
+        // ---------------------------------------------------------------- region paste
+        PasteRegion { track_id, start, region } => {
+            let copy = pasted_region(project, *track_id, *start, region)?;
+            let id = project.alloc_id();
+            let start = copy.start;
+            project.track_mut(*track_id).ok_or("track not found")?.regions.push(Region { id, ..copy });
+            ok(json!({"region_id": id, "track_id": track_id, "start": start}))
+        }
+
         _ => Ok(Outcome::NotHandled),
     }
+}
+
+/// The copy `paste_region` adds, without its id: `region` checked against the destination track and the project,
+/// its numbers kept in the ranges the other region commands keep. JSON numbers are always finite; the checks cover
+/// a region built in code.
+fn pasted_region(project: &Project, track_id: Id, start: f64, region: &Region) -> Result<Region, String> {
+    let kind = project.track(track_id).ok_or("track not found")?.kind;
+    if !start.is_finite() {
+        return Err("start must be a finite beat position".into());
+    }
+    if !region.length.is_finite() || region.length <= 0.0 {
+        return Err("region length must be more than 0 beats".into());
+    }
+    let instrument_only = "MIDI and pattern regions need an instrument track";
+    let mut r = region.clone();
+    r.start = start.max(0.0);
+    r.length = r.length.max(0.0625);
+    r.loop_count = r.loop_count.clamp(1, 1024);
+    r.take = None;
+    match &mut r.content {
+        RegionContent::Audio(a) => {
+            if kind != TrackKind::Audio {
+                return Err("an audio region needs an audio track".into());
+            }
+            if !project.audio_files.iter().any(|f| f.id == a.file_id) {
+                return Err(format!("audio file {} is not in this project: import it first with import_audio", a.file_id));
+            }
+            if !(a.offset_sec.is_finite() && a.fade_in.is_finite() && a.fade_out.is_finite()) {
+                return Err("audio offset and fades must be finite numbers".into());
+            }
+            a.offset_sec = a.offset_sec.max(0.0);
+            a.gain_db = a.gain_db.clamp(-60.0, 24.0);
+            a.fade_in = a.fade_in.max(0.0);
+            a.fade_out = a.fade_out.max(0.0);
+        }
+        RegionContent::Midi(m) => {
+            if kind != TrackKind::Instrument {
+                return Err(instrument_only.into());
+            }
+            let finite = m.notes.iter().all(|n| n.start.is_finite() && n.length.is_finite())
+                && m.cc.iter().all(|e| e.beat.is_finite())
+                && m.lyrics.iter().all(|l| l.beat.is_finite());
+            if !finite {
+                return Err("note, controller and lyric positions must be finite numbers".into());
+            }
+            crate::ops::sanitize_notes(&mut m.notes);
+            for e in &mut m.cc {
+                e.beat = e.beat.max(0.0);
+                e.value = e.value.min(127);
+                e.controller = e.controller.min(128);
+            }
+            m.cc.sort_by(|a, b| a.beat.total_cmp(&b.beat));
+            m.transpose = m.transpose.clamp(-48, 48);
+            m.velocity_offset = m.velocity_offset.clamp(-127, 127);
+        }
+        RegionContent::Pattern(p) => {
+            if kind != TrackKind::Instrument {
+                return Err(instrument_only.into());
+            }
+            if !p.step_length.is_finite() {
+                return Err("pattern step length must be a finite number".into());
+            }
+            // resize_region has no step limit, so a valid pattern keeps all its steps; the bound only stops a
+            // huge allocation from a hand-written region.
+            if p.steps > 65_536 {
+                return Err("a pattern can have at most 65536 steps".into());
+            }
+            p.steps = p.steps.max(1);
+            p.step_length = p.step_length.max(0.03125);
+            p.swing = p.swing.clamp(0.0, 1.0);
+            for row in &mut p.rows {
+                row.pitch = row.pitch.min(127);
+                row.steps.resize(p.steps as usize, 0);
+                row.steps.iter_mut().for_each(|s| *s = (*s).min(127));
+            }
+            r.length = f64::from(p.steps) * p.step_length;
+        }
+    }
+    Ok(r)
 }
 
 /// Apply an Environment routing table to one live MIDI note: returns (track, pitch, velocity) targets.

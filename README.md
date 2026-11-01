@@ -6,7 +6,7 @@ assistant and a complete MCP API, so that every single operation is available to
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Platform: Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4)
 ![Rust](https://img.shields.io/badge/rust-stable-orange)
-![MCP tools](https://img.shields.io/badge/MCP%20tools-160-8a5cf6)
+![MCP tools](https://img.shields.io/badge/MCP%20tools-161-8a5cf6)
 [![Sponsor](https://img.shields.io/badge/sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/marconardelli)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-support-ff5e5b?logo=kofi&logoColor=white)](https://ko-fi.com/marconardelli)
 
@@ -59,7 +59,7 @@ Every row is available both in the GUI and as MCP tools (full list in [`MCP_TOOL
 | Tracks and library | instrument, audio and aux bus tracks, 23 patches | `add_track` `apply_patch` `list_patches` |
 | Audio and MIDI recording | WASAPI inputs, MIDI ports, Musical Typing | `record` `set_record_arm` `connect_midi_input` `send_live_midi` |
 | Comping | cycle recording creates one take per pass; comp by segments | `list_takes` `comp_takes` |
-| Arrangement | drag/copy/resize/split/join/loop regions, fades, chord track (type chords or roman numerals in place, drag to move and resize), section markers, region rename and color | `move_region` `split_region` `copy_section` `set_chord_progression` `update_chord` |
+| Arrangement | drag/copy/resize/split/join/loop regions, copy / cut / paste regions at the playhead (Ctrl+C / X / V, also onto another track), fades, chord track (type chords or roman numerals in place, drag to move and resize), section markers, region rename and color | `move_region` `paste_region` `split_region` `copy_section` `set_chord_progression` `update_chord` |
 | Piano roll and step sequencer | note editing, box selection, copy / cut / paste and arrow-key moves, Alt+drag copies, Alt+←/→ change the length, quantize / humanize / snap to key on the selection, velocity lane, controller lane (sustain, mod wheel, expression, volume, pan, pitch bend) | `add_notes` `quantize_notes` `replace_cc` `set_pattern_row` |
 | MIDI transform and routing | conditional transforms; split/layer of MIDI input | `transform_notes` `set_midi_routes` |
 | Session players | drums (13 styles), bass, chords, arpeggios, melodies | `generate_drums` `generate_bass` `generate_chords` … |
@@ -114,7 +114,11 @@ extension: Ondina opens both.
 ## Using Ondina
 
 - **Arrange window**: double-click an instrument lane to create a MIDI region; drag to move, Alt+drag to copy, drag
-  the edge to resize. On an audio region, drag the small squares on its top edge to set the fade in and fade out
+  the edge to resize. Ctrl+C / Ctrl+X copy or cut the selected region and Ctrl+V pastes it at the playhead (back to the snap grid)
+  on the selected track, or on the track it came from when none is selected (also Edit > Copy Region, Cut
+  Region, Paste Region); the copy becomes the selection and each cut or paste is one undo step. With notes
+  selected in the piano roll these keys act on the notes; the last copy, notes or region, is what Ctrl+V pastes.
+  On an audio region, drag the small squares on its top edge to set the fade in and fade out
   (Alt+drag ignores the grid, double-click removes the fade); the fade curves are drawn over the waveform. The ruler has a cycle strip on top: drag the cycle to move it, drag an edge to resize it, click
   it to turn cycle on or off and drag on the empty strip to draw a new one (Shift+drag anywhere on the ruler still
   draws one); click or drag the lower half, with the bar numbers, to move the playhead. Drag a track header up or
@@ -165,7 +169,7 @@ extension: Ondina opens both.
 | Home | go to start | Ctrl+B | bounce |
 | Ctrl+wheel | zoom time around the pointer | Shift+wheel | scroll time |
 | Ctrl+Shift+wheel | track height (piano roll: key height) | | |
-| Ctrl+C / X / V | copy / cut / paste notes (piano roll) | Ctrl+A | select all notes (piano roll) |
+| Ctrl+C / X / V | copy / cut / paste the selected notes (piano roll), otherwise the selected region (pasted at the playhead) | Ctrl+A | select all notes (piano roll) |
 | ← / → | move selected notes by the snap step | ↑ / ↓ (Shift: octave) | transpose selected notes (piano roll) |
 | `,` / `.` | playhead to previous / next bar | Shift+, / Shift+. | playhead to previous / next marker |
 | Ctrl+T | split selected region at playhead | Esc (while dragging) | cancel the drag |
@@ -187,7 +191,7 @@ request is a single undo step, and **↶ Undo AI edit** reverts it only when the
 (MCP clients get one undo step per tool call).
 
 1. **MCP (no key needed)** — any MCP-capable agent (Claude Code, Claude Desktop, other clients) drives Ondina with
-   all 160 tools. See below.
+   all 161 tools. See below.
 2. **Offline assistant** — the ✨ AI Assistant panel uses a **local language model** through an OpenAI-compatible
    server (llama.cpp, Ollama, LM Studio…). Ondina starts the bundled llama.cpp server automatically when it finds a
    `.gguf` model in `tools\llm` and stops it when Ondina closes. No account, nothing leaves your machine; small
@@ -222,7 +226,7 @@ Example `claude_desktop_config.json`:
 { "mcpServers": { "ondina": { "command": "C:\\path\\to\\ondina-mcp.exe" } } }
 ```
 
-The server exposes **tools** (160, annotated read-only/destructive), **resources** (`ondina://guide`,
+The server exposes **tools** (161, annotated read-only/destructive), **resources** (`ondina://guide`,
 `ondina://project`, `ondina://project/document`, `ondina://plugins`, `ondina://patches`) and **prompts**
 (`compose_song`, `mix_review`, `arrange_sections`). It listens on `127.0.0.1` only, rejects non-local `Origin`
 headers (DNS-rebinding protection), including `Origin: null` unless a token is set, and requires a bearer token when

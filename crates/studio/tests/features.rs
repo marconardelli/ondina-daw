@@ -1950,3 +1950,164 @@ fn add_notes_reports_where_the_added_notes_landed() {
     let req = spec.input_schema.get("required").and_then(|r| r.as_array()).cloned().unwrap_or_default();
     assert!(req.iter().all(|x| x == "region_id" || x == "notes"), "no new required parameter: {req:?}");
 }
+
+/// The region object exactly as get_project_json lists it under tracks[].regions.
+fn region_object(s: &mut Session, rid: u64) -> Value {
+    let p = ok(s, "get_project_json", json!({}));
+    p["tracks"].as_array().unwrap().iter().flat_map(|t| t["regions"].as_array().unwrap().iter()).find(|r| r["id"] == json!(rid)).cloned().unwrap_or(Value::Null)
+}
+
+fn without(mut v: Value, keys: &[&str]) -> Value {
+    for k in keys {
+        v.as_object_mut().unwrap().remove(*k);
+    }
+    v
+}
+
+/// Ids of the regions on one track, from get_project_json.
+fn track_region_ids(s: &mut Session, track_id: u64) -> Vec<u64> {
+    let p = ok(s, "get_project_json", json!({}));
+    let t = p["tracks"].as_array().unwrap().iter().find(|t| t["id"] == json!(track_id)).cloned().unwrap();
+    t["regions"].as_array().unwrap().iter().map(|r| r["id"].as_u64().unwrap()).collect()
+}
+
+#[test]
+fn paste_region_copies_a_midi_region_to_another_track_in_one_undo_step() {
+    let mut s = Session::new(false);
+    let a = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
+    let b = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
+    let notes = json!([
+        {"pitch": 60, "velocity": 100, "start": 0.0, "length": 1.0},
+        {"pitch": 64, "velocity": 90, "start": 1.0, "length": 1.0},
+        {"pitch": 67, "velocity": 80, "start": 2.0, "length": 1.0},
+        {"pitch": 72, "velocity": 70, "start": 3.0, "length": 2.0}
+    ]);
+    let rid = ok(&mut s, "create_midi_region", json!({"track_id": a, "start": 0, "length": 8, "notes": notes}))["region_id"].as_u64().unwrap();
+    ok(&mut s, "add_cc", json!({"region_id": rid, "events": [{"beat": 0.0, "controller": 64, "value": 127}, {"beat": 2.0, "controller": 1, "value": 40}]}));
+    ok(&mut s, "set_lyrics", json!({"region_id": rid, "text": "la la"}));
+    ok(&mut s, "set_region_properties", json!({"region_id": rid, "name": "Chorus", "velocity_offset": 12, "transpose": 3, "loop_count": 2, "color": "#FF8800"}));
+    let orig = region_object(&mut s, rid);
+    assert_eq!(orig["content"]["cc"].as_array().unwrap().len(), 2);
+    assert_eq!(orig["content"]["lyrics"].as_array().unwrap().len(), 2);
+    assert_eq!(orig["content"]["velocity_offset"], json!(12));
+    let before = ok(&mut s, "get_project_json", json!({}));
+
+    let r = ok(&mut s, "paste_region", json!({"track_id": b, "start": 16, "region": orig}));
+    let new = r["region_id"].as_u64().unwrap();
+    assert_ne!(new, rid);
+    assert_eq!(r["track_id"], json!(b));
+    assert_eq!(r["start"].as_f64(), Some(16.0));
+
+    let pasted = region_object(&mut s, new);
+    assert_eq!(pasted["start"].as_f64(), Some(16.0));
+    assert_eq!(without(pasted, &["id", "start"]), without(orig.clone(), &["id", "start"]));
+    assert!(track_region_ids(&mut s, b).contains(&new));
+    assert!(!track_region_ids(&mut s, a).contains(&new));
+    assert_eq!(region_object(&mut s, rid), orig);
+
+    assert_eq!(s.can_undo(), Some("paste_region"));
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(ok(&mut s, "get_project_json", json!({})), before);
+}
+
+#[test]
+fn paste_region_copies_pattern_and_audio_regions_and_drops_the_take() {
+    let mut s = Session::new(false);
+    let a = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
+    let b = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
+    let pid = ok(&mut s, "create_pattern_region", json!({"track_id": a, "start": 0, "steps": 16}))["region_id"].as_u64().unwrap();
+    let pat = region_object(&mut s, pid);
+    let new = ok(&mut s, "paste_region", json!({"track_id": b, "start": 8, "region": pat}))["region_id"].as_u64().unwrap();
+    let pasted = region_object(&mut s, new);
+    assert_eq!(pasted["start"].as_f64(), Some(8.0));
+    assert_eq!(without(pasted, &["id", "start"]), without(pat.clone(), &["id", "start"]));
+    assert!(track_region_ids(&mut s, b).contains(&new));
+
+    // A pattern stretched past 128 steps keeps every step: 16th notes over 16 bars are 256 steps.
+    let long = ok(&mut s, "create_pattern_region", json!({"track_id": a, "start": 64, "steps": 16}))["region_id"].as_u64().unwrap();
+    ok(&mut s, "set_pattern_step", json!({"region_id": long, "row": 0, "step": 3, "velocity": 90}));
+    assert_eq!(ok(&mut s, "resize_region", json!({"region_id": long, "length": 64}))["length"].as_f64(), Some(64.0));
+    ok(&mut s, "set_pattern_step", json!({"region_id": long, "row": 0, "step": 250, "velocity": 100}));
+    let long_pat = region_object(&mut s, long);
+    assert_eq!(long_pat["content"]["steps"].as_u64(), Some(256));
+    let new = ok(&mut s, "paste_region", json!({"track_id": b, "start": 128, "region": long_pat}))["region_id"].as_u64().unwrap();
+    let pasted = region_object(&mut s, new);
+    assert_eq!(pasted["length"].as_f64(), Some(64.0));
+    assert_eq!(without(pasted, &["id", "start"]), without(long_pat, &["id", "start"]));
+
+    let wav = tmp("paste_region.wav");
+    write_wav(&wav, &[vec![0.1f32; 44100]], 44100);
+    let aid = ok(&mut s, "import_audio", json!({"path": wav.display().to_string(), "start": 0}))["region_id"].as_u64().unwrap();
+    let t2 = ok(&mut s, "add_track", json!({"kind": "audio"}))["track_id"].as_u64().unwrap();
+    let audio = region_object(&mut s, aid);
+    let new = ok(&mut s, "paste_region", json!({"track_id": t2, "start": 4, "region": audio}))["region_id"].as_u64().unwrap();
+    let pasted = region_object(&mut s, new);
+    assert_eq!(pasted["start"].as_f64(), Some(4.0));
+    assert_eq!(pasted["content"]["file_id"], audio["content"]["file_id"]);
+    assert_eq!(without(pasted, &["id", "start"]), without(audio, &["id", "start"]));
+    assert!(track_region_ids(&mut s, t2).contains(&new));
+
+    let mut taken = pat;
+    taken["take"] = json!(3);
+    let new = ok(&mut s, "paste_region", json!({"track_id": b, "start": 32, "region": taken}))["region_id"].as_u64().unwrap();
+    assert_eq!(region_object(&mut s, new)["take"], Value::Null);
+}
+
+#[test]
+fn paste_region_refuses_a_region_that_does_not_fit_and_keeps_the_project() {
+    let mut s = Session::new(false);
+    let inst = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
+    let notes = json!([{"pitch": 60, "velocity": 100, "start": 0.0, "length": 1.0}]);
+    let mid = ok(&mut s, "create_midi_region", json!({"track_id": inst, "start": 0, "length": 4, "notes": notes}))["region_id"].as_u64().unwrap();
+    let pid = ok(&mut s, "create_pattern_region", json!({"track_id": inst, "start": 8}))["region_id"].as_u64().unwrap();
+    let wav = tmp("paste_region_refused.wav");
+    write_wav(&wav, &[vec![0.1f32; 44100]], 44100);
+    let aid = ok(&mut s, "import_audio", json!({"path": wav.display().to_string(), "start": 0}))["region_id"].as_u64().unwrap();
+    let audio_track = s.project.find_region(aid).unwrap().0.id;
+    let bus = ok(&mut s, "add_track", json!({"kind": "bus"}))["track_id"].as_u64().unwrap();
+    let midi = region_object(&mut s, mid);
+    let pat = region_object(&mut s, pid);
+    let audio = region_object(&mut s, aid);
+
+    let before = ok(&mut s, "get_project_json", json!({}));
+    let undo_before = s.can_undo().map(String::from);
+    let mut missing_file = audio.clone();
+    missing_file["content"]["file_id"] = json!(999_999);
+    let mut empty = midi.clone();
+    empty["length"] = json!(0);
+    let mut huge = pat.clone();
+    huge["content"]["steps"] = json!(100_000);
+    let cases = [
+        ("audio on an instrument track", json!({"track_id": inst, "start": 4, "region": audio})),
+        ("MIDI on an audio track", json!({"track_id": audio_track, "start": 4, "region": midi})),
+        ("pattern on a bus", json!({"track_id": bus, "start": 4, "region": pat})),
+        ("missing audio file", json!({"track_id": audio_track, "start": 4, "region": missing_file})),
+        ("missing track", json!({"track_id": 999_999, "start": 4, "region": midi})),
+        ("zero length", json!({"track_id": inst, "start": 4, "region": empty})),
+        ("pattern with too many steps", json!({"track_id": inst, "start": 4, "region": huge})),
+    ];
+    for (what, args) in cases {
+        let r = call(&mut s, "paste_region", args);
+        assert!(r.is_err(), "{what}: {r:?}");
+        if what == "missing audio file" {
+            assert!(r.unwrap_err().contains("not in this project"), "{what}");
+        }
+        assert_eq!(ok(&mut s, "get_project_json", json!({})), before, "{what}");
+        assert_eq!(s.can_undo().map(String::from), undo_before, "{what}");
+    }
+}
+
+#[test]
+fn paste_region_tool_takes_a_region_object() {
+    let specs = tool_specs();
+    let spec = specs.iter().find(|t| t.name == "paste_region").expect("paste_region tool");
+    assert!(!spec.read_only);
+    assert!(spec.description.contains("get_project_json"));
+    let mut required: Vec<&str> = spec.input_schema["required"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    required.sort_unstable();
+    assert_eq!(required, ["region", "start", "track_id"]);
+    let region = &spec.input_schema["properties"]["region"];
+    assert_eq!(region["type"], json!("object"), "{region}");
+    assert!(region["properties"].get("content").is_some(), "{region}");
+    assert!(!region.to_string().contains("$ref"), "{region}");
+}

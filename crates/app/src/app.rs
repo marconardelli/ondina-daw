@@ -22,7 +22,10 @@ use serde_json::Value;
 
 use crate::theme;
 use crate::doc_guard::{self, Answer, CloseStep, DocAction, Step};
+use crate::editors::take_event;
+use crate::note_clipboard as nc;
 use crate::note_selection;
+use crate::region_clipboard as rc;
 use crate::transport_keys as tk;
 
 /// Tooltip of the overload counter in the transport bar.
@@ -246,6 +249,8 @@ pub struct OndinaApp {
     pub note_len: f64,
     /// Notes copied or cut in the piano roll (Ctrl+C / Ctrl+X); lives for the whole app session.
     pub note_clipboard: Option<crate::note_clipboard::NoteClip>,
+    /// Region copied or cut in the arrangement (Ctrl+C / Ctrl+X); lives for the whole app session.
+    pub region_clipboard: Option<crate::region_clipboard::RegionClip>,
     /// What the piano roll's controller lane shows (open or closed, which controller).
     pub cc_lane: crate::cc_lane::CcLaneState,
     // misc
@@ -333,6 +338,7 @@ impl OndinaApp {
             notes_region: None,
             note_len: 0.25,
             note_clipboard: None,
+            region_clipboard: None,
             cc_lane: Default::default(),
             meters: HashMap::new(),
             waveforms: HashMap::new(),
@@ -945,6 +951,7 @@ impl OndinaApp {
         });
         let note_arrows = self.piano_roll_keys(ctx);
         self.transport_keys(ctx, note_arrows);
+        self.region_clipboard_keys(ctx);
         let (space, del, home, r, c, k, d_ctrl, s_ctrl, n_ctrl, o_ctrl, b_ctrl, enter) =
             ctx.input(|i| {
                 (
@@ -1120,6 +1127,74 @@ impl OndinaApp {
         }
     }
 
+    /// Ctrl+C / Ctrl+X / Ctrl+V on regions, after the piano roll had its turn (`copy_target` / `paste_target` say who
+    /// owns a key). Musical Typing does not turn them off: Ctrl keys play no notes.
+    fn region_clipboard_keys(&mut self, ctx: &egui::Context) {
+        let dragging = self.drag.is_some();
+        let midi_open = self
+            .selected_region
+            .and_then(|r| self.view.project.find_region(r))
+            .is_some_and(|(_, r)| matches!(r.content, RegionContent::Midi(_)));
+        let note_keys = midi_open
+            && nc::keys_on(self.bottom == BottomTab::Editor, self.extra.show_score, ctx.wants_keyboard_input(), dragging);
+        let copy_to = rc::copy_target(note_keys, !self.selected_notes.is_empty(), self.selected_region.is_some(), dragging);
+        let paste_to = rc::paste_target(note_keys, self.note_clipboard.is_some(), self.region_clipboard.is_some(), dragging);
+        let (cut, copy, paste) = ctx.input_mut(|i| {
+            let region = copy_to == Some(rc::ClipKind::Region);
+            let cut = region && take_event(&mut i.events, |e| matches!(e, egui::Event::Cut));
+            let copy = region && take_event(&mut i.events, |e| matches!(e, egui::Event::Copy));
+            let paste = paste_to == Some(rc::ClipKind::Region) && take_event(&mut i.events, |e| matches!(e, egui::Event::Paste(_)));
+            (cut, copy, paste)
+        });
+        if cut || copy {
+            self.copy_region(ctx, cut);
+        } else if paste {
+            self.paste_region();
+        }
+    }
+
+    /// Edit > Copy Region / Cut Region, Ctrl+C / Ctrl+X: the selected region goes to the region clipboard, and the
+    /// note clipboard empties so Ctrl+V pastes what was copied last. It also goes to the system clipboard as JSON:
+    /// egui reports Ctrl+V only while that holds text. Cut deletes the region, one undo step.
+    fn copy_region(&mut self, ctx: &egui::Context, cut: bool) {
+        let Some(rid) = self.selected_region else { return };
+        let Some(clip) = rc::copy(&self.view.project, rid, self.view.document) else { return };
+        let name = clip.region.name.clone();
+        ctx.copy_text(rc::clip_text(&clip));
+        self.region_clipboard = Some(clip);
+        self.note_clipboard = None;
+        if cut {
+            self.selected_region = None;
+            self.cmd(Command::DeleteRegion { region_id: rid });
+            self.status = format!("Cut region {name}");
+        } else {
+            self.status = format!("Copied region {name}");
+        }
+    }
+
+    /// Edit > Paste Region, Ctrl+V: the copied region at the playhead (back to the snap grid) on the selected track,
+    /// or on the track it came from. The copy becomes the selection.
+    fn paste_region(&mut self) {
+        let Some(clip) = self.region_clipboard.clone() else { return };
+        let spot = rc::paste_spot(&self.view.project, &clip, self.selected_track, self.position(), self.snap, self.view.document);
+        let (track_id, start) = match spot {
+            Ok(s) => s,
+            Err(e) => {
+                self.status = format!("Can't paste: {e}");
+                return;
+            }
+        };
+        let name = clip.region.name.clone();
+        if let Some(v) = self.exec(Command::PasteRegion { track_id, start, region: Box::new(clip.region) }) {
+            self.selected_region = v["region_id"].as_u64();
+            self.selected_track = Some(track_id);
+            self.reveal_track = Some(track_id);
+            let track = self.view.project.track(track_id).map(|t| t.name.clone()).unwrap_or_default();
+            let at = self.view.project.bar_beat_string(start);
+            self.status = format!("Pasted {name} on {track} at {at}");
+        }
+    }
+
     // ---------------------------------------------------------------- top bars
 
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
@@ -1288,6 +1363,38 @@ impl OndinaApp {
                     .clicked()
                 {
                     self.cmd(Command::Redo {});
+                    ui.close_menu();
+                }
+                ui.separator();
+                let edit_ctx = ui.ctx().clone();
+                if ui
+                    .add_enabled(
+                        self.selected_region.is_some(),
+                        egui::Button::new("Copy Region   Ctrl+C"),
+                    )
+                    .clicked()
+                {
+                    self.copy_region(&edit_ctx, false);
+                    ui.close_menu();
+                }
+                if ui
+                    .add_enabled(
+                        self.selected_region.is_some(),
+                        egui::Button::new("Cut Region   Ctrl+X"),
+                    )
+                    .clicked()
+                {
+                    self.copy_region(&edit_ctx, true);
+                    ui.close_menu();
+                }
+                if ui
+                    .add_enabled(
+                        self.region_clipboard.is_some(),
+                        egui::Button::new("Paste Region   Ctrl+V"),
+                    )
+                    .clicked()
+                {
+                    self.paste_region();
                     ui.close_menu();
                 }
                 ui.separator();

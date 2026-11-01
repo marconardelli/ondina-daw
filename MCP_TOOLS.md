@@ -327,6 +327,11 @@ Duplicate a region `count` times (default 1), placed back-to-back after it or st
 
 Parameters: `count, region_id, start`
 
+### `paste_region`
+Paste a copy of a whole region onto a track at a beat position. Pass `region` as one entry of `tracks[].regions` from get_project_json, unchanged: notes, controller events, lyrics, transpose and velocity offset (MIDI), steps and swing (pattern), file, offset, gain, fades and reverse (audio), plus name, color, mute and loop count all come along. Its id, start and take are ignored: the copy gets a new id, starts at `start` and is not part of a take set. MIDI and pattern regions need an instrument track; audio regions need an audio track and a file_id listed in the project's audio_files. Returns region_id. One undo step.
+
+Parameters: `region, start, track_id`
+
 ### `set_region_properties`
 Change region properties. Only given fields change.
 

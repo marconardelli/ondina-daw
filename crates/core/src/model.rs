@@ -266,7 +266,7 @@ impl PluginInstance {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Region {
     pub id: Id,
     pub name: String,
@@ -290,7 +290,7 @@ impl Region {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RegionContent {
     Midi(MidiContent),
@@ -298,7 +298,7 @@ pub enum RegionContent {
     Pattern(PatternContent),
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct MidiContent {
     pub notes: Vec<Note>,
     #[serde(default)]
@@ -341,7 +341,7 @@ pub struct CcEvent {
     pub value: u8,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AudioContent {
     pub file_id: Id,
     /// Offset into the source file, in seconds.
@@ -354,7 +354,7 @@ pub struct AudioContent {
     pub reverse: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PatternContent {
     pub steps: u32,
     /// Step length in beats (0.25 = sixteenth note).

@@ -241,7 +241,7 @@ fn note_order(a: &Note, b: &Note) -> std::cmp::Ordering {
     a.start.partial_cmp(&b.start).unwrap().then(a.pitch.cmp(&b.pitch))
 }
 
-fn sanitize_notes(notes: &mut Vec<Note>) {
+pub(crate) fn sanitize_notes(notes: &mut Vec<Note>) {
     notes.iter_mut().for_each(clamp_note);
     notes.sort_by(note_order);
 }
