@@ -2890,3 +2890,39 @@ fn bounce_loudness_values_out_of_range_are_refused() {
         assert!(!req.iter().any(|v| v == field), "{field}");
     }
 }
+
+#[test]
+fn session_players_return_a_seed_that_repeats_the_part() {
+    use ondina_core::model::RegionContent;
+    let mut s = Session::new(false);
+    ok(&mut s, "set_chord_progression", json!({"start": 0, "chords": ["C", "Am", "F", "G"]}));
+    let t1 = ok(&mut s, "add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();
+    let t2 = ok(&mut s, "add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();
+    let notes = |s: &Session, rid: u64| {
+        let (_, region) = s.project.find_region(rid).unwrap();
+        let RegionContent::Midi(m) = &region.content else { panic!("region {rid} is not MIDI") };
+        m.notes.clone()
+    };
+
+    let drums = ok(&mut s, "generate_drums", json!({"track_id": t1, "start": 4, "bars": 2, "style": "funk"}));
+    let seed = drums["seed"].as_u64().expect("generate_drums returns its seed");
+    assert!(seed < 1_000_000, "drawn seed {seed}");
+    assert_eq!(drums["start"], json!(4.0));
+    assert_eq!(drums["bars"], json!(2));
+    let again = ok(&mut s, "generate_drums", json!({"track_id": t2, "start": 4, "bars": 2, "style": "funk", "seed": seed}));
+    let (a, b) = (notes(&s, drums["region_id"].as_u64().unwrap()), notes(&s, again["region_id"].as_u64().unwrap()));
+    assert!(!a.is_empty());
+    assert_eq!(a, b, "the returned drum seed repeats the groove");
+
+    let mel = ok(&mut s, "generate_melody", json!({"track_id": t1, "start": 0, "bars": 4, "density": 0.6}));
+    let seed = mel["seed"].as_u64().expect("generate_melody returns its seed");
+    assert!(seed < 1_000_000, "drawn seed {seed}");
+    let again = ok(&mut s, "generate_melody", json!({"track_id": t2, "start": 0, "bars": 4, "density": 0.6, "seed": seed}));
+    let second = again["region_id"].as_u64().unwrap();
+    let (a, b) = (notes(&s, mel["region_id"].as_u64().unwrap()), notes(&s, second));
+    assert!(!a.is_empty());
+    assert_eq!(a, b, "the returned melody seed repeats the line");
+
+    ok(&mut s, "undo", json!({}));
+    assert!(s.project.find_region(second).is_none(), "one undo removes the last generated part");
+}
