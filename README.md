@@ -157,6 +157,11 @@ extension: Ondina opens both.
   or open another, and when Ondina closes normally. If Ondina did not close normally, the next start lists the copies
   it left: Recover opens one as unsaved work (Save asks where to save it, proposing the original file), Discard
   deletes it. Audio files are not copied, and a recording still in progress is not in the copy.
+- **Safe saving**: Save writes the project to a temporary file next to it, forces it to disk and only then puts it
+  in place, so a full disk, a crash or a power cut during the save never leaves a broken project. The previous
+  version is kept as `<name>.ondina.bak` (one copy, replaced at every save; Settings > Autosave > *Keep a backup of
+  the previous save*). To go back to it, copy it and rename the copy to end in `.ondina`. Settings are written the
+  same way; a settings file that cannot be read is kept as `settings.json.broken` and the status bar says so.
 - **Drag and drop**: drag audio files (wav, aiff, flac, mp3, ogg, m4a, caf) from Explorer onto an audio track to
   place them at that point (snapped to the grid); below the last track or on an instrument track they go on a new
   audio track. While you drag, a line and the file name show where they land. Several files go one after the

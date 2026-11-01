@@ -751,11 +751,18 @@ impl Session {
             }
         }
         let s = save_project_string(&self.project)?;
-        std::fs::write(&path, s).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        let done = crate::fs_safe::replace_with_backup(&path, s.as_bytes(), self.settings.keep_save_backup)?;
         self.path = Some(path.clone());
         self.dirty = false;
         self.revision += 1;
-        Ok(json!({"saved": path.display().to_string()}))
+        let mut v = json!({"saved": path.display().to_string()});
+        if let Some(b) = &done.backup {
+            v["backup"] = json!(b.display().to_string());
+        }
+        if let Some(e) = done.backup_error {
+            v["backup_error"] = json!(e);
+        }
+        Ok(v)
     }
 
     fn start_recording(&mut self, from_beat: Option<f64>) -> Result<Value, String> {
