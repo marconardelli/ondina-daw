@@ -1909,6 +1909,54 @@ fn open_plugin_editor_refuses_a_vst3_blocked_by_an_mcp_open() {
 }
 
 #[test]
+fn unloaded_vst3_lists_refused_and_kept_out_plugins_with_the_reason() {
+    // every key is a vst3 instance of the current project (never a built-in such as the patch's inserts)
+    let only_vst3 = |s: &Session| {
+        for id in s.unloaded_vst3().keys() {
+            assert_eq!(s.project.find_plugin(*id).map(|p| p.kind.as_str()), Some("vst3"), "{id}");
+        }
+    };
+    let blocked_reason = |v: &Value, id: u64| -> String {
+        let b = v["blocked_plugins"].as_array().unwrap_or_else(|| panic!("{v}"));
+        b.iter().find(|x| x["plugin_id"] == json!(id)).unwrap_or_else(|| panic!("{id} not in {v}"))["reason"].as_str().unwrap().to_string()
+    };
+    let (file, t, inst, fx) = vst3_project("c024_unloaded.ondina", &c018_untrusted_plugin());
+    let mut s = Session::new(false);
+    s.settings.vst3_folders = vec![];
+    // opened from the app: everything loads
+    open_from(&mut s, &file, Source::Gui);
+    assert!(s.unloaded_vst3().is_empty(), "{:?}", s.unloaded_vst3());
+    // opened by an MCP client: both instances stay out, with the reason open_project gave
+    let v = open_from(&mut s, &file, Source::Mcp);
+    let u = s.unloaded_vst3();
+    assert_eq!(u.len(), 2, "{u:?}");
+    for id in [inst, fx] {
+        let reason = u.get(&id).unwrap_or_else(|| panic!("{id} missing from {u:?}"));
+        assert!(reason.contains("open the project from the app"), "{reason}");
+        assert_eq!(*reason, blocked_reason(&v, id));
+    }
+    only_vst3(&s);
+    // the copy of the instrument has a new id and the same path
+    ok(&mut s, "duplicate_track", json!({"track_id": t}));
+    assert_eq!(s.unloaded_vst3().len(), 3, "{:?}", s.unloaded_vst3());
+    only_vst3(&s);
+    ok(&mut s, "new_project", json!({}));
+    assert!(s.unloaded_vst3().is_empty());
+    // a path the plug-in check refuses, even when the app opens the project
+    let dll = tmp("c024_unloaded_dll").join("evil.dll");
+    let (file2, _, inst2, fx2) = vst3_project("c024_unloaded_dll.ondina", &dll);
+    let v = open_from(&mut s, &file2, Source::Gui);
+    let u = s.unloaded_vst3();
+    assert_eq!(u.len(), 2, "{u:?}");
+    for id in [inst2, fx2] {
+        let reason = u.get(&id).unwrap_or_else(|| panic!("{id} missing from {u:?}"));
+        assert!(reason.contains("not a .vst3"), "{reason}");
+        assert_eq!(*reason, blocked_reason(&v, id));
+    }
+    only_vst3(&s);
+}
+
+#[test]
 fn session_players_phrase_in_bars_of_a_three_four_project() {
     use ondina_core::model::RegionContent;
     let mut s = Session::new(false);
