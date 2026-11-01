@@ -226,9 +226,50 @@ pub fn session_notes_update(current: &[usize], selected: &HashSet<usize>, same_r
     Some(v)
 }
 
+/// What a click on an empty spot of the piano-roll grid does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GridClick {
+    /// Add a note starting here (beats from the region start).
+    Draw { start: f64 },
+    /// Outside the region: nothing to draw, and a plain click drops the selection.
+    Deselect,
+    /// Outside the region with Ctrl or Shift held: the selection stays as it is.
+    Keep,
+}
+
+/// Decides a click on an empty grid spot. `raw_beat` is the beat under the pointer, `snap` the snap value in beats
+/// (0 = off; anything above a beat rounds to the beat, as drawing always has).
+pub fn grid_click(raw_beat: f64, snap: f64, region_length: f64, additive: bool) -> GridClick {
+    let start = if snap > 0.0 { (raw_beat / snap.min(1.0)).floor() * snap.min(1.0) } else { raw_beat };
+    if start >= 0.0 && start < region_length {
+        GridClick::Draw { start }
+    } else if additive {
+        GridClick::Keep
+    } else {
+        GridClick::Deselect
+    }
+}
+
+/// The selection after drawing: only the drawn notes, or the previous selection plus them with Ctrl or Shift.
+/// `selected` must already refer to the region after the add (`exec` moves it along).
+pub fn select_drawn(selected: &HashSet<usize>, drawn: &[usize], additive: bool) -> HashSet<usize> {
+    let mut out = if additive { selected.clone() } else { HashSet::new() };
+    out.extend(drawn.iter().copied());
+    out
+}
+
+/// The `indices` list of a command result, empty when there is none.
+pub fn result_indices(v: &serde_json::Value) -> Vec<usize> {
+    v.get("indices")
+        .and_then(|x| x.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_u64()).map(|x| x as usize).collect())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::note_clipboard as nc;
     use ondina_studio::{Session, Source};
     use serde_json::{json, Value};
 
@@ -545,5 +586,72 @@ mod tests {
         assert_eq!(indices_of(&c), Some(vec![]));
         s.execute(c, Source::Gui).unwrap();
         assert_eq!(notes_of(&s.project, rid).len(), 1);
+    }
+
+    #[test]
+    fn grid_click_rounds_to_the_snap_and_stays_inside_the_region() {
+        assert_eq!(grid_click(2.3, 0.25, 8.0, false), GridClick::Draw { start: 2.25 });
+        assert_eq!(grid_click(2.3, 0.0, 8.0, false), GridClick::Draw { start: 2.3 });
+        assert_eq!(grid_click(2.7, 4.0, 8.0, false), GridClick::Draw { start: 2.0 });
+        assert_eq!(grid_click(7.99, 0.25, 8.0, false), GridClick::Draw { start: 7.75 });
+        assert_eq!(grid_click(8.1, 0.25, 8.0, false), GridClick::Deselect);
+        assert_eq!(grid_click(8.0, 0.0, 8.0, false), GridClick::Deselect);
+        assert_eq!(grid_click(-0.5, 0.25, 8.0, false), GridClick::Deselect);
+        assert_eq!(grid_click(8.1, 0.25, 8.0, true), GridClick::Keep);
+        assert_eq!(grid_click(-0.5, 0.25, 8.0, true), GridClick::Keep);
+        assert_eq!(grid_click(2.3, 0.25, 8.0, true), GridClick::Draw { start: 2.25 });
+    }
+
+    #[test]
+    fn select_drawn_replaces_or_extends_the_selection() {
+        assert_eq!(select_drawn(&set(&[0, 3]), &[2], false), set(&[2]));
+        assert_eq!(select_drawn(&set(&[0, 3]), &[2], true), set(&[0, 2, 3]));
+        assert_eq!(select_drawn(&set(&[]), &[1], true), set(&[1]));
+        assert_eq!(select_drawn(&set(&[0]), &[], false), set(&[]));
+    }
+
+    #[test]
+    fn result_indices_reads_the_list_or_nothing() {
+        assert_eq!(result_indices(&json!({"indices": [4, 1]})), vec![4, 1]);
+        assert!(result_indices(&json!({"note_count": 3})).is_empty());
+        assert!(result_indices(&json!({"indices": "x"})).is_empty());
+    }
+
+    /// Draws a 67 with a click at beat 0.6 the way the piano roll does (grid_click, AddNotes, follow,
+    /// select_drawn), starting from a selection of the 64, and returns the session and the new selection.
+    fn draw_after_selecting_the_64(additive: bool) -> (Session, Id, HashSet<usize>) {
+        let (mut s, rid) = session_with(&[n(60, 0.0, 0.5), n(64, 1.0, 0.5)]);
+        let mut sel = set(&[1]);
+        let GridClick::Draw { start } = grid_click(0.6, 0.25, 8.0, additive) else { panic!("no draw") };
+        assert_eq!(start, 0.5);
+        let old = s.project.clone();
+        let note = Note { pitch: 67, velocity: 100, start, length: 0.25 };
+        let v = s.execute(Command::AddNotes { region_id: rid, notes: vec![note] }, Source::Gui).unwrap();
+        follow(&mut sel, Some(rid), &old, &s.project);
+        // the 67 at 0.5 sorted in front of the 64
+        assert_eq!(sel, set(&[2]));
+        let sel = select_drawn(&sel, &result_indices(&v), additive);
+        (s, rid, sel)
+    }
+
+    fn after_arrow_up(s: &mut Session, rid: Id, sel: &HashSet<usize>) -> Vec<(u8, f64)> {
+        let edit = nc::nudge(&notes_of(&s.project, rid), sel, 0.0, 1).expect("a move");
+        s.execute(Command::ReplaceNotes { region_id: rid, notes: edit.notes.clone() }, Source::Gui).unwrap();
+        notes_of(&s.project, rid).iter().map(|x| (x.pitch, x.start)).collect()
+    }
+
+    #[test]
+    fn arrow_up_after_drawing_moves_only_the_drawn_note() {
+        let (mut s, rid, sel) = draw_after_selecting_the_64(false);
+        assert_eq!(sel, set(&[1]));
+        assert_eq!(notes_of(&s.project, rid)[1].pitch, 67);
+        assert_eq!(after_arrow_up(&mut s, rid, &sel), vec![(60, 0.0), (68, 0.5), (64, 1.0)]);
+    }
+
+    #[test]
+    fn ctrl_drawing_adds_to_the_selection_and_arrow_moves_both() {
+        let (mut s, rid, sel) = draw_after_selecting_the_64(true);
+        assert_eq!(sel, set(&[1, 2]));
+        assert_eq!(after_arrow_up(&mut s, rid, &sel), vec![(60, 0.0), (68, 0.5), (65, 1.0)]);
     }
 }
