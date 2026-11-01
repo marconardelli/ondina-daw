@@ -416,7 +416,7 @@ pub fn parse_path(d: &str) -> Vec<SubPath> {
 
 // ===================================================================================== icons
 
-/// The sixteen icons of the set, drawn on a 16-unit grid with a 1.3-unit stroke.
+/// The icons of the set, drawn on a 16-unit grid with a 1.3-unit stroke (the transport ones can also be filled).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
     Play,
@@ -435,10 +435,14 @@ pub enum Icon {
     Library,
     Inspector,
     ClipGrid,
+    ToStart,
+    Rewind,
+    Forward,
+    Record,
 }
 
 impl Icon {
-    pub const ALL: [Icon; 16] = [
+    pub const ALL: [Icon; 20] = [
         Icon::Play,
         Icon::Stop,
         Icon::Cycle,
@@ -455,6 +459,10 @@ impl Icon {
         Icon::Library,
         Icon::Inspector,
         Icon::ClipGrid,
+        Icon::ToStart,
+        Icon::Rewind,
+        Icon::Forward,
+        Icon::Record,
     ];
 
     /// SVG path data on the 16 grid (from the design tokens).
@@ -478,6 +486,10 @@ impl Icon {
             Icon::Library => "M2 2.5h3v11H2zM6.5 2.5h3v11h-3zM11 3.2l2.6-.7 2 10.6-2.7.6z",
             Icon::Inspector => "M1.5 2.5h13v11h-13zM6 2.5v11",
             Icon::ClipGrid => "M2 2h5v5H2zM9 2h5v5H9zM2 9h5v5H2zM9 9h5v5H9z",
+            Icon::ToStart => "M3.5 3v10M13 3.5L6 8l7 4.5z",
+            Icon::Rewind => "M8 3.5L2 8l6 4.5zM14.5 3.5L8.5 8l6 4.5z",
+            Icon::Forward => "M1.5 3.5L7.5 8l-6 4.5zM8 3.5L14 8l-6 4.5z",
+            Icon::Record => "M8 3a5 5 0 1 1 0 10a5 5 0 1 1 0-10z",
         }
     }
 
@@ -508,6 +520,42 @@ pub fn paint_icon(painter: &Painter, icon: Icon, rect: Rect, color: Color32) {
             PathShape::line(points, stroke)
         };
         painter.add(shape);
+    }
+}
+
+/// Draw `icon` with its closed shapes filled (the transport glyphs); open strokes stay lines.
+pub fn paint_icon_filled(painter: &Painter, icon: Icon, rect: Rect, color: Color32) {
+    let side = rect.width().min(rect.height());
+    let scale = side / ICON_GRID;
+    let origin = rect.center() - Vec2::splat(side / 2.0);
+    let stroke = Stroke::new(ICON_STROKE * scale, color);
+    for sp in icon.strokes() {
+        let points: Vec<Pos2> = sp.points.iter().map(|p| origin + p.to_vec2() * scale).collect();
+        let shape = if sp.closed {
+            PathShape::convex_polygon(points, color, Stroke::new(0.5 * scale, color))
+        } else {
+            PathShape::line(points, stroke)
+        };
+        painter.add(shape);
+    }
+}
+
+/// The two waves of the Ondina mark, on the 16 grid.
+const LOGO_WAVES: [&str; 2] = ["M1 10c2-3 4-3 6 0s4 3 6 0", "M1 6c2-3 4-3 6 0s4 3 6 0"];
+
+/// The Ondina mark: two accent waves, the upper one half transparent.
+pub fn paint_logo(painter: &Painter, rect: Rect) {
+    static WAVES: OnceLock<Vec<Vec<SubPath>>> = OnceLock::new();
+    let waves = WAVES.get_or_init(|| LOGO_WAVES.iter().map(|d| parse_path(d)).collect());
+    let side = rect.width().min(rect.height());
+    let scale = side / ICON_GRID;
+    let origin = rect.center() - Vec2::splat(side / 2.0);
+    for (wave, alpha) in waves.iter().zip([1.0_f32, 0.5]) {
+        let stroke = Stroke::new(1.8 * scale, theme::ACCENT.gamma_multiply(alpha));
+        for sp in wave {
+            let points: Vec<Pos2> = sp.points.iter().map(|p| origin + p.to_vec2() * scale).collect();
+            painter.add(PathShape::line(points, stroke));
+        }
     }
 }
 
@@ -577,6 +625,141 @@ pub fn icon_menu_button<R>(
     let color = ui.style().interact(&ir.response).text_color();
     paint_inline_icon(ui, &ir.response, icon, color);
     ir
+}
+
+// ===================================================================================== tool buttons
+
+/// Fill, border and foreground of a tool button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolColors {
+    pub fill: Color32,
+    pub border: Color32,
+    pub fg: Color32,
+}
+
+impl ToolColors {
+    /// Resting, not switched on.
+    pub const OFF: ToolColors = ToolColors { fill: theme::RAISED, border: theme::BORDER, fg: theme::ICON };
+    /// Switched on: panels, metronome.
+    pub const ACCENT: ToolColors =
+        ToolColors { fill: theme::ACCENT_BG, border: theme::ACCENT_BORDER, fg: theme::ACCENT };
+    pub const PLAY: ToolColors = ToolColors { fill: theme::PLAY_BG, border: theme::PLAY_BORDER, fg: theme::PLAY };
+    pub const REC: ToolColors = ToolColors { fill: theme::REC_BG, border: theme::REC_BORDER, fg: theme::REC };
+    pub const CYCLE: ToolColors = ToolColors { fill: theme::CYCLE_BG, border: theme::CYCLE_BORDER, fg: theme::SOLO };
+    pub const AI: ToolColors = ToolColors { fill: theme::AI_BG, border: theme::AI_BORDER, fg: theme::AI_TEXT };
+
+    /// The look under the pointer: a resting button lifts to the hover neutrals, a lit one keeps its tint and
+    /// brightens its border toward the foreground.
+    pub fn hovered(self) -> ToolColors {
+        if self == ToolColors::OFF {
+            ToolColors { fill: theme::HOVER, border: theme::BORDER_HOVER, fg: theme::TEXT }
+        } else {
+            ToolColors { border: mix(self.border, self.fg, 0.35), ..self }
+        }
+    }
+}
+
+/// `a` moved toward `b` by `t` (0..1), channel by channel.
+pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let ch = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(ch(a.r(), b.r()), ch(a.g(), b.g()), ch(a.b(), b.b()))
+}
+
+/// A fixed-size button with a vector icon (and optional text after it), in the transport-bar style.
+pub struct ToolButton {
+    icon: Icon,
+    size: Vec2,
+    icon_size: f32,
+    colors: ToolColors,
+    /// Icon color when it should differ from the foreground (record stays red while off).
+    icon_color: Option<Color32>,
+    filled: bool,
+    text: Option<String>,
+}
+
+impl ToolButton {
+    pub fn new(icon: Icon) -> Self {
+        Self {
+            icon,
+            size: vec2(34.0, 30.0),
+            icon_size: 14.0,
+            colors: ToolColors::OFF,
+            icon_color: None,
+            filled: false,
+            text: None,
+        }
+    }
+
+    pub fn size(mut self, w: f32, h: f32) -> Self {
+        self.size = vec2(w, h);
+        self
+    }
+
+    pub fn icon_size(mut self, s: f32) -> Self {
+        self.icon_size = s;
+        self
+    }
+
+    /// `Some(colors)` when the button is switched on.
+    pub fn lit(mut self, colors: Option<ToolColors>) -> Self {
+        self.colors = colors.unwrap_or(ToolColors::OFF);
+        self
+    }
+
+    pub fn icon_color(mut self, c: Color32) -> Self {
+        self.icon_color = Some(c);
+        self
+    }
+
+    /// Fill the icon's closed shapes (play, stop, record...).
+    pub fn filled(mut self) -> Self {
+        self.filled = true;
+        self
+    }
+
+    /// Text after the icon; the button grows to fit it.
+    pub fn text(mut self, t: impl Into<String>) -> Self {
+        self.text = Some(t.into());
+        self
+    }
+}
+
+impl Widget for ToolButton {
+    fn ui(self, ui: &mut Ui) -> Response {
+        let font = theme::body_font();
+        let galley = self.text.map(|t| ui.painter().layout_no_wrap(t, font, theme::TEXT));
+        let gap = theme::SP_3;
+        let pad = 10.0;
+        let size = match &galley {
+            Some(g) => vec2(pad + self.icon_size + gap + g.size().x + pad, self.size.y),
+            None => self.size,
+        };
+        let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+        if ui.is_rect_visible(rect) {
+            let c = if resp.hovered() { self.colors.hovered() } else { self.colors };
+            let p = ui.painter();
+            p.rect(rect, Rounding::same(theme::R_LG), c.fill, Stroke::new(1.0_f32, c.border));
+            let icon_color = self.icon_color.unwrap_or(c.fg);
+            let icon_rect = match &galley {
+                Some(_) => Rect::from_center_size(
+                    pos2(rect.left() + pad + self.icon_size / 2.0, rect.center().y),
+                    Vec2::splat(self.icon_size),
+                ),
+                None => Rect::from_center_size(rect.center(), Vec2::splat(self.icon_size)),
+            };
+            if self.filled {
+                paint_icon_filled(p, self.icon, icon_rect, icon_color);
+            } else {
+                paint_icon(p, self.icon, icon_rect, icon_color);
+            }
+            if let Some(g) = galley {
+                let at = pos2(icon_rect.right() + gap, rect.center().y - g.size().y / 2.0);
+                p.galley(at, g, c.fg);
+            }
+        }
+        resp
+    }
 }
 
 // ===================================================================================== knob
@@ -1255,7 +1438,27 @@ mod tests {
                 }
             }
         }
-        assert_eq!(Icon::ALL.iter().map(|i| i.path()).collect::<std::collections::HashSet<_>>().len(), 16);
+        assert_eq!(
+            Icon::ALL.iter().map(|i| i.path()).collect::<std::collections::HashSet<_>>().len(),
+            Icon::ALL.len()
+        );
+        // the enum order is the cache order
+        for (i, icon) in Icon::ALL.iter().enumerate() {
+            assert_eq!(*icon as usize, i);
+        }
+    }
+
+    #[test]
+    fn tool_colors_hover_lifts_rest_and_keeps_the_tint_of_lit_buttons() {
+        let rest = ToolColors::OFF.hovered();
+        assert_eq!(rest.fill, theme::HOVER);
+        assert_eq!(rest.border, theme::BORDER_HOVER);
+        let play = ToolColors::PLAY.hovered();
+        assert_eq!(play.fill, ToolColors::PLAY.fill);
+        assert_eq!(play.fg, ToolColors::PLAY.fg);
+        assert_ne!(play.border, ToolColors::PLAY.border);
+        assert_eq!(mix(Color32::BLACK, Color32::WHITE, 0.5), Color32::from_rgb(128, 128, 128));
+        assert_eq!(mix(Color32::BLACK, Color32::WHITE, 2.0), Color32::WHITE);
     }
 
     #[test]

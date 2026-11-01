@@ -75,6 +75,19 @@ pub const ON_MUTE: Color32 = hex(0x0E1430);
 pub const ON_SOLO: Color32 = hex(0x2A2006);
 pub const ON_REC: Color32 = hex(0xFFFFFF);
 pub const ON_MONITOR: Color32 = hex(0x2A1606);
+/// Tinted fill and border of a lit transport or toggle button, one pair per state.
+pub const PLAY_BG: Color32 = hex(0x1E3A2B);
+pub const PLAY_BORDER: Color32 = hex(0x2F6B4A);
+pub const REC_BG: Color32 = hex(0x3D1D20);
+pub const REC_BORDER: Color32 = hex(0x7A2E33);
+pub const CYCLE_BG: Color32 = hex(0x3A3218);
+pub const CYCLE_BORDER: Color32 = hex(0x6B5A26);
+pub const AI_BG: Color32 = hex(0x2A2443);
+pub const AI_BORDER: Color32 = hex(0x4B3F7A);
+/// Assistant text and icon on its tinted fill.
+pub const AI_TEXT: Color32 = hex(0xC4B5FD);
+/// Bar chrome: the menu bar and the status bar.
+pub const CHROME: Color32 = hex(0x16181C);
 /// Lower end of the meter gradient.
 pub const METER_LOW: Color32 = hex(0x3FAF7A);
 
