@@ -32,7 +32,8 @@ pub struct CcLaneState {
 
 impl Default for CcLaneState {
     fn default() -> Self {
-        CcLaneState { open: true, controller: SUSTAIN }
+        // closed at first, so the note grid gets the room; its header stays to open it
+        CcLaneState { open: false, controller: SUSTAIN }
     }
 }
 

@@ -616,15 +616,18 @@ mod tests {
     fn default_bottom_panel_shows_fifteen_rows_or_more() {
         use crate::cc_lane;
         use crate::panel_layout::default_bottom;
-        // a 1000 px tall window leaves about 880 px between the control bar and the status bar; the editor's
+        // a 1000 px tall window leaves about 810 px between the control bar and the status bar; the editor's
         // header (32) and its margins (8) come off the panel
-        let panel = default_bottom(880.0);
+        let panel = default_bottom(810.0);
         let full = Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, panel - 32.0 - 8.0));
-        for open in [false, true] {
+        let rows = |open: bool| {
             let cc_h = cc_lane::lane_height(open, full.height(), RULER_H + VEL_H);
-            let rows = visible_rows(piano_roll_layout(full, cc_h).grid.height(), DEFAULT_KEY_H);
-            assert!(rows >= 15, "controller lane open {open}: {rows} rows");
-        }
+            visible_rows(piano_roll_layout(full, cc_h).grid.height(), DEFAULT_KEY_H)
+        };
+        // the controller lane starts closed: fifteen rows or more; opened, still a dozen
+        assert!(!cc_lane::CcLaneState::default().open);
+        assert!(rows(false) >= 15, "{} rows", rows(false));
+        assert!(rows(true) >= 12, "{} rows with the controller lane open", rows(true));
         assert_eq!(visible_rows(100.0, 0.0), 0);
     }
 
