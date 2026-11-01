@@ -1067,7 +1067,8 @@ impl OndinaApp {
             if self.edits.row_rename.as_ref().is_some_and(|r| !r.fits(rid, &pt.rows)) {
                 self.edits.row_rename = None;
             }
-            let mut rename_rect: Option<Rect> = None;
+            // every name button's rect: Rename… opens inside the menu, after its own row was laid out
+            let mut name_rects: Vec<Rect> = Vec::with_capacity(pt.rows.len());
             let mut cells: Vec<StepCell> = Vec::with_capacity(pt.rows.iter().map(|r| r.steps.len()).sum());
             let mut started: Option<(usize, usize)> = None;
             egui::Grid::new(("steps", rid))
@@ -1086,9 +1087,7 @@ impl OndinaApp {
                                 note_name(row.pitch),
                                 if row.muted { " · muted" } else { "" }
                             ));
-                        if self.edits.row_rename.as_ref().is_some_and(|r| r.row == ri) {
-                            rename_rect = Some(name.rect);
-                        }
+                        name_rects.push(name.rect);
                         if name.clicked() {
                             self.preview_row(track.id, row.pitch);
                         }
@@ -1219,7 +1218,10 @@ impl OndinaApp {
             .response
             .on_hover_text("Add a drum sound as a new row");
             // the name field goes last, so it sits on top of the name button and gets the clicks
-            let target = self.edits.row_rename.take().and_then(|ren| Some((ren, rename_rect?)));
+            let target = self.edits.row_rename.take().and_then(|ren| {
+                let r = *name_rects.get(ren.row)?;
+                Some((ren, r))
+            });
             if let Some((mut ren, r)) = target {
                 let edit_id = ui.id().with(("row-rename", rid, ren.row));
                 match rename_field(ui, edit_id, r, FontId::monospace(12.0), &mut ren.text, &mut ren.focus) {
