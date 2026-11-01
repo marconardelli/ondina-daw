@@ -1261,9 +1261,11 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
         // notes
         AddNotes { region_id, notes } => {
             let m = midi_mut(project, *region_id)?;
+            let before = m.notes.len();
             m.notes.extend(notes.iter().copied());
-            sanitize_notes(&mut m.notes);
-            ok(json!({"note_count": m.notes.len()}))
+            let added: Vec<bool> = (0..m.notes.len()).map(|i| i >= before).collect();
+            let indices = sanitize_notes_tracked(&mut m.notes, &added);
+            ok(json!({"note_count": m.notes.len(), "indices": indices}))
         }
         ReplaceNotes { region_id, notes } => {
             let m = midi_mut(project, *region_id)?;
@@ -1870,6 +1872,30 @@ mod tests {
             RegionContent::Midi(m) => m.notes.clone(),
             _ => panic!("not a MIDI region"),
         }
+    }
+
+    #[test]
+    fn add_notes_reports_where_the_added_notes_are() {
+        let (mut p, rid) = midi_region(&[n(60, 0.0), n(64, 2.0)]);
+        let v = run(&mut p, Command::AddNotes { region_id: rid, notes: vec![n(67, 1.0), n(60, 0.0), n(62, 3.0)] });
+        assert_eq!(v["indices"], json!([1, 2, 4]));
+        assert_eq!(v["note_count"], json!(5));
+        let after = notes_of(&p, rid);
+        // the added 60 is identical to the existing one and comes right after it
+        assert_eq!((after[0].pitch, after[0].start), (60, 0.0));
+        assert_eq!((after[1].pitch, after[1].start), (60, 0.0));
+        assert_eq!((after[2].pitch, after[2].start), (67, 1.0));
+        assert_eq!((after[3].pitch, after[3].start), (64, 2.0));
+        assert_eq!((after[4].pitch, after[4].start), (62, 3.0));
+        // a note that clamp_note corrects is still found
+        let v = run(&mut p, Command::AddNotes { region_id: rid, notes: vec![Note { pitch: 72, velocity: 0, start: -1.0, length: 0.5 }] });
+        let ix = v["indices"].as_array().unwrap();
+        assert_eq!(ix.len(), 1);
+        let added = notes_of(&p, rid)[ix[0].as_u64().unwrap() as usize];
+        assert_eq!((added.pitch, added.start, added.velocity), (72, 0.0, 1));
+        let v = run(&mut p, Command::AddNotes { region_id: rid, notes: vec![] });
+        assert_eq!(v["indices"], json!([]));
+        assert_eq!(v["note_count"], json!(6));
     }
 
     #[test]

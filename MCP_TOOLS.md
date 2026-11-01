@@ -338,7 +338,7 @@ Get a region with its notes (MIDI), steps (pattern) or audio settings.
 Parameters: `region_id`
 
 ### `add_notes`
-Add notes to a MIDI region (start relative to region start, in beats).
+Add notes to a MIDI region (start relative to region start, in beats). The region's notes are re-sorted by time afterwards; the result's `indices` lists where the added notes ended up (ascending), ready to pass to transpose_notes, quantize_notes, humanize_notes, set_note_velocities or remove_notes. An added note identical to one already in the region comes right after it.
 
 Parameters: `notes, region_id`
 

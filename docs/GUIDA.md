@@ -4,7 +4,9 @@ Questa guida spiega come usare gli editor di Ondina con mouse, tastiera e menu.
 
 ## Piano roll
 
-- Clic su uno spazio vuoto: aggiunge una nota (la durata si sceglie nella barra degli strumenti).
+- Clic su uno spazio vuoto: aggiunge una nota (la durata si sceglie nella barra degli strumenti) e la seleziona,
+  così le frecce, Alt+←/→, Canc e Ctrl+C/X agiscono subito sulla nota nuova. Con Ctrl o Maiusc la nota nuova si
+  aggiunge alla selezione. Un clic oltre la fine della regione toglie la selezione.
 - Clic su una nota: la seleziona. Ctrl o Maiusc + clic aggiunge o toglie note dalla selezione.
 - Trascinamento su uno spazio vuoto: selezione a riquadro, comprese le note sovrapposte.
 - Trascinamento di una nota: la sposta e le note spostate restano selezionate. Con Alt premuto al rilascio la

@@ -114,7 +114,7 @@ impl OndinaApp {
         // toolbar
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("🎹 {} — {}", track.name, region.name)).strong())
-                .on_hover_text("Wheel: scroll pitch · Shift+wheel: scroll time · Ctrl+wheel: zoom time · Ctrl+Shift+wheel: zoom pitch · Ctrl+C/X/V: copy/cut/paste · Ctrl+A: select all · ←/→: move by the snap step · ↑/↓: semitone · Shift+↑/↓: octave · Alt+←/→: shorten/lengthen by the snap step · Alt+drag: copy the notes · Controller lane: drag to draw, right-drag to erase");
+                .on_hover_text("Click on empty grid: add a note and select it (Ctrl/Shift: add it to the selection) · Wheel: scroll pitch · Shift+wheel: scroll time · Ctrl+wheel: zoom time · Ctrl+Shift+wheel: zoom pitch · Ctrl+C/X/V: copy/cut/paste · Ctrl+A: select all · ←/→: move by the snap step · ↑/↓: semitone · Shift+↑/↓: octave · Alt+←/→: shorten/lengthen by the snap step · Alt+drag: copy the notes · Controller lane: drag to draw, right-drag to erase");
             ui.separator();
             ui.label("Note length");
             egui::ComboBox::from_id_salt("notelen").width(60.0).selected_text(len_label(self.note_len)).show_ui(ui, |ui| {
@@ -554,41 +554,46 @@ impl OndinaApp {
                     }
                 } else {
                     let raw = sb + ((pp.x - grid.left()) / pbb) as f64;
-                    let start = if self.snap > 0.0 {
-                        (raw / self.snap.min(1.0)).floor() * self.snap.min(1.0)
-                    } else {
-                        raw
-                    };
-                    let pitch =
-                        (top_pitch - ((pp.y - grid.top()) / kh).floor() as i32).clamp(0, 127) as u8;
-                    if start >= 0.0 && start < region.length {
-                        self.cmd(Command::AddNotes {
-                            region_id: rid,
-                            notes: vec![Note {
+                    match note_selection::grid_click(raw, self.snap, region.length, ctrl) {
+                        note_selection::GridClick::Draw { start } => {
+                            let pitch = (top_pitch - ((pp.y - grid.top()) / kh).floor() as i32)
+                                .clamp(0, 127) as u8;
+                            let note = Note {
                                 pitch,
                                 velocity: 100,
                                 start,
                                 length: self.note_len,
-                            }],
-                        });
-                        self.live_note(
-                            track.id,
-                            MidiKind::NoteOn {
-                                pitch,
-                                velocity: 100,
-                            },
-                        );
-                        let tx = self.engine_tx.clone();
-                        let tid = track.id;
-                        std::thread::spawn(move || {
-                            std::thread::sleep(std::time::Duration::from_millis(200));
-                            let _ = tx.send(ondina_engine::EngineMsg::Live(
-                                tid,
-                                MidiKind::NoteOff { pitch },
-                            ));
-                        });
+                            };
+                            // exec, not cmd: the result says where the note landed, so it can
+                            // become the selection right away.
+                            if let Some(v) = self.exec(Command::AddNotes {
+                                region_id: rid,
+                                notes: vec![note],
+                            }) {
+                                let drawn = note_selection::result_indices(&v);
+                                self.selected_notes =
+                                    note_selection::select_drawn(&self.selected_notes, &drawn, ctrl);
+                                self.live_note(
+                                    track.id,
+                                    MidiKind::NoteOn {
+                                        pitch,
+                                        velocity: 100,
+                                    },
+                                );
+                                let tx = self.engine_tx.clone();
+                                let tid = track.id;
+                                std::thread::spawn(move || {
+                                    std::thread::sleep(std::time::Duration::from_millis(200));
+                                    let _ = tx.send(ondina_engine::EngineMsg::Live(
+                                        tid,
+                                        MidiKind::NoteOff { pitch },
+                                    ));
+                                });
+                            }
+                        }
+                        note_selection::GridClick::Deselect => self.selected_notes.clear(),
+                        note_selection::GridClick::Keep => {}
                     }
-                    self.selected_notes.clear();
                 }
             }
         }
