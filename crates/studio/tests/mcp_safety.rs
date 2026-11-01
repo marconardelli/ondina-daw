@@ -63,3 +63,51 @@ fn renders_of_the_whole_song_refuse_a_song_longer_than_the_render_limit() {
     let err = call(&mut s, "bounce_in_place", json!({"track_id": t})).unwrap_err();
     assert!(err.contains("60 minutes"), "bounce_in_place: {err}");
 }
+
+// ---------------------------------------------------------------- unsaved work
+
+#[test]
+fn new_and_open_project_refuse_to_drop_unsaved_changes_unless_asked() {
+    let saved = tmp("unsaved-other.ondina");
+    {
+        let mut other = Session::new(false);
+        ok(&mut other, "save_project", json!({"path": saved.display().to_string()}));
+    }
+    let mut s = Session::new(false);
+    ok(&mut s, "set_tempo", json!({"bpm": 101.0}));
+    let before = ok(&mut s, "get_project_json", json!({}));
+    for (tool, args) in [("new_project", json!({})), ("open_project", json!({"path": saved.display().to_string()}))] {
+        let err = call(&mut s, tool, args.clone()).unwrap_err();
+        assert!(err.contains("unsaved changes") && err.contains("discard_unsaved"), "{tool}: {err}");
+        assert_eq!(ok(&mut s, "get_project_json", json!({})), before, "{tool}: the project must stay as it was");
+        assert!(s.dirty);
+        let err = call(&mut s, tool, {
+            let mut a = args.clone();
+            a["discard_unsaved"] = json!(false);
+            a
+        })
+        .unwrap_err();
+        assert!(err.contains("unsaved changes"), "{tool}: {err}");
+    }
+    ok(&mut s, "open_project", json!({"path": saved.display().to_string(), "discard_unsaved": true}));
+    assert_eq!(s.project.tempo.initial_bpm(), 120.0);
+    assert!(!s.dirty);
+    // nothing unsaved now: no flag needed
+    ok(&mut s, "new_project", json!({"name": "Fresh"}));
+    ok(&mut s, "set_tempo", json!({"bpm": 90.0}));
+    ok(&mut s, "new_project", json!({"name": "Dropped", "discard_unsaved": true}));
+    assert_eq!(s.project.name, "Dropped");
+    // after a save the work is safe
+    ok(&mut s, "set_tempo", json!({"bpm": 95.0}));
+    ok(&mut s, "save_project", json!({"path": tmp("unsaved-mine.ondina").display().to_string()}));
+    ok(&mut s, "open_project", json!({"path": saved.display().to_string()}));
+}
+
+#[test]
+fn the_window_still_replaces_the_project_after_asking_the_user_itself() {
+    let mut s = Session::new(false);
+    ok(&mut s, "set_tempo", json!({"bpm": 101.0}));
+    let cmd = Command::from_tool_call("new_project", &json!({})).unwrap();
+    s.execute(cmd, Source::Gui).unwrap();
+    assert_eq!(s.project.tempo.initial_bpm(), 120.0);
+}

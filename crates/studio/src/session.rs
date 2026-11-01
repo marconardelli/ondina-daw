@@ -412,8 +412,9 @@ impl Session {
                 self.commit();
                 Ok(json!({"redone": step.label}))
             }
-            NewProject { .. } => {
+            NewProject { discard_unsaved, .. } => {
                 self.refuse_while_recording(source)?;
+                self.refuse_to_drop_unsaved_work(source, discard_unsaved)?;
                 let v = match ops::apply(&mut self.project, &cmd)? {
                     Outcome::Done(v) => v,
                     Outcome::NotHandled => return Err("internal".into()),
@@ -428,8 +429,9 @@ impl Session {
                 self.selected_notes.clear();
                 Ok(v)
             }
-            OpenProject { path } => {
+            OpenProject { path, discard_unsaved } => {
                 self.refuse_while_recording(source)?;
+                self.refuse_to_drop_unsaved_work(source, discard_unsaved)?;
                 self.open(Path::new(&path), source)
             }
             SaveProject { path } => {
@@ -756,6 +758,16 @@ impl Session {
     fn refuse_while_recording(&self, source: Source) -> Result<(), String> {
         if source != Source::Gui && self.engine.is_recording() {
             return Err("recording in progress: call stop first (stop keeps the take)".into());
+        }
+        Ok(())
+    }
+
+    /// Open and New from an MCP client or the assistant keep a project with unsaved changes unless the caller
+    /// says to drop them: they start a new history, so undo cannot bring the work back. The window asks the user
+    /// itself before it gets here (Save / Don't Save / Cancel), and a script started by the user runs as asked.
+    fn refuse_to_drop_unsaved_work(&self, source: Source, discard_unsaved: Option<bool>) -> Result<(), String> {
+        if matches!(source, Source::Mcp | Source::Ai) && self.dirty && !discard_unsaved.unwrap_or(false) {
+            return Err("the project has unsaved changes: save it first with save_project, or ask the user and pass discard_unsaved: true to drop them".into());
         }
         Ok(())
     }
@@ -1215,7 +1227,7 @@ mod tests {
         let proj = dir.join("song.ondina");
         s.execute(Command::SaveProject { path: Some(proj.display().to_string()) }, Source::Script).unwrap();
         let mut s2 = Session::new(false);
-        s2.execute(Command::OpenProject { path: proj.display().to_string() }, Source::Script).unwrap();
+        s2.execute(Command::OpenProject { path: proj.display().to_string(), discard_unsaved: None }, Source::Script).unwrap();
         assert_eq!(s2.project.tracks.len(), 2);
         // import the bounce as audio
         let imp = s2.execute(Command::ImportAudio { path: wav.display().to_string(), track_id: None, start: Some(0.0) }, Source::Script).unwrap();

@@ -333,7 +333,7 @@ impl Session {
     /// Opens an autosave copy as unsaved work: the project comes back through OpenProject, but without a file
     /// path, so the next save asks where to write instead of writing over the copy.
     pub fn open_recovered(&mut self, copy: &Path) -> Result<Value, String> {
-        let v = self.execute(Command::OpenProject { path: copy.display().to_string() }, Source::Gui)?;
+        let v = self.execute(Command::OpenProject { path: copy.display().to_string(), discard_unsaved: None }, Source::Gui)?;
         self.path = None;
         self.dirty = true;
         Ok(v)

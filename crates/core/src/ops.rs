@@ -836,7 +836,7 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
     match cmd {
         GetProject {} => ok(project_summary(project)),
         GetProjectJson {} => ok(serde_json::to_value(&*project).map_err(|e| e.to_string())?),
-        NewProject { name, tempo, time_signature, key } => {
+        NewProject { name, tempo, time_signature, key, .. } => {
             let mut p = Project::new(name.as_deref().unwrap_or("Untitled"));
             if let Some(t) = tempo {
                 p.tempo.set_initial_bpm(*t);

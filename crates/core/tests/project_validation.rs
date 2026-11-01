@@ -15,7 +15,7 @@ fn apply(p: &mut Project, c: Command) -> Result<Value, String> {
 }
 
 fn new_project(ts: &str) -> Command {
-    Command::NewProject { name: None, tempo: None, time_signature: Some(ts.into()), key: None }
+    Command::NewProject { name: None, tempo: None, time_signature: Some(ts.into()), key: None, discard_unsaved: None }
 }
 
 #[test]
