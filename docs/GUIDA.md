@@ -262,6 +262,8 @@ client MCP e per i progetti che apri.
 - Se apri un progetto che usa un plug-in rifiutato, il progetto si apre lo stesso: il plug-in resta al
   suo posto ma non suona, e la barra di stato dice quanti plug-in non sono stati caricati. Nella stessa
   riga compare anche il numero dei file audio mancanti.
+- Anche le cartelle extra della scansione devono stare su un disco locale: quelle su una condivisione di rete
+  vengono saltate.
 - Se tieni i plug-in su un NAS, copiali in una cartella locale e aggiungili di nuovo.
 
 ## Assistente con modello locale
