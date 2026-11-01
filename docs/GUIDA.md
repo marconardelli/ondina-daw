@@ -140,6 +140,27 @@ il nome di partenza viene dalla traccia o dal file importato.
 - L'assistente e i tool MCP usano `set_region_properties`: `color` vuoto o `"none"` toglie il colore
   della regione, e `get_region` riporta `color` solo se la regione ne ha uno.
 
+## Dissolvenze delle regioni audio
+
+Sulle regioni audio la curva del fade-in e del fade-out è disegnata sopra la forma d'onda, con un velo scuro
+sulla parte che la dissolvenza abbassa. In una regione in loop la curva c'è su ogni ripetizione, perché il fade
+si sente su ognuna.
+
+- Passando col puntatore su una regione audio (o quando è selezionata) compaiono due quadratini sul bordo alto
+  della prima ripetizione: a sinistra il fade-in, a destra il fade-out. Stanno dove finisce il fade-in e dove
+  inizia il fade-out; con il fade a zero sono negli angoli.
+- Trascina un quadratino in orizzontale per allungare o accorciare quel fade: la curva segue il puntatore e un
+  riquadro mostra il valore in battiti. Il valore segue lo **Snap** (al massimo un battito, anche con Bar); tieni
+  premuto Alt mentre trascini per ignorarlo. Il fade non va sotto zero e i due fade insieme non superano la
+  regione (una ripetizione, se è in loop).
+- Doppio clic su un quadratino toglie quel fade.
+- Ogni trascinamento o doppio clic si annulla con un solo Ctrl+Z.
+- Nelle regioni più strette di circa 24 punti i quadratini non ci sono: allarga la regione con lo zoom. Il bordo
+  destro sotto i quadratini cambia ancora la lunghezza della regione, e il resto della regione si sposta come
+  prima.
+- Gli stessi valori si cambiano dagli slider **Fade in** e **Fade out** dell'editor audio; l'assistente e i tool
+  MCP usano `set_region_properties` con `fade_in` e `fade_out` in battiti.
+
 ## Righello e ciclo
 
 Il righello in cima all'arrangiamento ha due parti: la striscia alta, più scura, è quella del ciclo;
