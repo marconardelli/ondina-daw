@@ -29,7 +29,8 @@ pub fn cancel_command(drag: &Drag) -> Option<(Command, String)> {
         | Drag::NoteResize { .. }
         | Drag::Velocity { .. }
         | Drag::Marquee { .. }
-        | Drag::CcStroke { .. } => None,
+        | Drag::CcStroke { .. }
+        | Drag::AutoPoint { .. } => None,
     }
 }
 
@@ -66,12 +67,13 @@ mod tests {
     use super::{cancel_command, take_cancelled, take_escape};
     use crate::app::Drag;
     use crate::arrange::{cycle_gesture_key, CycleZone};
+    use crate::automation_lane::{lane_spec, PointDrag};
     use crate::cc_lane::CcStroke;
     use crate::note_drag::VelocityStroke;
     use crate::region_edit::FadeHandle;
     use eframe::egui::{Event, Key, Modifiers};
     use ondina_core::command::Command;
-    use ondina_core::model::{Cycle, Note};
+    use ondina_core::model::{AutomationPoint, Cycle, Note, TrackKind};
     use ondina_studio::{Session, Source};
     use serde_json::{json, Value};
 
@@ -262,5 +264,28 @@ mod tests {
 
         run(&mut s, "undo", json!({}));
         assert_eq!(s.project.cycle, before);
+    }
+
+    #[test]
+    fn cancelling_an_automation_drag_sends_nothing_and_leaves_the_lane() {
+        let mut s = Session::new(false);
+        let add = Command::AddTrack { kind: TrackKind::Audio, name: None, patch: None, instrument: None, preset: None, index: None };
+        let tid = s.execute(add, Source::Gui).unwrap()["track_id"].as_u64().unwrap();
+        let points = vec![AutomationPoint { beat: 0.0, value: -6.0 }, AutomationPoint { beat: 4.0, value: 0.0 }];
+        s.execute(Command::SetAutomation { track_id: tid, target: "volume".into(), points: points.clone() }, Source::Gui).unwrap();
+        let undo_before = s.can_undo().map(String::from);
+        let lane = |s: &Session| s.project.track(tid).unwrap().automation[0].points.clone();
+
+        let spec = lane_spec(&s.project, s.project.track(tid).unwrap(), "volume").unwrap();
+        let mut drag = PointDrag::existing(spec, points.clone(), 1, 4.0, 50.0);
+        drag.update(6.0, 30.0, 60.0, 20.0, 0.25);
+        assert_ne!(drag.cur, drag.orig);
+        let d = Drag::AutoPoint { track: tid, drag };
+        assert!(cancel_command(&d).is_none());
+        let mut d = Some(d);
+        assert!(take_cancelled(&mut d).is_none());
+        assert!(d.is_none());
+        assert_eq!(lane(&s), points);
+        assert_eq!(s.can_undo().map(String::from), undo_before);
     }
 }

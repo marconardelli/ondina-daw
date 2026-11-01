@@ -245,6 +245,33 @@ si sente su ognuna.
 - Gli stessi valori si cambiano dagli slider **Fade in** e **Fade out** dell'editor audio; l'assistente e i tool
   MCP usano `set_region_properties` con `fade_in` e `fade_out` in battiti.
 
+## Automazione nell'arrangiamento
+
+Premi **A** (o **View > Show Automation**) per vedere l'automazione sopra le regioni. Ogni traccia mostra una
+sua corsia: il volume, il pan, una mandata o un'altra corsia che ha già (surround, parametri dei plug-in). Premi
+di nuovo A per tornare all'arrangiamento di sempre.
+
+- La curva è una linea arancione con un pallino per ogni punto; tra due punti il valore cambia in linea retta,
+  come lo suona Ondina. Prima del primo punto e dopo l'ultimo il valore resta quello del punto.
+- Una corsia senza punti è una linea tratteggiata all'altezza del valore del canale (per esempio il volume del
+  mixer). In basso a sinistra c'è il nome della corsia, con il valore se è vuota.
+- Al posto dello slider del volume, nell'intestazione della traccia, c'è il selettore della corsia: le voci con
+  punti hanno accanto il loro numero. Lo stesso elenco è nel menu del clic destro sull'intestazione, **Automation
+  lane**, che accende anche la vista; c'è anche sulle tracce basse, dove il selettore non entra.
+- Clic sotto la barra del nome di una regione aggiunge un punto all'altezza del clic, sulla griglia dello
+  **Snap** (al massimo un battito). Con Alt il punto va dove hai cliccato.
+- Trascina un punto per spostarlo: resta tra i punti vicini e dentro l'intervallo del parametro, e un riquadro
+  mostra il valore. Se premi sul vuoto e trascini, il punto nuovo nasce lì e lo sposti nello stesso gesto.
+- Doppio clic o clic destro su un punto lo elimina. Esc mentre trascini riporta il punto dov'era.
+- La striscia alta di ogni traccia (la barra del nome delle regioni e i quadratini dei fade) resta alle regioni:
+  da lì le selezioni, le sposti, le ridimensioni e tiri i fade anche con la vista accesa.
+- Ogni clic, trascinamento o eliminazione si annulla con un solo Ctrl+Z.
+- Valori: volume da -60 a +6 dB, pan da sinistra a destra (-64..+64 come nel mixer), mandate in dB, parametri dei
+  plug-in nel loro intervallo (i selettori, come la forma d'onda, a scatti).
+- Il master non ha automazione e non compare nell'arrangiamento.
+- L'assistente e i tool MCP vedono subito le corsie che disegni (`get_track`) e scrivono le stesse corsie con
+  `set_automation`: quello che scrivono si vede nella vista e si corregge col mouse.
+
 ## Righello e ciclo
 
 Il righello in cima all'arrangiamento ha due parti: la striscia alta, più scura, è quella del ciclo;
@@ -558,8 +585,9 @@ cancellata. La finestra di recupero compare comunque se all'avvio trova copie ri
 | Alt+← / → | accorcia / allunga le note selezionate di un passo di snap |
 | Alt+trascinamento | copia le note trascinate (piano roll) |
 | Esc (mentre trascini) | annulla il trascinamento |
+| A | mostra / nasconde l'automazione nell'arrangiamento |
 
 `,` e `.` da metà battuta portano all'inizio della battuta; durante la riproduzione, a meno di mezzo beat da una
-battuta o da un marker, `,` va a quello prima. Queste scorciatoie, Ctrl+T, ↑ / ↓ per le tracce, M, S e Maiusc+M
-sono spente mentre scrivi in un campo di testo, durante un trascinamento e con Musical Typing attivo (lì S e M
-suonano note).
+battuta o da un marker, `,` va a quello prima. Queste scorciatoie, Ctrl+T, ↑ / ↓ per le tracce, A, M, S e
+Maiusc+M sono spente mentre scrivi in un campo di testo, durante un trascinamento e con Musical Typing attivo (lì
+A, S e M suonano note).

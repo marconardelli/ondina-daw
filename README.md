@@ -130,8 +130,13 @@ extension: Ondina opens both.
   Shift+wheel (or a horizontal wheel) scrolls time, Ctrl+wheel zooms time around the pointer and Ctrl+Shift+wheel
   makes the tracks taller or shorter around the one under the pointer; View > Zoom In, Zoom Out, Zoom to Fit, Taller
   Tracks and Shorter Tracks do the same from the menu. On short tracks the M/S/R buttons move next to the name and
-  the volume slider is left to the mixer. Esc during a drag (a region, a fade, a marker, a chord, the cycle or a
-  track header) cancels it: everything goes back to where it was.
+  the volume slider is left to the mixer. Press A (or View > Show Automation) to show automation over the regions:
+  each track shows one lane (pick Volume, Pan, a send or another lane it already has in the selector that replaces
+  the header's volume slider, or in the header's right-click menu Automation lane); click below a region's name bar
+  to add a point (on the grid, Alt ignores it), drag a point to move it, double-click or right-click it to delete
+  it; an empty lane shows the channel value as a dashed line. Each edit is one undo step and is the same
+  `set_automation` agents use. Esc during a drag (a region, a fade, a marker, a chord, the cycle, a track header or
+  an automation point) cancels it: everything goes back to where it was.
 - **Piano roll**: click on empty space to add a note (length from the toolbar) and select it (Ctrl/Shift+click keeps the selection and adds the new note); click a note to select it,
   Ctrl/Shift+click to add to the selection; drag on empty space to box-select (stacked notes included); drag a note
   to move it (the moved notes stay selected), Alt+drag to copy it (the copies become the selection, one undo step),
@@ -180,14 +185,14 @@ extension: Ondina opens both.
 | Ctrl+T | split selected region at playhead | Esc (while dragging) | cancel the drag |
 | Alt+← / → | shorten / lengthen selected notes | Alt+drag (piano roll) | copy the dragged notes |
 | ↑ / ↓ | select previous / next track | M / S | mute / solo selected track |
-| Shift+M | add a marker at the playhead | | |
+| Shift+M | add a marker at the playhead | A | show / hide automation |
 
 Musical Typing: `A W S E D F T G Y H U J K` play notes, `Z` / `X` change octave.
 
 `,` and `.` from the middle of a bar go to the start of that bar; while playing, less than half a beat past a bar
 line or a marker, `,` goes to the one before. ↑ / ↓ move the selected notes while notes are selected in the piano
-roll, otherwise they select tracks. These keys, M, S, Shift+M and Ctrl+T are off while you type in a text field,
-while dragging and while Musical Typing is on (there S and M play notes).
+roll, otherwise they select tracks. These keys, A, M, S, Shift+M and Ctrl+T are off while you type in a text field,
+while dragging and while Musical Typing is on (there A, S and M play notes).
 
 ## AI: three ways in
 

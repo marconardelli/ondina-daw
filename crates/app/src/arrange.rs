@@ -9,6 +9,7 @@ use eframe::egui::{
 };
 
 use crate::app::{OndinaApp, BottomTab, Drag};
+use crate::automation_lane;
 use crate::arrange_view::{self, apply_step, max_scroll_y, zoom_track_height, ArrangeView, ViewArea};
 use crate::piano_roll_view::{wheel_zoom, zoom_factor};
 use crate::region_edit::{self, region_name_field, FadeGeom, FadeHandle};
@@ -1236,6 +1237,12 @@ impl OndinaApp {
                 });
             }
 
+            // automation over the regions, registered after them so it takes the presses below their name bar
+            if self.automation.on && automation_lane::automatable(t.id) {
+                let geom = automation_lane::LaneGeom { lane, region_area, timeline_x, alt: ctrl_alt };
+                self.automation_overlay(ui, &tpainter, geom, t, &p);
+            }
+
             // header
             let header = Rect::from_min_max(pos2(full.left(), y), pos2(timeline_x, y + th));
             if let Some(r) = self.track_header(ui, &tpainter, header, t, i, sel) {
@@ -1383,6 +1390,18 @@ impl OndinaApp {
                     }
                 }
             }
+            Some(Drag::AutoPoint { drag, .. }) => {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                if let (Some(b), Some(pp)) = (pointer_beat, pointer_pos) {
+                    let (top, bottom) = automation_lane::value_band(0.0, th);
+                    // Alt moves the point off the grid
+                    drag.update(b, pp.y, bottom - top, self.px_per_beat, automation_lane::grid(snap, ctrl_alt));
+                }
+                let text = automation_lane::value_label(&drag.spec, drag.point().value);
+                egui::show_tooltip_at_pointer(ui.ctx(), ui.layer_id(), ui.id().with("auto_tip"), |ui| {
+                    ui.label(text);
+                });
+            }
             _ => {}
         }
         if let Some(Drag::MoveTrack { gap, .. }) = &self.drag {
@@ -1502,6 +1521,11 @@ impl OndinaApp {
                 }
                 Some(Drag::RegionFade { id, handle, orig, cur, .. }) => {
                     if let Some(c) = region_edit::fade_command(id, handle, orig, cur) {
+                        self.cmd(c);
+                    }
+                }
+                Some(Drag::AutoPoint { track, drag }) => {
+                    if let Some(c) = drag.command(track) {
                         self.cmd(c);
                     }
                 }
@@ -1711,7 +1735,25 @@ impl OndinaApp {
             );
         }
         let tid = t.id;
+        // computed before the menus, which borrow `self` mutably
+        let auto_choices = if automation_lane::automatable(tid) {
+            let p = self.project();
+            let current = self.automation.target(&p, t);
+            Some((automation_lane::lane_choices(&p, t), current))
+        } else {
+            None
+        };
         resp.context_menu(|ui| {
+            if let Some((choices, current)) = &auto_choices {
+                ui.menu_button("Automation lane", |ui| {
+                    if let Some(target) = automation_lane_menu(ui, choices, current) {
+                        self.automation.choose(tid, &target);
+                        self.automation.on = true;
+                        ui.close_menu();
+                    }
+                });
+                ui.separator();
+            }
             if ui.button("Duplicate track").clicked() {
                 self.cmd(Command::DuplicateTrack { track_id: tid });
                 ui.close_menu();
@@ -1772,7 +1814,25 @@ impl OndinaApp {
             pos2(x + 4.0, by + 2.0),
             pos2(rect.right() - 30.0, by + 14.0),
         );
-        if !compact && sr.width() > 20.0 {
+        let selector = auto_choices.as_ref().filter(|_| self.automation.on);
+        if let (Some((choices, current)), false, true) = (selector, compact, sr.width() > 20.0) {
+            // the view shows a lane: the slider's place picks which one (the volume stays in the mixer)
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(sr)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            let short = choices.iter().find(|(s, _)| s.target == *current).map_or("Volume", |(s, _)| s.short.as_str());
+            child
+                .menu_button(format!("{short} ⏷"), |ui| {
+                    if let Some(target) = automation_lane_menu(ui, choices, current) {
+                        self.automation.choose(tid, &target);
+                        ui.close_menu();
+                    }
+                })
+                .response
+                .on_hover_text("Automation lane shown over this track's regions");
+        } else if !compact && sr.width() > 20.0 {
             let mut child = ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(sr)
@@ -1808,6 +1868,18 @@ impl OndinaApp {
         }
         field
     }
+}
+
+/// The automation lanes of a track as menu entries ("Volume · 3" when the lane has points); the one picked.
+fn automation_lane_menu(ui: &mut egui::Ui, choices: &[(automation_lane::LaneSpec, usize)], current: &str) -> Option<String> {
+    let mut picked = None;
+    for (spec, n) in choices {
+        let label = if *n > 0 { format!("{} · {n}", spec.label) } else { spec.label.clone() };
+        if ui.selectable_label(spec.target == current, label).clicked() {
+            picked = Some(spec.target.clone());
+        }
+    }
+    picked
 }
 
 /// Which part of a region the pointer is on: the body moves it, the right edge resizes it, the fade handles on
