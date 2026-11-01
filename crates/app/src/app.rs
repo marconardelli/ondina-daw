@@ -179,9 +179,10 @@ pub enum Drag {
         grab_beat: f64,
         d_len: f64,
     },
+    /// A mouse stroke in the piano roll's velocity lane; `stroke` holds the region's notes as they were and as drawn.
     Velocity {
         region: Id,
-        notes: Vec<Note>,
+        stroke: crate::note_drag::VelocityStroke,
     },
     /// Rubber-band selection in the piano roll, in beat / pitch coordinates
     /// (pitch is continuous: a note of pitch P spans [P, P+1)).

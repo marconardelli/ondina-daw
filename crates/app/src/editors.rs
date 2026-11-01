@@ -13,6 +13,7 @@ use eframe::egui::{
 use crate::app::{BottomTab, OndinaApp, Drag};
 use crate::cc_lane::{self, CcStroke};
 use crate::note_clipboard as nc;
+use crate::note_drag::{self, VelocityStroke};
 use crate::note_selection;
 use crate::piano_roll_view::{
     follow_scroll, initial_view, loop_local_beat, playing_pattern_step, scroll_pitch, wheel_zoom, zoom_factor,
@@ -32,6 +33,17 @@ pub(crate) fn take_event(events: &mut Vec<egui::Event>, f: impl Fn(&egui::Event)
     let before = events.len();
     events.retain(|e| !f(e));
     events.len() != before
+}
+
+/// Consumes Alt+←/→ (the first pressed this frame) and returns its length change in grid steps. Runs before
+/// `consume_arrow`, which would otherwise take Alt+← as a plain ← (egui ignores an extra Alt).
+fn consume_alt_arrow(i: &mut egui::InputState) -> Option<i32> {
+    for k in [Key::ArrowLeft, Key::ArrowRight] {
+        if i.consume_key(egui::Modifiers::ALT, k) {
+            return nc::arrow_length(k);
+        }
+    }
+    None
 }
 
 /// Consumes the first arrow key pressed this frame (Shift+↑/↓ before the plain keys) and returns its move.
@@ -102,7 +114,7 @@ impl OndinaApp {
         // toolbar
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("🎹 {} — {}", track.name, region.name)).strong())
-                .on_hover_text("Wheel: scroll pitch · Shift+wheel: scroll time · Ctrl+wheel: zoom time · Ctrl+Shift+wheel: zoom pitch · Ctrl+C/X/V: copy/cut/paste · Ctrl+A: select all · ←/→: move by the snap step · ↑/↓: semitone · Shift+↑/↓: octave · Controller lane: drag to draw, right-drag to erase");
+                .on_hover_text("Wheel: scroll pitch · Shift+wheel: scroll time · Ctrl+wheel: zoom time · Ctrl+Shift+wheel: zoom pitch · Ctrl+C/X/V: copy/cut/paste · Ctrl+A: select all · ←/→: move by the snap step · ↑/↓: semitone · Shift+↑/↓: octave · Alt+←/→: shorten/lengthen by the snap step · Alt+drag: copy the notes · Controller lane: drag to draw, right-drag to erase");
             ui.separator();
             ui.label("Note length");
             egui::ComboBox::from_id_salt("notelen").width(60.0).selected_text(len_label(self.note_len)).show_ui(ui, |ui| {
@@ -344,6 +356,8 @@ impl OndinaApp {
         let base = theme::rgb(region.color.unwrap_or(track.color));
         let mut notes = m.notes.clone();
         let mut previewing = false;
+        let alt = ui.input(|i| i.modifiers.alt);
+        let mut preview_sel: Option<HashSet<usize>> = None;
         match &self.drag {
             Some(Drag::Notes {
                 region,
@@ -353,14 +367,13 @@ impl OndinaApp {
                 d_pitch,
                 ..
             }) if *region == rid => {
-                notes = orig.clone();
-                for i in indices {
-                    if let Some(n) = notes.get_mut(*i) {
-                        n.start = (n.start + d_beat).max(0.0);
-                        n.pitch = (n.pitch as i32 + d_pitch).clamp(0, 127) as u8;
-                    }
-                }
+                let (shown, sel) = note_drag::drag_preview(orig, indices, *d_beat, *d_pitch, alt);
+                notes = shown;
+                preview_sel = Some(sel);
                 previewing = true;
+                if alt {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Copy);
+                }
             }
             Some(Drag::NoteResize {
                 region,
@@ -377,8 +390,8 @@ impl OndinaApp {
                 }
                 previewing = true;
             }
-            Some(Drag::Velocity { region, notes: vn }) if *region == rid => {
-                notes = vn.clone();
+            Some(Drag::Velocity { region, stroke }) if *region == rid => {
+                notes = stroke.notes().to_vec();
                 previewing = true;
             }
             _ => {}
@@ -402,7 +415,7 @@ impl OndinaApp {
                 continue;
             }
             let r = Rect::from_min_max(pos2(x0, y + 1.0), pos2(x1, y + kh - 1.0));
-            let sel = self.selected_notes.contains(&i);
+            let sel = preview_sel.as_ref().map_or_else(|| self.selected_notes.contains(&i), |s| s.contains(&i));
             // selected notes: light fill + thick white outline + outer glow, readable even during playback
             let fill = if sel {
                 theme::velocity_color(base, n.velocity).lerp_to_gamma(Color32::WHITE, 0.55)
@@ -612,7 +625,7 @@ impl OndinaApp {
                 continue;
             }
             let h = (n.velocity as f32 / 127.0) * (vel_rect.height() - 4.0);
-            let sel = self.selected_notes.contains(&i);
+            let sel = preview_sel.as_ref().map_or_else(|| self.selected_notes.contains(&i), |s| s.contains(&i));
             vpainter.line_segment(
                 [
                     pos2(x + 1.0, vel_rect.bottom() - 2.0),
@@ -629,25 +642,19 @@ impl OndinaApp {
             );
         }
         let vresp = ui.interact(vel_rect, ui.id().with(("vel", rid)), Sense::drag());
+        let vel_tol = f64::from(4.0 / pbb);
+        let vel_at = |y: f32| note_drag::velocity_from_y(y, vel_rect.bottom(), vel_rect.height() - 4.0);
         if vresp.drag_started() {
-            self.drag = Some(Drag::Velocity {
-                region: rid,
-                notes: m.notes.clone(),
-            });
+            let mut stroke = VelocityStroke::new(m.notes.clone());
+            // egui reports the drag a few pixels after the press: start the stroke where the button went down.
+            if let Some(o) = ui.input(|i| i.pointer.press_origin()) {
+                stroke.add(x_to_beat(o.x), vel_at(o.y), vel_tol, &self.selected_notes);
+            }
+            self.drag = Some(Drag::Velocity { region: rid, stroke });
         }
         if vresp.dragged() {
-            if let (Some(pp), Some(Drag::Velocity { notes: vn, .. })) =
-                (pointer, self.drag.as_mut())
-            {
-                let v = (((vel_rect.bottom() - pp.y) / (vel_rect.height() - 4.0)) * 127.0)
-                    .clamp(1.0, 127.0) as u8;
-                let only_sel = !self.selected_notes.is_empty();
-                for (i, n) in vn.iter_mut().enumerate() {
-                    let x = beat_x(n.start, sb);
-                    if (x - pp.x).abs() < 4.0 && (!only_sel || self.selected_notes.contains(&i)) {
-                        n.velocity = v;
-                    }
-                }
+            if let (Some(pp), Some(Drag::Velocity { stroke, .. })) = (pointer, self.drag.as_mut()) {
+                stroke.add(x_to_beat(pp.x), vel_at(pp.y), vel_tol, &self.selected_notes);
             }
         }
         // controller lane
@@ -785,19 +792,12 @@ impl OndinaApp {
                     d_pitch,
                     ..
                 }) => {
-                    if d_beat != 0.0 || d_pitch != 0 {
-                        let mut nn = orig;
-                        for i in &indices {
-                            if let Some(n) = nn.get_mut(*i) {
-                                n.start = (n.start + d_beat).max(0.0);
-                                n.pitch = (n.pitch as i32 + d_pitch).clamp(0, 127) as u8;
-                            }
+                    let copy = ui.input(|i| i.modifiers.alt);
+                    if let Some(drop) = note_drag::drop_notes(&orig, &indices, d_beat, d_pitch, copy) {
+                        let (c, count) = (drop.command(region), drop.count());
+                        if self.apply_note_edit(region, c, drop.into_edit()) && copy {
+                            self.status = format!("Duplicated {count} notes");
                         }
-                        self.cmd(Command::ReplaceNotes {
-                            region_id: region,
-                            notes: nn,
-                        });
-                        self.selected_notes.clear();
                     }
                 }
                 Some(Drag::NoteResize {
@@ -820,11 +820,10 @@ impl OndinaApp {
                         });
                     }
                 }
-                Some(Drag::Velocity { region, notes }) => {
-                    self.cmd(Command::ReplaceNotes {
-                        region_id: region,
-                        notes,
-                    });
+                Some(Drag::Velocity { region, stroke }) => {
+                    if let Some(notes) = stroke.changed() {
+                        self.cmd(Command::ReplaceNotes { region_id: region, notes });
+                    }
                 }
                 Some(Drag::Marquee { region, b0, p0, b1, p1, additive }) if region == rid => {
                     // select every note touching the rectangle, including overlapping /
@@ -880,13 +879,14 @@ impl OndinaApp {
         let has_sel = !self.selected_notes.is_empty();
         let has_clip = self.note_clipboard.is_some();
         let arrows = nc::arrows_on(true, self.musical_typing, has_sel);
-        let (cut, copy, paste, all, nudge) = ctx.input_mut(|i| {
+        let (cut, copy, paste, all, length, nudge) = ctx.input_mut(|i| {
             let cut = has_sel && take_event(&mut i.events, |e| matches!(e, egui::Event::Cut));
             let copy = has_sel && take_event(&mut i.events, |e| matches!(e, egui::Event::Copy));
             let paste = has_clip && take_event(&mut i.events, |e| matches!(e, egui::Event::Paste(_)));
             let all = i.consume_key(egui::Modifiers::COMMAND, Key::A);
-            let nudge = if arrows { consume_arrow(i) } else { None };
-            (cut, copy, paste, all, nudge)
+            let length = if arrows { consume_alt_arrow(i) } else { None };
+            let nudge = if arrows && length.is_none() { consume_arrow(i) } else { None };
+            (cut, copy, paste, all, length, nudge)
         });
         if cut || copy {
             let Some(clip) = nc::copy(&m.notes, &self.selected_notes) else { return };
@@ -917,6 +917,10 @@ impl OndinaApp {
             }
         } else if all {
             self.selected_notes = nc::select_all(m.notes.len());
+        } else if let Some(steps) = length {
+            if let Some(edit) = nc::resize(&m.notes, &self.selected_notes, steps, nc::nudge_step(self.snap)) {
+                self.apply_note_edit(rid, Command::ReplaceNotes { region_id: rid, notes: edit.notes.clone() }, edit);
+            }
         } else if let Some(n) = nudge {
             let d_beat = f64::from(n.steps) * nc::nudge_step(self.snap);
             if let Some(edit) = nc::nudge(&m.notes, &self.selected_notes, d_beat, n.semitones) {
