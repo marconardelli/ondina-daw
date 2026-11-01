@@ -168,6 +168,7 @@ La corsia marker sta sotto il righello dell'arrangiamento e contiene le sezioni 
 lunghezza, in blu) e i marker semplici (un punto, in marrone).
 
 - Clic su un marker: sposta il playhead all'inizio del marker.
+- Maiusc+, e Maiusc+.: portano il playhead al marker precedente o successivo.
 - Clic destro su una sezione: **Set cycle to section** imposta il ciclo sulla sezione,
   **Repeat section after itself** ripete la sezione subito dopo, **Delete marker** elimina il marker.
 - Trascinamento di un marker: lo sposta seguendo lo snap della barra degli strumenti. Il marker non
@@ -332,9 +333,12 @@ l'assistente o un client MCP.
 | C | attiva o disattiva il ciclo |
 | K | metronomo |
 | Home | torna all'inizio |
+| , / . | playhead all'inizio della battuta precedente / successiva |
+| Maiusc+, / Maiusc+. | playhead al marker precedente / successivo (o all'inizio / alla fine della canzone) |
 | Ctrl+Z / Ctrl+Y | annulla / ripeti |
 | Ctrl+S / O / N | salva / apri / nuovo |
 | Ctrl+D | duplica la regione |
+| Ctrl+T | divide la regione selezionata al playhead |
 | Ctrl+B | bounce |
 | Ctrl+rotella | zoom orizzontale attorno al puntatore |
 | Maiusc+rotella | scorrimento orizzontale |
@@ -343,3 +347,7 @@ l'assistente o un client MCP.
 | Ctrl+A | seleziona tutte le note (piano roll) |
 | ← / → | sposta le note selezionate di un passo di snap |
 | ↑ / ↓, Maiusc+↑ / ↓ | trasporta le note selezionate di un semitono / un'ottava |
+
+`,` e `.` da metà battuta portano all'inizio della battuta; durante la riproduzione, a meno di mezzo beat da una
+battuta o da un marker, `,` va a quello prima. Queste scorciatoie e Ctrl+T sono spente mentre scrivi in un campo di
+testo e con Musical Typing attivo.
