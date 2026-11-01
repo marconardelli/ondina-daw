@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use ondina_core::model::{Id, Project, MASTER_ID};
 use ondina_dsp::MidiKind;
+use ondina_dsp::denormal::FlushToZero;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SizedSample};
 use crossbeam_channel::{unbounded, Receiver, Sender};
@@ -48,6 +49,7 @@ pub struct Shared {
     beat_bits: AtomicU64,
     pub sample_rate: AtomicU32,
     load_bits: AtomicU32,
+    overloads: AtomicU32,
     pub meters: Mutex<HashMap<Id, [f32; 2]>>,
     pub recorded_midi: Mutex<Vec<RecordedEvent>>,
     pub input_buffer: Mutex<Vec<f32>>,
@@ -70,7 +72,23 @@ impl Shared {
     pub fn load(&self) -> f32 {
         f32::from_bits(self.load_bits.load(Ordering::Relaxed))
     }
+    /// Audio blocks since the last Play that took longer than the time the device gives them (each can be heard
+    /// as a click or a dropout).
+    pub fn overloads(&self) -> u32 {
+        self.overloads.load(Ordering::Relaxed)
+    }
+    /// Store the DSP load of the block just rendered and count it when it ran out of time. Real-time safe: only
+    /// atomics.
+    pub fn record_block_load(&self, load: f32) {
+        self.load_bits.store(load.to_bits(), Ordering::Relaxed);
+        if load > OVERLOAD_LOAD {
+            self.overloads.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
+
+/// A block whose DSP load goes over this share of its time budget missed the device deadline.
+const OVERLOAD_LOAD: f32 = 1.0;
 
 struct DeviceThread {
     stop: Sender<()>,
@@ -171,6 +189,7 @@ impl Engine {
     }
 
     pub fn play(&self, from: Option<f64>, count_in_beats: f64) {
+        self.shared.overloads.store(0, Ordering::Relaxed);
         if let Some(b) = from {
             self.send(EngineMsg::Locate(b));
             self.shared.set_beat(b);
@@ -423,6 +442,7 @@ where
         .build_output_stream(
             config,
             move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+                let _ftz = FlushToZero::enable();
                 let t0 = Instant::now();
                 while let Ok(m) = rx.try_recv() {
                     handle_msg(&mut renderer, m, &shared);
@@ -447,7 +467,7 @@ where
                 publish(&mut renderer, &shared);
                 let budget = frames as f32 / sr;
                 let load = t0.elapsed().as_secs_f32() / budget.max(1e-6);
-                shared.load_bits.store(load.to_bits(), Ordering::Relaxed);
+                shared.record_block_load(load);
             },
             |e| eprintln!("[ondina] stream error: {e}"),
             None,
@@ -456,6 +476,7 @@ where
 }
 
 fn null_device(rx: &Receiver<EngineMsg>, shared: &Arc<Shared>, project: Arc<Project>, pool: Arc<AudioPool>, beat: f64, stop: &Receiver<()>) {
+    let _ftz = FlushToZero::enable();
     let sr = 48000u32;
     shared.sample_rate.store(sr, Ordering::Relaxed);
     *shared.device_name.lock() = "Null device (no audio output)".into();
@@ -506,4 +527,35 @@ fn open_input(name: Option<String>, shared: &Arc<Shared>) -> Result<cpal::Stream
     .map_err(|e| e.to_string())?;
     stream.play().map_err(|e| e.to_string())?;
     Ok(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn block_load_counts_only_blocks_over_budget() {
+        let s = Shared::default();
+        s.record_block_load(0.5);
+        assert_eq!(s.overloads(), 0);
+        assert_eq!(s.load(), 0.5);
+        s.record_block_load(1.0);
+        assert_eq!(s.overloads(), 0);
+        s.record_block_load(1.01);
+        assert_eq!(s.overloads(), 1);
+        s.record_block_load(3.0);
+        assert_eq!(s.overloads(), 2);
+        s.record_block_load(f32::NAN);
+        assert_eq!(s.overloads(), 2);
+    }
+
+    #[test]
+    fn play_resets_the_overload_count() {
+        let e = Engine::new(Arc::new(Project::new("t")), Arc::new(AudioPool::new()), false);
+        e.shared.record_block_load(2.0);
+        assert_eq!(e.shared.overloads(), 1);
+        e.play(None, 0.0);
+        assert_eq!(e.shared.overloads(), 0);
+        e.stop();
+    }
 }

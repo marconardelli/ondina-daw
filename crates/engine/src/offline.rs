@@ -8,6 +8,7 @@ use ondina_core::model::{Id, Project, MASTER_ID};
 use crate::analysis::{AnalysisReport, Analyzer};
 use crate::pool::AudioPool;
 use crate::renderer::Renderer;
+use ondina_dsp::denormal::FlushToZero;
 
 /// Fixed tail the bounce commands always render after the end, in seconds (also the minimum of the automatic tail).
 pub const BOUNCE_TAIL_SEC: f64 = 2.0;
@@ -81,7 +82,14 @@ pub struct OfflineOptions {
     pub keep_audio: bool,
 }
 
+/// Render the project from `opt.start` to `opt.end` plus the tail. Runs with flush-to-zero on and gives the calling
+/// thread its floating-point state back afterwards.
 pub fn render_offline(project: &Project, pool: Arc<AudioPool>, opt: OfflineOptions) -> OfflineResult {
+    let _ftz = FlushToZero::enable();
+    render_offline_body(project, pool, opt)
+}
+
+fn render_offline_body(project: &Project, pool: Arc<AudioPool>, opt: OfflineOptions) -> OfflineResult {
     let mut p = project.clone();
     p.cycle.enabled = false;
     p.metronome = false;
@@ -145,7 +153,9 @@ pub fn normalize(left: &mut [f32], right: &mut [f32]) {
 
 /// Render a multichannel surround bed ("5.1", "7.1", "7.1.4"). Returns (channel names, channels).
 /// The tail is at least `BOUNCE_TAIL_SEC`; with `auto_tail_max_sec` above that it goes on until the bed fades.
+/// Runs with flush-to-zero on and gives the calling thread its floating-point state back afterwards.
 pub fn render_surround(project: &Project, pool: Arc<AudioPool>, sample_rate: u32, start: f64, end: f64, layout_name: &str, auto_tail_max_sec: f64) -> (Vec<&'static str>, Vec<Vec<f32>>) {
+    let _ftz = FlushToZero::enable();
     let mut p = project.clone();
     p.cycle.enabled = false;
     p.metronome = false;
@@ -221,7 +231,9 @@ pub fn write_multichannel_wav(path: &std::path::Path, channels: &[Vec<f32>], sam
 
 /// Render an object-based mix: a 7.1.2 bed (non-object tracks) plus one mono stem per object track.
 /// Returns (bed channels in 7.1.2 order, objects as (track id, audio)).
+/// Runs with flush-to-zero on and gives the calling thread its floating-point state back afterwards.
 pub fn render_objects(project: &Project, pool: Arc<AudioPool>, sample_rate: u32, start: f64, end: f64) -> (Vec<Vec<f32>>, Vec<(Id, Vec<f32>)>) {
+    let _ftz = FlushToZero::enable();
     let mut p = project.clone();
     p.cycle.enabled = false;
     p.metronome = false;
@@ -288,6 +300,16 @@ mod tests {
             let params: BTreeMap<String, f32> = [("size", 0.95), ("damping", 0.0), ("mix", 0.5)].iter().map(|(k, v)| (k.to_string(), *v)).collect();
             run(&mut p, Command::SetPluginParams { plugin_id: fx, params });
         }
+        p
+    }
+
+    /// A synth note through a reverb that fades into subnormal numbers well within a 30 s tail.
+    fn fading_reverb_project() -> Project {
+        let mut p = note_project(false, 0.5, 4.0);
+        let t = p.tracks[0].id;
+        let fx = run(&mut p, Command::AddEffect { track_id: t, kind: "reverb".into(), preset: None, index: None })["plugin_id"].as_u64().unwrap();
+        let params: BTreeMap<String, f32> = [("size", 0.5), ("damping", 0.5), ("mix", 0.5)].iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        run(&mut p, Command::SetPluginParams { plugin_id: fx, params });
         p
     }
 
@@ -441,5 +463,46 @@ mod tests {
         }
         let (_, fixed) = render_surround(&p, Arc::new(AudioPool::new()), 48000, 0.0, 4.0, "5.1", 0.0);
         assert_eq!(fixed[0].len(), frames(4.0, 48000));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn offline_renders_give_the_thread_its_fp_state_back() {
+        use ondina_dsp::denormal::{enable_flush_to_zero, fp_control};
+        std::thread::spawn(|| {
+            let p = note_project(true, 0.5, 4.0);
+            let before = fp_control();
+            assert!(!before.flushes_to_zero());
+            render_offline(&p, Arc::new(AudioPool::new()), opts(4.0, 1.0, 0.0));
+            assert_eq!(fp_control(), before);
+            render_surround(&p, Arc::new(AudioPool::new()), 48000, 0.0, 4.0, "5.1", 0.0);
+            assert_eq!(fp_control(), before);
+            enable_flush_to_zero();
+            let on = fp_control();
+            render_offline(&p, Arc::new(AudioPool::new()), opts(4.0, 1.0, 0.0));
+            assert_eq!(fp_control(), on);
+            render_surround(&p, Arc::new(AudioPool::new()), 48000, 0.0, 4.0, "5.1", 0.0);
+            assert_eq!(fp_control(), on);
+            assert!(on.flushes_to_zero());
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn bounce_with_flush_to_zero_matches_the_old_render() {
+        let new = std::thread::spawn(|| render_offline(&fading_reverb_project(), Arc::new(AudioPool::new()), opts(4.0, 30.0, 0.0))).join().unwrap();
+        let old = std::thread::spawn(|| render_offline_body(&fading_reverb_project(), Arc::new(AudioPool::new()), opts(4.0, 30.0, 0.0))).join().unwrap();
+        assert_eq!(new.left.len(), old.left.len());
+        assert_eq!(new.right.len(), old.right.len());
+        let pairs = new.left.iter().zip(&old.left).chain(new.right.iter().zip(&old.right));
+        if let Some((i, (a, b))) = pairs.enumerate().find(|(_, (a, b))| (*a - *b).abs() > 1e-30) {
+            panic!("sample {i}: with flush-to-zero {a:e}, without {b:e}");
+        }
+        let subnormal = new.left.iter().chain(&new.right).find(|x| x.is_subnormal());
+        assert_eq!(subnormal, None, "subnormal sample with flush-to-zero");
+        let old_subnormal = old.left.iter().chain(&old.right).filter(|x| x.is_subnormal()).count();
+        println!("subnormal samples without flush-to-zero: {old_subnormal}");
     }
 }

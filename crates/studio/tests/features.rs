@@ -1568,3 +1568,17 @@ fn get_settings_lists_the_vst3_folders() {
     s.settings.vst3_folders = vec!["C:\\Plugins".into()];
     assert_eq!(ok(&mut s, "get_settings", json!({}))["vst3_folders"], json!(["C:\\Plugins"]));
 }
+
+#[test]
+fn transport_reports_dsp_overloads_since_the_last_play() {
+    let mut s = Session::new(false);
+    ok(&mut s, "play", json!({}));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let tr = ok(&mut s, "get_transport", json!({}));
+    assert_eq!(tr["dsp_overloads"], 0, "{tr}");
+    s.engine.shared.record_block_load(2.0);
+    assert_eq!(ok(&mut s, "get_transport", json!({}))["dsp_overloads"], 1);
+    ok(&mut s, "play", json!({}));
+    assert_eq!(ok(&mut s, "get_transport", json!({}))["dsp_overloads"], 0);
+    ok(&mut s, "stop", json!({}));
+}
