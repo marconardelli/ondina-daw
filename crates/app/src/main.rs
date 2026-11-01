@@ -15,6 +15,7 @@ mod automation_lane;
 mod autosave;
 mod bounce_menu;
 mod cc_lane;
+mod control_bar;
 mod doc_guard;
 mod drag_cancel;
 mod editors;
@@ -32,6 +33,7 @@ mod piano_roll_view;
 mod region_edit;
 mod region_clipboard;
 mod session_players;
+mod status_bar;
 mod step_paint;
 mod transport_keys;
 

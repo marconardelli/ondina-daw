@@ -1,4 +1,4 @@
-//! GUI for the extended features: Live Loops grid, Score view, surround panner, video window,
+//! GUI for the extended features: Clip Grid, Score view, surround panner, video window,
 //! VST3 browser, Flex/Stem audio tools, comping, MIDI Transform and Environment routing.
 
 use std::sync::mpsc::Receiver;
@@ -72,12 +72,12 @@ fn diatonic(p: u8) -> i32 {
 }
 
 impl OndinaApp {
-    // ============================================================== Live Loops
+    // ============================================================== Clip Grid
     pub fn live_ui(&mut self, ui: &mut egui::Ui) {
         let p = self.project();
         let ls = self.shared.live_state.lock().clone();
         ui.horizontal(|ui| {
-            ui.label(RichText::new("🔲 Live Loops").strong());
+            ui.label(RichText::new("Clip Grid").font(crate::theme::title_font()));
             ui.separator();
             ui.label("Quantize");
             let q = p.live.quantize;

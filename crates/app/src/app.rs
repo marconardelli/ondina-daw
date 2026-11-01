@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use ondina_core::command::Command;
 use ondina_core::model::*;
-use ondina_core::theory::ScaleKind;
 use ondina_dsp::MidiKind;
 use ondina_engine::{EngineMsg, Shared};
 use ondina_studio::ai::{AiEvent, Assistant};
@@ -24,18 +23,15 @@ use crate::bounce_menu;
 use crate::theme;
 use crate::doc_guard::{self, Answer, CloseStep, DocAction, Step};
 use crate::editors::take_event;
-use crate::key_menu;
 use crate::metronome_ui;
 use crate::note_clipboard as nc;
 use crate::note_selection;
 use crate::region_clipboard as rc;
 use crate::transport_keys as tk;
-use crate::widgets::{self, Icon};
+use crate::widgets;
 
 /// Tooltip of the overload counter in the transport bar.
-const OVERLOAD_HINT: &str = "Audio blocks since the last Play that took longer than the audio device allows. Each one can be heard as a click. If the count grows, raise the buffer size in the audio device's settings or remove heavy plug-ins.";
-
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BottomTab {
     Editor,
     Mixer,
@@ -43,7 +39,7 @@ pub enum BottomTab {
     Hidden,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeftTab {
     Inspector,
     Library,
@@ -306,6 +302,8 @@ pub struct OndinaApp {
     recovery: Vec<crate::autosave::Leftover>,
     /// Document opened from an autosave copy and where it originally lived (proposed by the next Save As).
     recovered: Option<(u64, PathBuf)>,
+    /// When the document was last saved, for the status bar.
+    pub(crate) save_clock: crate::status_bar::SaveClock,
 }
 
 impl OndinaApp {
@@ -405,6 +403,7 @@ impl OndinaApp {
             autosave,
             recovery,
             recovered: None,
+            save_clock: Default::default(),
         }
     }
 
@@ -594,7 +593,7 @@ impl OndinaApp {
         }
     }
 
-    fn toggle_play(&mut self) {
+    pub(crate) fn toggle_play(&mut self) {
         if self.playing() {
             self.exec(Command::Stop {});
         } else {
@@ -1285,7 +1284,10 @@ impl OndinaApp {
     // ---------------------------------------------------------------- top bars
 
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
+        let bar = ui.max_rect();
         egui::menu::bar(ui, |ui| {
+            let (logo, _) = ui.allocate_exact_size(egui::vec2(24.0, 16.0), egui::Sense::hover());
+            widgets::paint_logo(ui.painter(), egui::Rect::from_min_size(logo.min, egui::vec2(16.0, 16.0)));
             ui.menu_button("File", |ui| {
                 let ctx = ui.ctx().clone();
                 if ui.button("New Project      Ctrl+N").clicked() {
@@ -1710,7 +1712,7 @@ impl OndinaApp {
                     "Editor (Piano Roll / Step)",
                 );
                 ui.radio_value(&mut self.bottom, BottomTab::Mixer, "Mixer");
-                ui.radio_value(&mut self.bottom, BottomTab::Live, "Live Loops grid");
+                ui.radio_value(&mut self.bottom, BottomTab::Live, "Clip Grid");
                 ui.radio_value(&mut self.bottom, BottomTab::Hidden, "Hide bottom panel");
                 ui.checkbox(&mut self.extra.show_video, "Movie window");
                 ui.checkbox(&mut self.extra.show_score, "Score view in editor");
@@ -1762,366 +1764,18 @@ impl OndinaApp {
                     ui.close_menu();
                 }
             });
-        });
-    }
-
-    fn transport_bar(&mut self, ui: &mut egui::Ui) {
-        let p = self.project();
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            let big = |t: &str| RichText::new(t).size(16.0);
-            if ui
-                .button(big("⏮"))
-                .on_hover_text("Go to start (Home)")
-                .clicked()
-            {
-                self.exec(Command::SetPlayhead {
-                    beat: Some(0.0),
-                    bar: None,
-                });
+            // the document's name in the middle of the bar, with its save state
+            let mut job = egui::text::LayoutJob::default();
+            let fmt = |color| egui::TextFormat::simple(theme::body_font(), color);
+            job.append(&self.view.project.name, 0.0, fmt(theme::TEXT_2));
+            if self.view.dirty {
+                job.append(" \u{b7} modified", 0.0, fmt(theme::TEXT_3));
             }
-            if ui.button(big("⏪")).on_hover_text("Back one bar").clicked() {
-                let b = (self.position() - p.time_signature.beats_per_bar()).max(0.0);
-                self.exec(Command::SetPlayhead {
-                    beat: Some(b),
-                    bar: None,
-                });
+            let galley = ui.fonts(|f| f.layout_job(job));
+            let at = egui::pos2(bar.center().x - galley.size().x / 2.0, bar.center().y - galley.size().y / 2.0);
+            if at.x > ui.cursor().left() + theme::SP_6 {
+                ui.painter().galley(at, galley, theme::TEXT_2);
             }
-            if ui
-                .button(big("⏩"))
-                .on_hover_text("Forward one bar")
-                .clicked()
-            {
-                let b = self.position() + p.time_signature.beats_per_bar();
-                self.exec(Command::SetPlayhead {
-                    beat: Some(b),
-                    bar: None,
-                });
-            }
-            let playing = self.playing();
-            if ui
-                .add(
-                    egui::Button::new(big(if playing { "⏹" } else { "▶" })).fill(if playing {
-                        Color32::from_rgb(40, 110, 50)
-                    } else {
-                        theme::LANE
-                    }),
-                )
-                .on_hover_text("Play / Stop (Space)")
-                .clicked()
-            {
-                self.toggle_play();
-            }
-            let rec = self.recording();
-            if ui
-                .add(
-                    egui::Button::new(big("⏺").color(if rec {
-                        Color32::WHITE
-                    } else {
-                        theme::REC
-                    }))
-                    .fill(if rec { theme::REC } else { theme::LANE }),
-                )
-                .on_hover_text("Record (R)")
-                .clicked()
-            {
-                if rec {
-                    self.exec(Command::Stop {});
-                } else {
-                    self.exec(Command::Record { from_beat: None });
-                }
-            }
-            let cyc = p.cycle.enabled;
-            if ui
-                .add(egui::Button::new(big("🔁")).fill(if cyc {
-                    Color32::from_rgb(150, 115, 20)
-                } else {
-                    theme::LANE
-                }))
-                .on_hover_text("Cycle (C)")
-                .clicked()
-            {
-                self.cmd(Command::SetCycle {
-                    enabled: !cyc,
-                    start: None,
-                    end: None,
-                });
-            }
-            let look = metronome_ui::look(&p, rec);
-            let resp = ui
-                .add(egui::Button::new(big("🎵")).fill(match look {
-                    metronome_ui::Look::On => Color32::from_rgb(60, 90, 150),
-                    metronome_ui::Look::Waiting => Color32::from_rgb(38, 52, 82),
-                    metronome_ui::Look::Off => theme::LANE,
-                }))
-                .on_hover_text(metronome_ui::tooltip(&p));
-            if resp.clicked() {
-                self.cmd(metronome_ui::toggle(&p));
-            }
-            crate::drag_cancel::menu_unless_dragging(&resp, self.drag.is_some(), |ui| {
-                ui.label("Click level");
-                let mut db = p.metronome_level_db;
-                if ui
-                    .add(egui::Slider::new(&mut db, METRONOME_MIN_DB..=METRONOME_MAX_DB).suffix(" dB").fixed_decimals(1))
-                    .changed()
-                {
-                    self.cmd_merge(metronome_ui::set_level(&p, db), "metronome-level");
-                }
-                if ui.button("Reset level").clicked() {
-                    self.cmd(metronome_ui::set_level(&p, METRONOME_DEFAULT_DB));
-                }
-                let mut only = p.metronome_only_recording;
-                if ui.checkbox(&mut only, "Only while recording").changed() {
-                    self.cmd(metronome_ui::set_only_recording(&p, only));
-                }
-            });
-            ui.separator();
-            // LCD
-            let pos = self.position();
-            egui::Frame::none()
-                .fill(Color32::from_rgb(18, 20, 24))
-                .rounding(4.0_f32)
-                .inner_margin(egui::Margin::symmetric(10.0, 3.0))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(p.bar_beat_string(pos))
-                                .monospace()
-                                .size(18.0)
-                                .color(theme::ACCENT),
-                        );
-                        if p.movie.is_some() {
-                            ui.label(
-                                RichText::new(p.timecode(pos))
-                                    .monospace()
-                                    .size(13.0)
-                                    .color(Color32::from_rgb(120, 200, 255)),
-                            );
-                        }
-                        let secs = p.tempo.beat_to_sec(pos);
-                        ui.label(
-                            RichText::new(format!(
-                                "{:02}:{:05.2}",
-                                (secs / 60.0) as u32,
-                                secs % 60.0
-                            ))
-                            .monospace()
-                            .size(13.0)
-                            .color(theme::TEXT_DIM),
-                        );
-                        ui.separator();
-                        let mut bpm = p.tempo.initial_bpm();
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut bpm)
-                                    .range(20.0..=300.0)
-                                    .speed(0.2)
-                                    .suffix(" bpm")
-                                    .max_decimals(1),
-                            )
-                            .changed()
-                        {
-                            self.cmd_merge(Command::SetTempo { bpm }, "tempo");
-                        }
-                        let ts = p.time_signature;
-                        egui::ComboBox::from_id_salt("timesig")
-                            .width(56.0)
-                            .selected_text(format!("{}/{}", ts.numerator, ts.denominator))
-                            .show_ui(ui, |ui| {
-                                for (n, d) in
-                                    [(4u8, 4u8), (3, 4), (2, 4), (5, 4), (6, 8), (7, 8), (12, 8)]
-                                {
-                                    if ui
-                                        .selectable_label(
-                                            ts.numerator == n && ts.denominator == d,
-                                            format!("{n}/{d}"),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.cmd(Command::SetTimeSignature {
-                                            numerator: n,
-                                            denominator: d,
-                                        });
-                                    }
-                                }
-                            });
-                        egui::ComboBox::from_id_salt("key")
-                            .width(130.0)
-                            .selected_text(p.key.name())
-                            .show_ui(ui, |ui| {
-                                if ui
-                                    .selectable_label(false, key_menu::DETECT_LABEL)
-                                    .on_hover_text(key_menu::DETECT_TOOLTIP)
-                                    .clicked()
-                                {
-                                    if let Some(v) = self.exec(key_menu::detect_command()) {
-                                        self.status = key_menu::status(&v);
-                                    }
-                                }
-                                ui.separator();
-                                for root in 0..12u8 {
-                                    for scale in [
-                                        ScaleKind::Major,
-                                        ScaleKind::Minor,
-                                        ScaleKind::Dorian,
-                                        ScaleKind::Mixolydian,
-                                    ] {
-                                        let k = ondina_core::theory::Key { root, scale };
-                                        if ui.selectable_label(p.key == k, k.name()).clicked() {
-                                            self.cmd(Command::SetKey { key: k.name() });
-                                        }
-                                    }
-                                }
-                            });
-                    });
-                });
-            ui.separator();
-            ui.label("Snap");
-            egui::ComboBox::from_id_salt("snap")
-                .width(64.0)
-                .selected_text(snap_label(self.snap))
-                .show_ui(ui, |ui| {
-                    for s in [0.0, 4.0, 1.0, 0.5, 0.25, 0.125] {
-                        ui.selectable_value(&mut self.snap, s, snap_label(s));
-                    }
-                });
-            ui.separator();
-            let load = self.shared.load();
-            ui.label(
-                RichText::new(format!("DSP {:>3.0}%", load * 100.0))
-                    .small()
-                    .color(if load > 0.8 {
-                        theme::REC
-                    } else {
-                        theme::TEXT_DIM
-                    }),
-            );
-            let overloads = self.shared.overloads();
-            ui.label(
-                RichText::new(format!("{overloads} overload{}", if overloads == 1 { "" } else { "s" }))
-                    .small()
-                    .color(if overloads > 0 { theme::REC } else { theme::TEXT_DIM }),
-            )
-            .on_hover_text(OVERLOAD_HINT);
-            if self.musical_typing {
-                ui.label(
-                    RichText::new(format!("🎹 Typing C{}", self.typing_octave))
-                        .color(theme::ACCENT),
-                );
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if widgets::icon_selectable(
-                    ui,
-                    self.show_assistant,
-                    Icon::Ai,
-                    RichText::new("AI Assistant").color(theme::AI),
-                    Some(theme::AI),
-                )
-                .clicked()
-                {
-                    self.show_assistant = !self.show_assistant;
-                }
-                if widgets::icon_selectable(ui, self.bottom == BottomTab::Live, Icon::ClipGrid, "Live Loops", None)
-                    .clicked()
-                {
-                    self.bottom = if self.bottom == BottomTab::Live {
-                        BottomTab::Hidden
-                    } else {
-                        BottomTab::Live
-                    };
-                }
-                if widgets::icon_selectable(ui, self.bottom == BottomTab::Mixer, Icon::Mixer, "Mixer", None)
-                    .clicked()
-                {
-                    self.bottom = if self.bottom == BottomTab::Mixer {
-                        BottomTab::Hidden
-                    } else {
-                        BottomTab::Mixer
-                    };
-                }
-                if widgets::icon_selectable(ui, self.bottom == BottomTab::Editor, Icon::Piano, "Editor", None)
-                    .clicked()
-                {
-                    self.bottom = if self.bottom == BottomTab::Editor {
-                        BottomTab::Hidden
-                    } else {
-                        BottomTab::Editor
-                    };
-                }
-                if widgets::icon_selectable(ui, self.show_left, Icon::Inspector, "Inspector", None).clicked() {
-                    self.show_left = !self.show_left;
-                }
-            });
-        });
-    }
-
-    fn status_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            let mcp = match (&self.mcp, &self.mcp_error) {
-                (Some(h), _) => RichText::new(format!("● MCP {}", h.address))
-                    .color(Color32::from_rgb(100, 200, 120)),
-                (None, Some(e)) => RichText::new(format!("○ MCP off: {e}")).color(theme::REC),
-                _ => RichText::new("○ MCP disabled").color(theme::TEXT_DIM),
-            };
-            if ui
-                .add(egui::Label::new(mcp.small()).sense(egui::Sense::click()))
-                .on_hover_text("Click for MCP setup instructions")
-                .clicked()
-            {
-                self.show_mcp_info = true;
-            }
-            ui.separator();
-            ui.label(
-                RichText::new(format!(
-                    "🔊 {} · {} Hz",
-                    self.view.device, self.view.sample_rate
-                ))
-                .small()
-                .color(theme::TEXT_DIM),
-            );
-            if let Some(m) = &self.view.midi_input {
-                ui.label(
-                    RichText::new(format!("🎹 {m}"))
-                        .small()
-                        .color(theme::TEXT_DIM),
-                );
-            }
-            ui.separator();
-            if let Some(last) = self.view.log.iter().find(|l| l.source != Source::Gui) {
-                let (tag, col) = match last.source {
-                    Source::Ai => ("AI", theme::AI),
-                    Source::Mcp => ("MCP", Color32::from_rgb(100, 200, 120)),
-                    _ => ("", theme::TEXT_DIM),
-                };
-                ui.label(
-                    RichText::new(format!(
-                        "{tag}: {} {}",
-                        last.command,
-                        if last.ok { "✓" } else { "✗" }
-                    ))
-                    .small()
-                    .color(col),
-                );
-                ui.separator();
-            }
-            ui.label(RichText::new(&self.status).small());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let name = self
-                    .view
-                    .path
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "unsaved project".into());
-                ui.label(
-                    RichText::new(format!(
-                        "{}{}",
-                        name,
-                        if self.view.dirty { " •" } else { "" }
-                    ))
-                    .small()
-                    .color(theme::TEXT_DIM),
-                );
-            });
         });
     }
 
@@ -2497,7 +2151,7 @@ impl OndinaApp {
     }
 }
 
-fn snap_label(s: f64) -> &'static str {
+pub(crate) fn snap_label(s: f64) -> &'static str {
     match s {
         x if x == 0.0 => "Off",
         x if x == 4.0 => "Bar",
@@ -2547,20 +2201,21 @@ impl eframe::App for OndinaApp {
         );
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
 
-        egui::TopBottomPanel::top("menu").show(ctx, |ui| self.menu_bar(ui));
+        egui::TopBottomPanel::top("menu")
+            .exact_height(28.0)
+            .frame(egui::Frame::none().fill(theme::CHROME).inner_margin(egui::Margin::symmetric(10.0, 0.0)))
+            .show(ctx, |ui| self.menu_bar(ui));
         egui::TopBottomPanel::top("transport")
+            .exact_height(crate::control_bar::BAR_HEIGHT)
             .frame(
                 egui::Frame::none()
                     .fill(theme::PANEL)
-                    .inner_margin(egui::Margin::symmetric(8.0, 5.0)),
+                    .inner_margin(egui::Margin::symmetric(theme::SP_5, theme::SP_2)),
             )
-            .show(ctx, |ui| self.transport_bar(ui));
+            .show(ctx, |ui| self.control_bar(ui));
         egui::TopBottomPanel::bottom("status")
-            .frame(
-                egui::Frame::none()
-                    .fill(theme::BG)
-                    .inner_margin(egui::Margin::symmetric(8.0, 2.0)),
-            )
+            .exact_height(24.0)
+            .frame(egui::Frame::none().fill(theme::CHROME).inner_margin(egui::Margin::symmetric(theme::SP_5, 0.0)))
             .show(ctx, |ui| self.status_bar(ui));
         if self.show_assistant {
             egui::SidePanel::right("assistant")
