@@ -320,6 +320,10 @@ o scegli un file recente, Ondina ti chiede prima se vuoi salvare.
 Invio equivale a Save. Se stai registrando, la registrazione si ferma prima della domanda e la
 take resta nel progetto.
 
+L'assistente o un client MCP non possono aprire o creare un progetto mentre registri: ricevono l'errore
+"recording in progress" e la registrazione continua. Dopo **Nuovo** il trasporto è fermo e il playhead
+torna all'inizio, come dopo **Apri**.
+
 Un campo di testo aperto (rinomina di marker, tracce o regioni, nome della regione nell'inspector,
 accordo) si chiude senza applicare nulla quando apri o crei un altro progetto, anche se lo fanno
 l'assistente o un client MCP.
