@@ -423,6 +423,7 @@ fn third_party_vst3_instrument_and_effect() {
     let p = tmp("vst.ondina");
     ok(&mut s, "save_project", json!({"path": p.display().to_string()}));
     let mut s2 = Session::new(false);
+    s2.settings.vst3_folders = vec![root.display().to_string()];
     ok(&mut s2, "open_project", json!({"path": p.display().to_string()}));
     let a2 = ok(&mut s2, "analyze_mix", json!({}));
     assert!(a2["master"]["peak_dbfs"].as_f64().unwrap() > -60.0);
@@ -1697,4 +1698,147 @@ fn get_activity_shows_when_the_project_was_replaced() {
     let e = b["entries"].as_array().unwrap();
     assert_eq!(e.len(), 1, "{b}");
     assert_eq!((e[0]["command"].as_str(), e[0]["source"].as_str()), (Some("new_project"), Some("mcp")));
+}
+
+/// A saved project with one instrument track whose instrument is a vst3 at `plugin` and a vst3 insert at
+/// `plugin` on the master. Returns the file, the track id, the instrument id and the master insert id.
+fn vst3_project(name: &str, plugin: &Path) -> (PathBuf, u64, u64, u64) {
+    std::fs::create_dir_all(plugin.parent().unwrap()).unwrap();
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
+    ok(&mut s, "create_midi_region", json!({"track_id": t, "start": 0, "length": 4, "notes": [{"pitch": 60, "velocity": 100, "start": 0, "length": 2}]}));
+    let file = tmp(name);
+    ok(&mut s, "save_project", json!({"path": file.display().to_string()}));
+    let mut doc: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let path = plugin.display().to_string();
+    let track = doc["project"]["tracks"].as_array_mut().unwrap().iter_mut().find(|x| x["id"] == json!(t)).unwrap();
+    track["instrument"] = json!({"id": 900101, "kind": "vst3", "params": {}, "bypass": false, "vst3_path": path});
+    doc["project"]["master"]["inserts"].as_array_mut().unwrap().push(json!({"id": 900102, "kind": "vst3", "params": {}, "bypass": false, "vst3_path": path}));
+    std::fs::write(&file, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+    (file, t, 900101, 900102)
+}
+
+/// Every vst3 path of a project (master inserts, then each track's instrument, MIDI effects and inserts).
+fn vst3_paths(p: &ondina_core::model::Project) -> Vec<String> {
+    let mut all: Vec<&ondina_core::model::PluginInstance> = p.master.inserts.iter().collect();
+    for t in &p.tracks {
+        all.extend(t.instrument.iter().chain(&t.midi_fx).chain(&t.channel.inserts));
+    }
+    all.into_iter().filter(|pi| pi.kind == "vst3").filter_map(|pi| pi.vst3_path.clone()).collect()
+}
+
+/// A .vst3 that does not exist, in a folder outside every VST3 folder.
+fn c018_untrusted_plugin() -> PathBuf {
+    tmp("c018_untrusted_vst3").join("Evil.vst3")
+}
+
+fn open_from(s: &mut Session, file: &Path, source: Source) -> Value {
+    s.execute(Command::OpenProject { path: file.display().to_string() }, source).unwrap_or_else(|e| panic!("open from {source:?} failed: {e}"))
+}
+
+#[test]
+fn mcp_opened_project_keeps_vst3_outside_the_vst3_folders_unloaded() {
+    let plugin = c018_untrusted_plugin();
+    let path = plugin.display().to_string();
+    let (file, t, inst, fx) = vst3_project("c018_untrusted.ondina", &plugin);
+    for source in [Source::Mcp, Source::Ai] {
+        let mut s = Session::new(false);
+        s.settings.vst3_folders = vec![];
+        let v = open_from(&mut s, &file, source);
+        let blocked = v["blocked_plugins"].as_array().unwrap_or_else(|| panic!("{source:?}: {v}"));
+        assert_eq!(blocked.len(), 2, "{source:?}: {v}");
+        // master first, then tracks
+        assert_eq!(blocked[0]["track_id"], 0);
+        assert_eq!(blocked[0]["plugin_id"], json!(fx));
+        assert_eq!(blocked[1]["track_id"], json!(t));
+        assert_eq!(blocked[1]["plugin_id"], json!(inst));
+        for b in blocked {
+            assert_eq!(b["path"], json!(path));
+            let reason = b["reason"].as_str().unwrap();
+            assert!(reason.contains("open the project from the app") && reason.contains("VST3 folder added in Ondina"), "{reason}");
+        }
+        for id in [inst, fx] {
+            assert!(s.project.find_plugin(id).is_some(), "{source:?}: {id} left the project");
+            assert!(s.engine.project().find_plugin(id).is_none(), "{source:?}: {id} handed to the engine");
+            assert!(s.engine_project().find_plugin(id).is_none(), "{source:?}: {id} in the render snapshot");
+        }
+        let wav = tmp("c018_untrusted.wav");
+        let _ = std::fs::remove_file(&wav);
+        ok(&mut s, "bounce", json!({"path": wav.display().to_string(), "start": 0, "end": 4, "tail_sec": 0}));
+        assert!(std::fs::metadata(&wav).unwrap().len() > 44);
+        // the saved file keeps the plug-ins
+        let saved = tmp("c018_untrusted_saved.ondina");
+        ok(&mut s, "save_project", json!({"path": saved.display().to_string()}));
+        let reloaded = ondina_core::load_project_str(&std::fs::read_to_string(&saved).unwrap()).unwrap();
+        assert_eq!(vst3_paths(&reloaded), vec![path.clone(), path.clone()], "{source:?}");
+    }
+}
+
+#[test]
+fn gui_opened_project_still_loads_vst3_outside_the_vst3_folders() {
+    let plugin = c018_untrusted_plugin();
+    let (file, _, inst, fx) = vst3_project("c018_gui.ondina", &plugin);
+    for source in [Source::Gui, Source::Script] {
+        let mut s = Session::new(false);
+        s.settings.vst3_folders = vec![];
+        let v = open_from(&mut s, &file, source);
+        assert!(v.get("blocked_plugins").is_none(), "{source:?}: {v}");
+        assert!(s.engine.project().find_plugin(inst).is_some() && s.engine.project().find_plugin(fx).is_some(), "{source:?}");
+    }
+    // an MCP open, then an open of the same file from the app
+    let mut s = Session::new(false);
+    s.settings.vst3_folders = vec![];
+    open_from(&mut s, &file, Source::Mcp);
+    assert!(s.engine.project().find_plugin(inst).is_none());
+    let v = open_from(&mut s, &file, Source::Gui);
+    assert!(v.get("blocked_plugins").is_none(), "{v}");
+    assert!(s.engine.project().find_plugin(inst).is_some() && s.engine.project().find_plugin(fx).is_some());
+}
+
+#[test]
+fn blocked_vst3_stays_unloaded_after_duplicate_undo_and_redo() {
+    let plugin = c018_untrusted_plugin();
+    let path = plugin.display().to_string();
+    let (file, t, _, _) = vst3_project("c018_duplicate.ondina", &plugin);
+    let mut s = Session::new(false);
+    s.settings.vst3_folders = vec![];
+    open_from(&mut s, &file, Source::Mcp);
+    ok(&mut s, "duplicate_track", json!({"track_id": t}));
+    let instruments = |p: &ondina_core::model::Project| p.tracks.iter().filter(|x| x.instrument.as_ref().and_then(|i| i.vst3_path.as_deref()) == Some(path.as_str())).count();
+    assert_eq!(instruments(&s.project), 2, "duplicate_track did not copy the instrument");
+    assert!(!vst3_paths(s.engine.project()).contains(&path), "the copy was handed to the engine");
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(instruments(&s.project), 1);
+    assert!(!vst3_paths(s.engine.project()).contains(&path), "after undo");
+    ok(&mut s, "redo", json!({}));
+    assert_eq!(instruments(&s.project), 2);
+    assert!(!vst3_paths(s.engine.project()).contains(&path), "after redo");
+    ok(&mut s, "new_project", json!({}));
+    assert!(call(&mut s, "undo", json!({})).is_err());
+    assert!(vst3_paths(s.engine.project()).is_empty());
+}
+
+#[test]
+fn mcp_opened_project_loads_vst3_from_a_user_vst3_folder() {
+    let dir = tmp("c018_trusted_vst3");
+    std::fs::create_dir_all(&dir).unwrap();
+    let (file, _, inst, fx) = vst3_project("c018_trusted.ondina", &dir.join("Good.vst3"));
+    let mut s = Session::new(false);
+    s.settings.vst3_folders = vec![dir.display().to_string()];
+    let v = open_from(&mut s, &file, Source::Mcp);
+    assert!(v.get("blocked_plugins").is_none(), "{v}");
+    assert!(s.engine.project().find_plugin(inst).is_some() && s.engine.project().find_plugin(fx).is_some());
+}
+
+#[test]
+fn open_plugin_editor_refuses_a_vst3_blocked_by_an_mcp_open() {
+    let plugin = c018_untrusted_plugin();
+    let (file, _, inst, _) = vst3_project("c018_editor.ondina", &plugin);
+    let mut s = Session::new(false);
+    s.settings.vst3_folders = vec![];
+    open_from(&mut s, &file, Source::Mcp);
+    let e = call(&mut s, "open_plugin_editor", json!({"plugin_id": inst})).unwrap_err();
+    assert!(e.contains("open the project from the app"), "{e}");
+    let e = s.execute(Command::OpenPluginEditor { plugin_id: inst }, Source::Gui).unwrap_err();
+    assert!(e.contains("open the project from the app"), "{e}");
 }

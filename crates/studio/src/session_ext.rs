@@ -2,6 +2,7 @@
 //! or external tools: Flex Time/Pitch, Stem Splitter, Live Loops transport, surround bounce,
 //! movies, VST3 hosting, live MIDI and settings.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -234,19 +235,69 @@ pub fn movie_frame_rgb(path: &str, t: f64, w: usize, h: usize) -> Result<Vec<u8>
 /// VST3 plug-ins of a project whose path the plug-in check refuses: they stay in the project but
 /// are never loaded. Lexical only, so opening a project never touches a network path.
 pub fn blocked_plugins(project: &Project) -> Vec<Value> {
+    blocked_plugins_from(project, None).0
+}
+
+/// Every plug-in of the project with the track that holds it: master inserts first, then each track's
+/// instrument, MIDI effects and inserts.
+fn plugins_with_owner(project: &Project) -> Vec<(Id, &PluginInstance)> {
     let mut owned: Vec<(Id, &PluginInstance)> = project.master.inserts.iter().map(|p| (MASTER_ID, p)).collect();
     for t in &project.tracks {
         owned.extend(t.instrument.iter().chain(&t.midi_fx).chain(&t.channel.inserts).map(|p| (t.id, p)));
     }
     owned
-        .into_iter()
-        .filter(|(_, pi)| pi.kind == "vst3")
-        .filter_map(|(tid, pi)| {
-            let p = pi.vst3_path.as_deref()?;
-            let reason = ondina_dsp::vst3::check_plugin_path(p).err()?;
-            Some(json!({"track_id": tid, "plugin_id": pi.id, "name": pi.preset, "path": p, "reason": reason}))
-        })
-        .collect()
+}
+
+/// VST3 plug-ins of a project that must not be loaded, as `open_project` lists them, plus the paths
+/// refused only because they lie outside `roots` (the session keeps those out of every render).
+/// `roots` is None for a project the user opened (lexical check only, never touches the file system);
+/// Some for a project opened by an MCP client or the assistant: then every vst3 path that passes the
+/// lexical check is also resolved and must lie inside one of the roots.
+pub(crate) fn blocked_plugins_from(project: &Project, roots: Option<&[String]>) -> (Vec<Value>, HashSet<String>) {
+    let mut blocked = vec![];
+    let mut untrusted = HashSet::new();
+    for (tid, pi) in plugins_with_owner(project) {
+        if pi.kind != "vst3" {
+            continue;
+        }
+        let Some(p) = pi.vst3_path.as_deref() else { continue };
+        let reason = match ondina_dsp::vst3::check_plugin_path(p) {
+            // the loader refuses these paths itself
+            Err(reason) => reason,
+            Ok(_) => {
+                let Some(roots) = roots else { continue };
+                let reason = match ondina_dsp::vst3::resolve_plugin_path(p) {
+                    Err(e) => e,
+                    Ok(abs) if !ondina_dsp::vst3::is_under_trusted(&ondina_dsp::vst3::trusted_check_path(&abs), roots) => {
+                        format!("{p} {NOT_IN_VST3_FOLDER}: open the project from the app to load it")
+                    }
+                    Ok(_) => continue,
+                };
+                untrusted.insert(p.to_string());
+                reason
+            }
+        };
+        blocked.push(json!({"track_id": tid, "plugin_id": pi.id, "name": pi.preset, "path": p, "reason": reason}));
+    }
+    (blocked, untrusted)
+}
+
+/// Takes out of a project snapshot the vst3 instances whose path is in `untrusted`, so a renderer never
+/// loads them: the instrument slot becomes empty (the track is silent) and the inserts are dropped.
+/// Used on the copies handed to the audio engine and to offline renders, never on the session's project.
+pub(crate) fn strip_untrusted_vst3(project: &mut Project, untrusted: &HashSet<String>) {
+    if untrusted.is_empty() {
+        return;
+    }
+    let is_untrusted = |p: &PluginInstance| p.kind == "vst3" && p.vst3_path.as_deref().is_some_and(|s| untrusted.contains(s));
+    project.master.inserts.retain(|p| !is_untrusted(p));
+    for t in &mut project.tracks {
+        t.channel.inserts.retain(|p| !is_untrusted(p));
+        t.midi_fx.retain(|p| !is_untrusted(p));
+        if t.instrument.as_ref().is_some_and(is_untrusted) {
+            t.instrument = None;
+        }
+    }
 }
 
 impl Session {
@@ -362,7 +413,7 @@ impl Session {
                     return Some(Err("project is empty".into()));
                 }
                 let sr = self.engine.sample_rate();
-                let (names, chans) = render_surround(&self.project, Arc::new(self.pool.clone()), sr, 0.0, end, name, AUTO_TAIL_MAX_SEC);
+                let (names, chans) = render_surround(&self.engine_project(), Arc::new(self.pool.clone()), sr, 0.0, end, name, AUTO_TAIL_MAX_SEC);
                 if let Err(e) = write_multichannel_wav(&p, &chans, sr) {
                     return Some(Err(e));
                 }
@@ -378,7 +429,7 @@ impl Session {
                 if end <= 0.0 {
                     return Some(Err("project is empty".into()));
                 }
-                let mut p = self.project.clone();
+                let mut p = self.engine_project();
                 p.surround = SurroundFormat::Binaural;
                 let sr = self.engine.sample_rate();
                 let res = render_offline(&p, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start: 0.0, end, tail_sec: BOUNCE_TAIL_SEC, auto_tail_max_sec: AUTO_TAIL_MAX_SEC, solo: None, analyze: false, keep_audio: true });
@@ -425,7 +476,7 @@ impl Session {
                 let sr = self.engine.sample_rate();
                 let start = self.project.tempo.sec_to_beat(m.offset_sec);
                 let end = self.project.tempo.sec_to_beat(m.offset_sec + m.duration_sec.max(1.0));
-                let mut p = self.project.clone();
+                let mut p = self.engine_project();
                 if let Some(aid) = m.audio_file_id {
                     // keep the guide audio out of the export
                     for t in &mut p.tracks {
@@ -460,6 +511,10 @@ impl Session {
                 let Some(p) = self.project.find_plugin(*plugin_id) else { return Some(Err("plug-in not found".into())) };
                 if p.kind != "vst3" {
                     return Some(Err("built-in plug-ins are edited in the Inspector; native editor windows are for VST3 plug-ins".into()));
+                }
+                // a native window would load the DLL that the engine keeps out after an MCP or assistant open
+                if let Some(s) = p.vst3_path.as_deref().filter(|s| self.is_untrusted_vst3(s)) {
+                    return Some(Err(format!("plug-in not loaded: {s} {NOT_IN_VST3_FOLDER}: open the project from the app to load it")));
                 }
                 let path = p.vst3_path.clone().unwrap_or_default();
                 let params: Vec<(String, f32)> = p.params.iter().map(|(k, v)| (k.clone(), *v)).collect();
@@ -704,7 +759,7 @@ impl Session {
             return Err("project is empty".into());
         }
         let sr = 48000; // ADM/Atmos masters are 48 kHz
-        let (bed_audio, objs) = ondina_engine::render_objects(&self.project, Arc::new(self.pool.clone()), sr, start, end);
+        let (bed_audio, objs) = ondina_engine::render_objects(&self.engine_project(), Arc::new(self.pool.clone()), sr, start, end);
         let defs = ondina_engine::adm::bed_712();
         let bed: Vec<ondina_engine::adm::BedChannel> = defs.iter().zip(bed_audio).map(|((label, spk, az, el), audio)| ondina_engine::adm::BedChannel { label, speaker: spk, azimuth: *az, elevation: *el, audio }).collect();
         let duration = bed[0].audio.len() as f64 / sr as f64;
@@ -831,6 +886,65 @@ mod tests {
         assert_eq!(b[0]["plugin_id"], 8);
         assert_eq!(b[0]["path"], "\\\\server\\share\\Evil.vst3");
         assert!(!b[0]["reason"].as_str().unwrap().is_empty());
+    }
+
+    /// Master inserts: Good.vst3 in `trusted` (7), Evil.vst3 in `untrusted` (8), a vst3 on a share (9), a
+    /// built-in (10); one instrument track whose instrument is Synth.vst3 in `untrusted` (11).
+    fn c018_project() -> (Project, Vec<String>, String, String) {
+        let base = std::env::temp_dir();
+        let trusted = base.join("ondina_unit_c018_trusted");
+        let untrusted = base.join("ondina_unit_c018_untrusted");
+        std::fs::create_dir_all(&trusted).unwrap();
+        std::fs::create_dir_all(&untrusted).unwrap();
+        let roots = ondina_dsp::vst3::trusted_roots(&[trusted.display().to_string()]);
+        let good = trusted.join("Good.vst3").display().to_string();
+        let evil = untrusted.join("Evil.vst3").display().to_string();
+        let synth = untrusted.join("Synth.vst3").display().to_string();
+        let vst3 = |id: Id, path: &str| PluginInstance { id, kind: "vst3".into(), params: Default::default(), bypass: false, preset: Some("X".into()), sample: None, vst3_path: Some(path.into()), vst3_params: vec![], vst3_state: None };
+        let mut p = Project::new("t");
+        p.master.inserts.push(vst3(7, &good));
+        p.master.inserts.push(vst3(8, &evil));
+        p.master.inserts.push(vst3(9, "\\\\server\\share\\Net.vst3"));
+        p.master.inserts.push(PluginInstance { id: 10, kind: "eq".into(), params: Default::default(), bypass: false, preset: None, sample: None, vst3_path: None, vst3_params: vec![], vst3_state: None });
+        let add = Command::AddTrack { kind: TrackKind::Instrument, name: None, patch: None, instrument: None, preset: None, index: None };
+        ops::apply(&mut p, &add).unwrap();
+        p.tracks[0].instrument = Some(vst3(11, &synth));
+        (p, roots, evil, synth)
+    }
+
+    #[test]
+    fn blocked_plugins_from_flags_vst3_outside_trusted_roots() {
+        let (p, roots, evil, synth) = c018_project();
+        let (b, set) = blocked_plugins_from(&p, Some(&roots));
+        let ids: Vec<u64> = b.iter().map(|x| x["plugin_id"].as_u64().unwrap()).collect();
+        assert_eq!(ids, vec![8, 9, 11], "{b:?}");
+        assert_eq!(set, HashSet::from([evil.clone(), synth.clone()]));
+        assert_eq!(b[0]["path"], json!(evil));
+        assert!(b[0]["reason"].as_str().unwrap().contains("open the project from the app"), "{b:?}");
+        assert!(b[0]["reason"].as_str().unwrap().contains("VST3 folder added in Ondina"), "{b:?}");
+        let net = b[1]["reason"].as_str().unwrap();
+        assert!(!net.is_empty() && !net.contains("open the project from the app"), "{net}");
+        assert_eq!(b[2]["track_id"], json!(p.tracks[0].id));
+
+        let (b, set) = blocked_plugins_from(&p, None);
+        assert_eq!(b.len(), 1, "{b:?}");
+        assert_eq!(b[0]["plugin_id"], 9);
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn strip_untrusted_vst3_removes_only_listed_paths() {
+        let (p, _, evil, synth) = c018_project();
+        let set = HashSet::from([evil, synth]);
+        let mut q = p.clone();
+        strip_untrusted_vst3(&mut q, &set);
+        assert!(q.find_plugin(8).is_none() && q.find_plugin(11).is_none());
+        assert!(q.tracks[0].instrument.is_none());
+        let master: Vec<Id> = q.master.inserts.iter().map(|x| x.id).collect();
+        assert_eq!(master, vec![7, 9, 10]);
+        let mut r = p.clone();
+        strip_untrusted_vst3(&mut r, &HashSet::new());
+        assert_eq!(serde_json::to_value(&r).unwrap(), serde_json::to_value(&p).unwrap());
     }
 
     #[test]
