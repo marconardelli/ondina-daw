@@ -7,6 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-01
+
+### Added
+
+- Autosave and crash recovery: while you work, Ondina writes a copy of unsaved changes every 3 minutes in the
+  background, without stopping playback or recording. The copies go to %APPDATA%\OndinaDAW\Autosave and are removed
+  when you save, open or start another project, or close Ondina normally.
+- If Ondina did not close normally (a plug-in or audio driver crash, or it was ended from Task Manager), the next
+  start shows Recover Unsaved Work with the copies it found: Recover opens one as unsaved work and the first Save
+  proposes the original file, Discard and Discard All delete copies, Decide Later keeps them for the next start.
+- Settings > Autosave sets the minutes between copies (0 to 60); 0 turns autosave off. Audio files are not copied,
+  and a recording still in progress is not part of the copy.
+
 ## [0.13.0] - 2026-11-01
 
 ### Added
@@ -408,7 +421,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/marconardelli/ondina-daw/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/marconardelli/ondina-daw/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/marconardelli/ondina-daw/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/marconardelli/ondina-daw/compare/v0.10.2...v0.11.0
