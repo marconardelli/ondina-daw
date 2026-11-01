@@ -7,6 +7,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-31
+
+### Added
+
+- Fade handles on audio regions in the Arrange window: hover over a region (or select it) and drag the small
+  squares on its top edge to set the fade-in and fade-out. The fade curve is drawn over the waveform, on every
+  repetition of a looped region.
+- Fade dragging follows Snap (at most one beat); hold Alt to drag freely. Double-click a handle to remove that
+  fade, and undo any drag with a single Ctrl+Z.
+- The VST3 library has **Add folder…**: the folders you add are saved in the settings and scanned, and the ✕ next
+  to a folder removes it.
+
+### Changed
+
+- MCP clients and the assistant can load VST3 plug-ins only from the standard VST3 folders and from the folders
+  you added in the library. Other paths are refused with "plug-in path refused", and `scan_vst3` skips other extra
+  folders and lists them in `skipped_paths`. No tool can change the folder list. **Add from file…** in the app
+  is not limited, because the choice is yours.
+
+### Fixed
+
+- The **Fade in** and **Fade out** sliders in the audio editor now show fades longer than 8 beats instead of
+  cutting them off.
+
 ## [0.9.0] - 2026-10-31
 
 ### Added
@@ -300,7 +324,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/marconardelli/ondina-daw/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/marconardelli/ondina-daw/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/marconardelli/ondina-daw/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/marconardelli/ondina-daw/compare/v0.7.0...v0.8.0
