@@ -7,6 +7,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-31
+
+### Changed
+
+- VST3 plug-ins are loaded only from a `.vst3` bundle on a local drive. The same check applies to **Add from
+  file…**, the assistant, MCP clients, the extra scan folders and the projects you open: plug-ins on a network
+  share, or files that are not `.vst3`, are refused with a message.
+- Opening a project that uses a refused plug-in still works: the plug-in stays in place but is silent, and the
+  status bar says how many plug-ins were not loaded and how many audio files are missing. If you keep plug-ins on
+  a NAS, copy them to a local folder and add them again.
+
+### Fixed
+
+- Chord track: **Edit chord** from the right-click menu now opens the text field to change the chord.
+- A rename field left open (marker, track, region, region name in the inspector, chord) now closes without
+  applying anything when you create or open another project, also when the assistant or an MCP client does it.
+- Track headers: right-click only opens the menu. Holding or dragging with the right or middle button no longer
+  moves the track; moving a track is done by dragging with the left button.
+- Step sequencer: during playback the white outline follows the playing step in every repeat of a looped region.
+
 ## [0.8.0] - 2026-10-31
 
 ### Added
@@ -251,7 +271,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/marconardelli/ondina-daw/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/marconardelli/ondina-daw/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/marconardelli/ondina-daw/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/marconardelli/ondina-daw/compare/v0.5.1...v0.6.0
