@@ -232,9 +232,12 @@ pub fn is_ondina_project_file(path: &Path) -> Result<bool, String> {
     Ok(compact.starts_with('{') && (compact.contains("\"format\":\"ondina-project\"") || compact.contains("\"format\":\"aurora-project\"")))
 }
 
-/// The project's movie as an ffmpeg input, with an error that tells the user what to do.
-fn project_movie_input(m: &MovieRef) -> Result<String, String> {
-    ffmpeg_input(&m.path).map_err(|e| format!("the project's movie path is refused ({e}): load the movie again from a local file"))
+/// The project's movie as an ffmpeg input, with an error that tells the user what to do. From MCP and the
+/// assistant the path must also resolve to a local drive, as for every other file they make Ondina read.
+fn project_movie_input(m: &MovieRef, source: Source) -> Result<String, String> {
+    let refused = |e: String| format!("the project's movie path is refused ({e}): load the movie again from a local file");
+    checked_input_path(source, &m.path).map_err(refused)?;
+    ffmpeg_input(&m.path).map_err(refused)
 }
 
 /// Arguments that decode the frame at `t` seconds of `input` (already a `file:` URL) as
@@ -515,10 +518,10 @@ impl Session {
                 Ok(p) => self.export_adm(&p, *start, *end),
                 Err(e) => Err(e),
             },
-            LoadMovie { path, offset_sec, import_audio } => self.load_movie(path, offset_sec.unwrap_or(0.0), import_audio.unwrap_or(true)),
+            LoadMovie { path, offset_sec, import_audio } => self.load_movie(source, path, offset_sec.unwrap_or(0.0), import_audio.unwrap_or(true)),
             ExtractMovieFrame { path, beat } => {
                 let Some(m) = self.project.movie.clone() else { return Some(Err("no movie loaded".into())) };
-                let input = match project_movie_input(&m) {
+                let input = match project_movie_input(&m, source) {
                     Ok(i) => i,
                     Err(e) => return Some(Err(e)),
                 };
@@ -537,7 +540,7 @@ impl Session {
             }
             ExportMovie { path } => {
                 let Some(m) = self.project.movie.clone() else { return Some(Err("no movie loaded".into())) };
-                let input = match project_movie_input(&m) {
+                let input = match project_movie_input(&m, source) {
                     Ok(i) => i,
                     Err(e) => return Some(Err(e)),
                 };
@@ -869,8 +872,9 @@ impl Session {
         Ok(json!({"path": path.display().to_string(), "sample_rate": sr, "bit_depth": 24, "bed": "7.1.2", "bed_channels": bed.len(), "objects": objects.iter().map(|o| json!({"name": o.name, "position_blocks": o.blocks.len()})).collect::<Vec<_>>(), "duration_sec": duration, "standard": "ITU-R BS.2076 (ADM) + BS.2088 chna in RIFF/WAVE"}))
     }
 
-    fn load_movie(&mut self, path: &str, offset_sec: f64, import_audio: bool) -> Result<Value, String> {
+    fn load_movie(&mut self, source: Source, path: &str, offset_sec: f64, import_audio: bool) -> Result<Value, String> {
         let abs = local_media_path(path).map_err(|e| format!("movie path refused: {e}"))?;
+        checked_input_path(source, path).map_err(|e| format!("movie path refused: {e}"))?;
         if !abs.exists() {
             return Err(format!("movie not found: {path}"));
         }
