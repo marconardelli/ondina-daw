@@ -164,6 +164,91 @@ fn failed_new_project_keeps_the_current_project() {
 }
 
 #[test]
+fn open_and_new_are_refused_while_recording_outside_the_gui() {
+    let mut s = Session::new(false);
+    ok(&mut s, "set_tempo", json!({"bpm": 240}));
+    ok(&mut s, "set_count_in", json!({"bars": 0}));
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
+    ok(&mut s, "set_record_arm", json!({"track_id": t, "armed": true}));
+    let other = tmp("refused_while_recording.ondina");
+    ok(&mut s, "save_project", json!({"path": other.display().to_string()}));
+    ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}));
+    ok(&mut s, "record", json!({"from_beat": 0}));
+    ok(&mut s, "send_live_midi", json!({"track_id": t, "events": [{"type": "note_on", "number": 60, "value": 100}, {"type": "note_off", "number": 60, "delay_ms": 200}]}));
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let (tracks, path, document, revision) = (s.project.tracks.len(), s.path.clone(), s.document, s.revision);
+
+    let e = call(&mut s, "open_project", json!({"path": other.display().to_string()})).unwrap_err();
+    assert!(e.contains("recording in progress"), "{e}");
+    for src in [Source::Mcp, Source::Ai, Source::Script] {
+        let c = Command::from_tool_call("new_project", &json!({"name": "Elsewhere"})).unwrap();
+        let e = s.execute(c, src).unwrap_err();
+        assert!(e.contains("recording in progress"), "{src:?}: {e}");
+    }
+    // nothing changed and the recording is still running
+    assert_eq!(s.project.tracks.len(), tracks);
+    assert_ne!(s.project.name, "Elsewhere");
+    assert_eq!(s.path, path);
+    assert_eq!(s.document, document);
+    assert_eq!(s.revision, revision);
+    assert_eq!(ok(&mut s, "get_transport", json!({}))["recording"], true);
+
+    // stop keeps the take in the project it was recorded for
+    let r = ok(&mut s, "stop", json!({}));
+    let created = r["recorded_regions"].as_array().unwrap();
+    assert!(!created.is_empty(), "{r}");
+    let rid = created[0].as_u64().unwrap();
+    assert!(s.project.track(t).unwrap().regions.iter().any(|g| g.id == rid));
+}
+
+#[test]
+fn new_project_stops_the_transport_and_returns_to_the_start() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
+    let c = ok(&mut s, "create_live_cell", json!({"track_id": t, "scene": 0, "length": 4, "notes": [{"pitch": 60, "velocity": 100, "start": 0, "length": 1}]}))["cell_id"].as_u64().unwrap();
+    ok(&mut s, "set_live_quantize", json!({"beats": 0}));
+    ok(&mut s, "play", json!({"from_beat": 8}));
+    ok(&mut s, "launch_cell", json!({"cell_id": c}));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let live = ok(&mut s, "get_live_loops", json!({}));
+    assert!(!live["playing"].as_array().unwrap().is_empty(), "{live}");
+
+    ok(&mut s, "new_project", json!({"name": "Fresh"}));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let tr = ok(&mut s, "get_transport", json!({}));
+    assert_eq!(tr["playing"], false, "{tr}");
+    assert_eq!(tr["beat"].as_f64().unwrap(), 0.0, "{tr}");
+    let live = ok(&mut s, "get_live_loops", json!({}));
+    assert!(live["playing"].as_array().unwrap().is_empty(), "{live}");
+}
+
+#[test]
+fn gui_open_during_a_recording_drops_the_take_instead_of_moving_it() {
+    let mut s = Session::new(false);
+    ok(&mut s, "set_count_in", json!({"bars": 0}));
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
+    ok(&mut s, "set_record_arm", json!({"track_id": t, "armed": true}));
+    let path = tmp("gui_open_during_recording.ondina");
+    ok(&mut s, "save_project", json!({"path": path.display().to_string()}));
+    ok(&mut s, "record", json!({"from_beat": 0}));
+    ok(&mut s, "send_live_midi", json!({"track_id": t, "events": [{"type": "note_on", "number": 64, "value": 100}, {"type": "note_off", "number": 64, "delay_ms": 100}]}));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    s.execute(Command::OpenProject { path: path.display().to_string() }, Source::Gui).unwrap();
+    assert!(!s.engine.is_recording(), "the recording must not survive the open");
+    // the reopened project has the same armed track: a take written into it would show up here
+    assert!(s.project.tracks.iter().all(|tr| tr.regions.is_empty()));
+    let r = ok(&mut s, "stop", json!({}));
+    assert!(r.get("recorded_regions").is_none(), "{r}");
+    assert!(s.project.tracks.iter().all(|tr| tr.regions.is_empty()));
+
+    // the same for New
+    ok(&mut s, "record", json!({"from_beat": 0}));
+    s.execute(Command::NewProject { name: None, tempo: None, time_signature: None, key: None }, Source::Gui).unwrap();
+    assert!(!s.engine.is_recording());
+}
+
+#[test]
 fn flex_stems_tempo_transcription() {
     let wav = song_wav();
     let mut s = Session::new(false);
