@@ -128,7 +128,7 @@ extension: Ondina opens both.
   Tracks and Shorter Tracks do the same from the menu. On short tracks the M/S/R buttons move next to the name and
   the volume slider is left to the mixer. Esc during a drag (a region, a fade, a marker, a chord, the cycle or a
   track header) cancels it: everything goes back to where it was.
-- **Piano roll**: click on empty space to add a note (length from the toolbar); click a note to select it,
+- **Piano roll**: click on empty space to add a note (length from the toolbar) and select it (Ctrl/Shift+click keeps the selection and adds the new note); click a note to select it,
   Ctrl/Shift+click to add to the selection; drag on empty space to box-select (stacked notes included); drag a note
   to move it (the moved notes stay selected), Alt+drag to copy it (the copies become the selection, one undo step),
   drag its right edge to resize; Esc during a drag (notes, note edges, box selection, velocities, a
