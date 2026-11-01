@@ -7,6 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-10-31
+
+### Changed
+
+- Press Esc while dragging to cancel the drag: everything goes back to where it was, with no need for Ctrl+Z. It
+  works in the Arrange window (regions, fades, markers, chords, the cycle, track headers) and in the piano roll
+  (notes, note edges, box selection, velocities, controller strokes).
+- The transport bar shows, next to the DSP load, how many audio blocks since the last Play took longer than the
+  audio device allows. The number turns red as soon as there is one, since each can be heard as a click.
+  `get_transport` reports it as `dsp_overloads`.
+
+### Fixed
+
+- No more CPU spikes while notes, reverb tails and filters fade out: the tiny values left at the end of a sound
+  are flushed to zero during playback and in bounces. The sound does not change.
+
 ## [0.10.0] - 2026-10-31
 
 ### Added
@@ -324,7 +340,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/marconardelli/ondina-daw/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/marconardelli/ondina-daw/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/marconardelli/ondina-daw/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/marconardelli/ondina-daw/compare/v0.8.0...v0.8.1
