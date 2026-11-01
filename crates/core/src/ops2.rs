@@ -6,9 +6,14 @@ use serde_json::{json, Value};
 use crate::command::{Command, NoteFilter, NoteOps};
 use crate::model::*;
 use crate::ops::{pattern_to_notes, Outcome};
-use crate::theory::Key;
+use crate::theory::{estimate_key, Key};
 
 type R = Result<Outcome, String>;
+
+/// Below this many notes the key estimate is a guess, whatever its score.
+const KEY_MIN_NOTES: usize = 8;
+/// A best-key confidence under this is reported as low.
+const KEY_MIN_CONFIDENCE: f32 = 0.6;
 
 fn ok(v: Value) -> R {
     Ok(Outcome::Done(v))
@@ -275,6 +280,9 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             ok(json!({"region_id": id, "track_id": track_id, "start": start}))
         }
 
+        // ---------------------------------------------------------------- key detection
+        DetectKey { region_id, apply } => detect_key(project, *region_id, apply.unwrap_or(false)),
+
         _ => Ok(Outcome::NotHandled),
     }
 }
@@ -450,6 +458,67 @@ fn transform(notes: &mut Vec<Note>, f: &NoteFilter, o: &NoteOps, key: Key, regio
     }
     notes.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
     (count, 0)
+}
+
+fn is_drum_kit(t: &Track) -> bool {
+    t.instrument.as_ref().is_some_and(|i| i.kind == "drum_synth")
+}
+
+/// The notes of a MIDI region as they sound, for the key estimate: region transposition applied, notes past the
+/// region end dropped and tails cut there, lengths multiplied by the loop count.
+fn sounding_notes(r: &Region, m: &MidiContent, out: &mut Vec<(u8, f64, u8)>) {
+    for n in m.notes.iter().filter(|n| n.start < r.length) {
+        let len = n.length.min(r.length - n.start);
+        if len > 0.0 {
+            out.push(((n.pitch as i32 + m.transpose).clamp(0, 127) as u8, len * r.loop_count.max(1) as f64, n.velocity));
+        }
+    }
+}
+
+/// `detect_key`: estimate the key of one MIDI region, or of every unmuted MIDI region on the instrument tracks that
+/// are not Drum Kits, and with `apply` make it the project key.
+fn detect_key(project: &mut Project, region_id: Option<Id>, apply: bool) -> R {
+    let mut notes: Vec<(u8, f64, u8)> = vec![];
+    let mut regions = 0usize;
+    match region_id {
+        Some(id) => {
+            let (t, r) = project.tracks.iter().find_map(|t| t.regions.iter().find(|r| r.id == id).map(|r| (t, r))).ok_or("region not found")?;
+            match &r.content {
+                RegionContent::Audio(_) => return Err(format!("region {id} is an audio region: detect_key reads MIDI notes (use audio_to_midi first)")),
+                RegionContent::Pattern(_) => return Err(format!("region {id} is a step pattern: drum patterns have no key")),
+                RegionContent::Midi(_) if is_drum_kit(t) => return Err(format!("region {id} is on a Drum Kit track: drum notes have no key")),
+                RegionContent::Midi(m) => {
+                    sounding_notes(r, m, &mut notes);
+                    regions = 1;
+                }
+            }
+        }
+        None => {
+            for t in project.tracks.iter().filter(|t| t.kind == TrackKind::Instrument && !is_drum_kit(t)) {
+                for r in t.regions.iter().filter(|r| !r.muted) {
+                    if let RegionContent::Midi(m) = &r.content {
+                        sounding_notes(r, m, &mut notes);
+                        regions += 1;
+                    }
+                }
+            }
+        }
+    }
+    if notes.is_empty() {
+        return Err("no MIDI notes to analyze: add or import a MIDI part on an instrument track (Drum Kit tracks and step patterns are skipped)".into());
+    }
+    let ranked = estimate_key(&notes);
+    if ranked.is_empty() {
+        return Err("these notes do not point to a key: all 12 pitch classes are equally present".into());
+    }
+    let (best, conf) = ranked[0];
+    let low = notes.len() < KEY_MIN_NOTES || conf < KEY_MIN_CONFIDENCE;
+    let round = |c: f32| (c as f64 * 100.0).round() / 100.0;
+    let alternatives: Vec<Value> = ranked[1..4].iter().map(|(k, c)| json!({"key": k.name(), "confidence": round(*c)})).collect();
+    if apply {
+        project.key = best;
+    }
+    ok(json!({"key": best.name(), "confidence": round(conf), "low_confidence": low, "alternatives": alternatives, "note_count": notes.len(), "regions": regions, "applied": apply}))
 }
 
 fn region_notes(r: &Region) -> (Vec<Note>, Vec<LyricEvent>) {
@@ -699,6 +768,7 @@ pub fn musicxml(project: &Project, track_ids: Option<&[Id]>) -> Result<String, S
 mod tests {
     use super::*;
     use crate::ops;
+    use crate::theory::ScaleKind;
 
     fn run(p: &mut Project, c: Command) -> Value {
         match ops::apply(p, &c).unwrap() {
@@ -755,5 +825,103 @@ mod tests {
         run(&mut p, Command::SetMidiRoutes { routes: vec![MidiRoute { name: "low".into(), channel: None, note_min: None, note_max: Some(59), transpose: -12, velocity_scale: None, track_id: t }] });
         assert_eq!(route_note(&p.midi_routes, 1, 48, 100), vec![(t, 36, 100)]);
         assert!(route_note(&p.midi_routes, 1, 72, 100).is_empty());
+    }
+
+    fn notes_of(pitches_and_lengths: &[(u8, f64)]) -> Vec<Note> {
+        let mut start = 0.0;
+        pitches_and_lengths
+            .iter()
+            .map(|&(pitch, length)| {
+                let n = Note { pitch, velocity: 100, start, length };
+                start += length;
+                n
+            })
+            .collect()
+    }
+
+    fn a_minor_melody() -> Vec<Note> {
+        notes_of(&[(69, 1.0), (72, 1.0), (71, 1.0), (69, 1.0), (76, 1.0), (74, 1.0), (72, 1.0), (71, 1.0), (68, 1.0), (69, 1.0), (71, 1.0), (72, 1.0), (71, 1.0), (68, 1.0), (69, 2.0)])
+    }
+
+    fn drum_notes() -> Vec<Note> {
+        let mut notes = vec![];
+        for i in 0..16 {
+            notes.push(Note { pitch: 42, velocity: 100, start: i as f64, length: 0.5 });
+        }
+        for i in 0..4 {
+            let bar = i as f64 * 4.0;
+            notes.push(Note { pitch: 37, velocity: 100, start: bar + 3.5, length: 0.5 });
+            notes.push(Note { pitch: 36, velocity: 100, start: bar, length: 0.5 });
+            notes.push(Note { pitch: 38, velocity: 100, start: bar + 2.0, length: 0.5 });
+        }
+        notes.push(Note { pitch: 49, velocity: 100, start: 0.0, length: 2.0 });
+        notes.push(Note { pitch: 49, velocity: 100, start: 8.0, length: 2.0 });
+        notes
+    }
+
+    fn midi_region(p: &mut Project, track_id: Id, start: f64, notes: Vec<Note>) -> Id {
+        run(p, Command::CreateMidiRegion { track_id, start, length: 16.0, name: None, notes: Some(notes) })["region_id"].as_u64().unwrap()
+    }
+
+    fn detect_err(p: &mut Project, region_id: Option<Id>) -> String {
+        ops::apply(p, &Command::DetectKey { region_id, apply: None }).err().expect("detect_key should fail")
+    }
+
+    #[test]
+    fn detect_key_reads_midi_and_skips_drums_patterns_and_muted_regions() {
+        let mut p = Project::new("k");
+        let lead = ops::add_track(&mut p, TrackKind::Instrument, Some("Lead".into()), None, None, None, None).unwrap();
+        midi_region(&mut p, lead, 0.0, a_minor_melody());
+        let drums = ops::add_track(&mut p, TrackKind::Instrument, Some("Drums".into()), None, Some("drum_synth"), None, None).unwrap();
+        let drum_region = midi_region(&mut p, drums, 0.0, drum_notes());
+        let sharps: Vec<Note> = (0..16).map(|i| Note { pitch: if i % 2 == 0 { 66 } else { 61 }, velocity: 100, start: i as f64, length: 1.0 }).collect();
+        let muted = midi_region(&mut p, lead, 16.0, sharps);
+        run(&mut p, Command::from_tool_call("set_region_properties", &json!({"region_id": muted, "muted": true})).unwrap());
+        let pattern = run(&mut p, Command::from_tool_call("create_pattern_region", &json!({"track_id": lead, "start": 32})).unwrap())["region_id"].as_u64().unwrap();
+
+        let r = run(&mut p, Command::DetectKey { region_id: None, apply: None });
+        assert_eq!(r["key"], "A Minor", "{r}");
+        assert_eq!(r["applied"], false);
+        assert_eq!(r["regions"], 1);
+        assert_eq!(r["note_count"], 15);
+        assert_eq!(r["alternatives"].as_array().unwrap().len(), 3);
+        assert_eq!(r["low_confidence"], false);
+        assert_eq!(p.key, Key { root: 0, scale: ScaleKind::Major });
+
+        assert!(detect_err(&mut p, Some(drum_region)).contains("Drum Kit"));
+        assert!(detect_err(&mut p, Some(pattern)).contains("step pattern"));
+        assert_eq!(detect_err(&mut p, Some(9999)), "region not found");
+
+        let r = run(&mut p, Command::DetectKey { region_id: Some(muted), apply: None });
+        assert_ne!(r["key"], "A Minor", "{r}");
+    }
+
+    #[test]
+    fn detect_key_applies_transpose_and_flags_few_notes() {
+        let mut p = Project::new("k");
+        let t = ops::add_track(&mut p, TrackKind::Instrument, Some("Keys".into()), None, None, None, None).unwrap();
+        let mut scale = notes_of(&[(60, 1.0), (62, 1.0), (64, 1.0), (65, 1.0), (67, 1.0), (69, 1.0), (71, 1.0), (72, 1.0)]);
+        scale.extend([60, 64, 67].iter().map(|&pitch| Note { pitch, velocity: 100, start: 8.0, length: 4.0 }));
+        let rid = midi_region(&mut p, t, 0.0, scale);
+        run(&mut p, Command::from_tool_call("set_region_properties", &json!({"region_id": rid, "transpose": 7})).unwrap());
+        let r = run(&mut p, Command::DetectKey { region_id: Some(rid), apply: None });
+        assert_eq!(r["key"], "G Major", "{r}");
+
+        let mut p = Project::new("k");
+        let lead = ops::add_track(&mut p, TrackKind::Instrument, Some("Lead".into()), None, None, None, None).unwrap();
+        midi_region(&mut p, lead, 0.0, a_minor_melody());
+        let r = run(&mut p, Command::DetectKey { region_id: None, apply: Some(true) });
+        assert_eq!(r["applied"], true);
+        assert_eq!(p.key, Key { root: 9, scale: ScaleKind::Minor });
+
+        let mut p = Project::new("k");
+        let drums = ops::add_track(&mut p, TrackKind::Instrument, Some("Drums".into()), None, Some("drum_synth"), None, None).unwrap();
+        midi_region(&mut p, drums, 0.0, drum_notes());
+        assert!(detect_err(&mut p, None).contains("no MIDI notes"));
+        let keys = ops::add_track(&mut p, TrackKind::Instrument, Some("Keys".into()), None, None, None, None).unwrap();
+        midi_region(&mut p, keys, 0.0, notes_of(&[(60, 1.0), (64, 1.0), (67, 1.0)]));
+        let r = run(&mut p, Command::DetectKey { region_id: None, apply: None });
+        assert_eq!(r["low_confidence"], true);
+        assert_eq!(r["note_count"], 3);
     }
 }

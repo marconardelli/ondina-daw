@@ -53,6 +53,13 @@ pub enum Command {
     SetTimeSignature { numerator: u8, denominator: u8 },
     /// Set the project key, e.g. "C major", "A minor", "Eb mixolydian", "F# minor_pentatonic".
     SetKey { key: String },
+    /// Estimate the key of the MIDI parts from their notes (Krumhansl-Kessler key profiles; major and minor keys only). Analyzes one MIDI region, or without region_id every unmuted MIDI region on instrument tracks, skipping Drum Kit tracks and step patterns. Returns the key, a confidence 0..1, low_confidence when there are few notes, and the 3 next candidates: relative keys (C major / A minor) are often close, so check them. apply=true also sets the project key (undoable).
+    DetectKey {
+        /// MIDI region to analyze; omit to analyze the whole project.
+        region_id: Option<Id>,
+        /// Set the project key to the result (default false).
+        apply: Option<bool>,
+    },
     /// Undo the last edit.
     Undo {},
     /// Redo the last undone edit.
@@ -618,6 +625,8 @@ impl Command {
                 | SendLiveMidi { .. }
                 | DetectTempo { apply: None, .. }
                 | DetectTempo { apply: Some(false), .. }
+                | DetectKey { apply: None, .. }
+                | DetectKey { apply: Some(false), .. }
                 | ListTakes { .. }
                 | GetScore { .. }
                 | ExportMusicXml { .. }
@@ -793,5 +802,15 @@ mod tests {
         assert!(!add.read_only);
         let c = Command::from_tool_call("set_volume", &serde_json::json!({"track_id": 1, "db": -3.0})).unwrap();
         assert_eq!(c.name(), "set_volume");
+    }
+
+    #[test]
+    fn detect_key_is_read_only_unless_applied() {
+        assert!(!Command::DetectKey { region_id: None, apply: None }.is_mutating());
+        assert!(!Command::DetectKey { region_id: Some(1), apply: Some(false) }.is_mutating());
+        assert!(Command::DetectKey { region_id: None, apply: Some(true) }.is_mutating());
+        assert!(tool_specs().iter().any(|s| s.name == "detect_key" && s.read_only));
+        let c = Command::from_tool_call("detect_key", &serde_json::json!({})).unwrap();
+        assert_eq!(c.name(), "detect_key");
     }
 }
