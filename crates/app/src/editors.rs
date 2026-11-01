@@ -807,7 +807,7 @@ impl OndinaApp {
             );
         }
         // drag updates / commit
-        let released = ui.input(|i| i.pointer.any_released());
+        let released = ui.input(|i| crate::drag_cancel::drag_finished(&i.pointer, self.drag.as_ref()));
         if let Some(pp) = pointer {
             let snap = if self.snap > 0.0 {
                 self.snap.min(1.0)
@@ -1268,7 +1268,7 @@ impl OndinaApp {
             }
         });
         // the stroke reaches the project on release, as one undo step
-        if ui.input(|i| i.pointer.any_released()) {
+        if ui.input(|i| crate::drag_cancel::drag_finished(&i.pointer, self.drag.as_ref())) {
             match self.drag.take() {
                 Some(Drag::StepPaint { region, stroke }) if region == rid => {
                     let key = step_paint::paint_gesture_key();

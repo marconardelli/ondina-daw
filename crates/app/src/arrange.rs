@@ -376,7 +376,9 @@ impl OndinaApp {
             }
             _ => {}
         }
-        if ruler_resp.drag_stopped() && matches!(self.drag, Some(Drag::Cycle { .. } | Drag::CycleEdit { .. })) {
+        if matches!(self.drag, Some(Drag::Cycle { .. } | Drag::CycleEdit { .. }))
+            && ui.input(|i| crate::drag_cancel::drag_finished(&i.pointer, self.drag.as_ref()))
+        {
             self.drag = None;
         }
 
@@ -1316,7 +1318,7 @@ impl OndinaApp {
 
         // dragging updates
         let pointer_pos = ui.input(|i| i.pointer.interact_pos());
-        let released = ui.input(|i| i.pointer.any_released());
+        let released = ui.input(|i| crate::drag_cancel::drag_finished(&i.pointer, self.drag.as_ref()));
         let pointer_beat = pointer_pos.map(|pp| self.x_to_beat(pp.x, timeline_x));
         let snap = self.snap;
         match &mut self.drag {

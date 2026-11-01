@@ -1,4 +1,4 @@
-//! Esc during a mouse drag: the drag is dropped, its ghost goes away and its release sends nothing.
+//! How a mouse drag ends: Esc drops it, and only the release of the button that holds it ends it.
 //! egui already stops its own drag on Esc and starts no new one until the button is pressed again;
 //! this drops the app's `Drag` on the same frame.
 
@@ -50,6 +50,36 @@ pub fn take_escape(events: &mut Vec<egui::Event>) -> bool {
     crate::editors::take_event(events, |e| matches!(e, egui::Event::Key { key: egui::Key::Escape, pressed: true, .. }))
 }
 
+/// The button that holds `drag`: the controller lane erases with the right button, every other drag is a
+/// left-button drag.
+pub fn held_button(drag: &Drag) -> egui::PointerButton {
+    match drag {
+        Drag::CcStroke { stroke, .. } if stroke.erase => egui::PointerButton::Secondary,
+        _ => egui::PointerButton::Primary,
+    }
+}
+
+/// Whether this frame's pointer events end `drag`: the button that holds it came up, or a release left no
+/// button down. The second case ends the drags egui starts with the right or middle button too (most editors
+/// start a drag on `drag_started()`, whatever the button). A right or middle click while the left button is
+/// still down leaves a left drag running.
+pub fn drag_finished(pointer: &egui::PointerState, drag: Option<&Drag>) -> bool {
+    drag.is_some_and(|d| pointer.button_released(held_button(d)) || (pointer.any_released() && !pointer.any_down()))
+}
+
+/// Whether a context menu may be shown: not while a drag is in progress, unless it was already open.
+pub fn menu_may_open(dragging: bool, open: bool) -> bool {
+    !dragging || open
+}
+
+/// `Response::context_menu` that a right click during a drag does not open: egui gives a right click made with
+/// the left button still down to the widget under the pointer.
+pub fn menu_unless_dragging(resp: &egui::Response, dragging: bool, add_contents: impl FnOnce(&mut egui::Ui)) {
+    if menu_may_open(dragging, resp.context_menu_opened()) {
+        resp.context_menu(add_contents);
+    }
+}
+
 impl OndinaApp {
     /// Esc with a drag in progress cancels it. Without a drag Esc is left to the rename fields and the
     /// unsaved-changes prompt, so it is consumed only here.
@@ -65,7 +95,9 @@ impl OndinaApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{cancel_command, take_cancelled, take_escape};
+    use super::{
+        cancel_command, drag_finished, held_button, menu_may_open, menu_unless_dragging, take_cancelled, take_escape,
+    };
     use crate::app::Drag;
     use crate::arrange::{cycle_gesture_key, CycleZone};
     use crate::automation_lane::{lane_spec, PointDrag};
@@ -73,7 +105,7 @@ mod tests {
     use crate::note_drag::VelocityStroke;
     use crate::region_edit::FadeHandle;
     use crate::step_paint::StepStroke;
-    use eframe::egui::{Event, Key, Modifiers};
+    use eframe::egui::{self, pos2, vec2, Event, Key, Modifiers, PointerButton, Pos2, Rect, Sense};
     use ondina_core::command::Command;
     use ondina_core::model::{AutomationPoint, Cycle, Note, RegionContent, TrackKind};
     use ondina_studio::{Session, Source};
@@ -101,6 +133,176 @@ mod tests {
 
     fn key(code: Key, pressed: bool, repeat: bool, modifiers: Modifiers) -> Event {
         Event::Key { key: code, physical_key: None, pressed, repeat, modifiers }
+    }
+
+    fn moved(p: Pos2) -> Event {
+        Event::PointerMoved(p)
+    }
+
+    fn button(p: Pos2, b: PointerButton, pressed: bool) -> Event {
+        Event::PointerButton { pos: p, button: b, pressed, modifiers: Modifiers::NONE }
+    }
+
+    fn raw(k: usize, events: Vec<Event>) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+            time: Some(k as f64 * 0.016),
+            events,
+            ..Default::default()
+        }
+    }
+
+    /// One frame per entry; what `drag_finished` says for `drag` in each.
+    fn finished_per_frame(frames: Vec<Vec<Event>>, drag: Option<&Drag>) -> Vec<bool> {
+        let ctx = egui::Context::default();
+        let mut out = Vec::new();
+        for (k, events) in frames.into_iter().enumerate() {
+            let _ = ctx.run(raw(k, events), |ctx| out.push(ctx.input(|i| drag_finished(&i.pointer, drag))));
+        }
+        out
+    }
+
+    const A: Pos2 = pos2(200.0, 130.0);
+    const B: Pos2 = pos2(500.0, 130.0);
+    const C: Pos2 = pos2(520.0, 200.0);
+
+    /// A left drag from A to C with a right click and a middle click at B on the way.
+    fn left_drag_with_other_clicks() -> Vec<Vec<Event>> {
+        vec![
+            vec![moved(A)],
+            vec![button(A, PointerButton::Primary, true)],
+            vec![moved(B)],
+            vec![button(B, PointerButton::Secondary, true)],
+            vec![button(B, PointerButton::Secondary, false)],
+            vec![button(B, PointerButton::Middle, true)],
+            vec![button(B, PointerButton::Middle, false)],
+            vec![moved(C)],
+            vec![button(C, PointerButton::Primary, false)],
+        ]
+    }
+
+    fn move_region() -> Drag {
+        Drag::MoveRegion { id: 3, grab_beat: 2.0, orig_start: 0.0, orig_track: 1, cur_start: 4.0, cur_track: 2, copy: false }
+    }
+
+    #[test]
+    fn held_button_is_the_left_one_except_for_a_cc_erase_stroke() {
+        let erase = Drag::CcStroke { region: 3, stroke: CcStroke::new(64, true, 0.25, 4.0) };
+        let draw = Drag::CcStroke { region: 3, stroke: CcStroke::new(64, false, 0.25, 4.0) };
+        let step = Drag::StepPaint { region: 3, stroke: StepStroke::begin(0, 0, 0) };
+        assert_eq!(held_button(&erase), PointerButton::Secondary);
+        assert_eq!(held_button(&draw), PointerButton::Primary);
+        assert_eq!(held_button(&move_region()), PointerButton::Primary);
+        assert_eq!(held_button(&step), PointerButton::Primary);
+    }
+
+    #[test]
+    fn a_right_or_middle_click_does_not_end_a_left_drag() {
+        let drags = vec![
+            move_region(),
+            Drag::Notes { region: 3, orig: notes(), indices: vec![0, 1], grab_beat: 0.5, grab_pitch: 60, d_beat: 1.0, d_pitch: 2 },
+            Drag::StepPaint { region: 3, stroke: StepStroke::begin(0, 0, 0) },
+            Drag::CcStroke { region: 3, stroke: CcStroke::new(64, false, 0.25, 4.0) },
+        ];
+        let mut want = vec![false; 8];
+        want.push(true);
+        for d in &drags {
+            assert_eq!(finished_per_frame(left_drag_with_other_clicks(), Some(d)), want);
+        }
+    }
+
+    #[test]
+    fn the_left_release_ends_the_drag_even_with_the_right_still_down() {
+        let d = move_region();
+        let start = || {
+            vec![
+                vec![moved(A)],
+                vec![button(A, PointerButton::Primary, true)],
+                vec![moved(B)],
+                vec![button(B, PointerButton::Secondary, true)],
+            ]
+        };
+        let mut frames = start();
+        frames.push(vec![button(B, PointerButton::Primary, false)]);
+        assert_eq!(finished_per_frame(frames, Some(&d)), vec![false, false, false, false, true]);
+        let mut frames = start();
+        frames.push(vec![button(B, PointerButton::Secondary, false), button(B, PointerButton::Primary, false)]);
+        assert_eq!(finished_per_frame(frames, Some(&d)), vec![false, false, false, false, true]);
+    }
+
+    #[test]
+    fn a_cc_erase_stroke_ends_on_the_right_release_not_on_a_left_click() {
+        let d = Drag::CcStroke { region: 3, stroke: CcStroke::new(64, true, 0.25, 4.0) };
+        let frames = vec![
+            vec![moved(A)],
+            vec![button(A, PointerButton::Secondary, true)],
+            vec![moved(B)],
+            vec![button(B, PointerButton::Primary, true)],
+            vec![button(B, PointerButton::Primary, false)],
+            vec![button(B, PointerButton::Secondary, false)],
+        ];
+        assert_eq!(finished_per_frame(frames, Some(&d)), vec![false, false, false, false, false, true]);
+    }
+
+    #[test]
+    fn a_drag_egui_started_with_another_button_ends_when_no_button_is_left_down() {
+        let d = move_region();
+        for b in [PointerButton::Secondary, PointerButton::Middle] {
+            let frames = vec![vec![moved(A)], vec![button(A, b, true)], vec![moved(B)], vec![button(B, b, false)]];
+            assert_eq!(finished_per_frame(frames, Some(&d)), vec![false, false, false, true], "{b:?}");
+        }
+    }
+
+    #[test]
+    fn without_a_drag_nothing_ends() {
+        assert!(finished_per_frame(left_drag_with_other_clicks(), None).iter().all(|f| !f));
+    }
+
+    #[test]
+    fn a_menu_opens_only_without_a_drag_or_when_already_open() {
+        assert!(menu_may_open(false, false));
+        assert!(menu_may_open(false, true));
+        assert!(menu_may_open(true, true));
+        assert!(!menu_may_open(true, false));
+    }
+
+    /// A left drag from one widget with a right click on another on the way: whether egui gave the target a
+    /// right click, and whether a context menu is open right after `menu_unless_dragging` in the last frame.
+    fn right_click_during_drag(dragging: bool) -> (bool, bool) {
+        let frames = vec![
+            vec![moved(A)],
+            vec![button(A, PointerButton::Primary, true)],
+            vec![moved(B)],
+            vec![button(B, PointerButton::Secondary, true)],
+            vec![button(B, PointerButton::Secondary, false)],
+        ];
+        let last = frames.len() - 1;
+        let ctx = egui::Context::default();
+        let (mut clicked, mut open) = (false, false);
+        for (k, events) in frames.into_iter().enumerate() {
+            let _ = ctx.run(raw(k, events), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let src = Rect::from_min_max(pos2(100.0, 100.0), pos2(300.0, 160.0));
+                    let _ = ui.interact(src, egui::Id::new("src"), Sense::click_and_drag());
+                    let rect = Rect::from_min_max(pos2(400.0, 100.0), pos2(600.0, 160.0));
+                    let target = ui.interact(rect, egui::Id::new("target"), Sense::click_and_drag());
+                    clicked |= target.secondary_clicked();
+                    menu_unless_dragging(&target, dragging, |ui| {
+                        ui.label("menu");
+                    });
+                    if k == last {
+                        open = ui.ctx().is_context_menu_open();
+                    }
+                });
+            });
+        }
+        (clicked, open)
+    }
+
+    #[test]
+    fn a_right_click_during_a_drag_opens_no_context_menu() {
+        assert_eq!(right_click_during_drag(false), (true, true));
+        assert_eq!(right_click_during_drag(true), (true, false));
     }
 
     #[test]
