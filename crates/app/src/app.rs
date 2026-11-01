@@ -606,6 +606,11 @@ impl OndinaApp {
             return;
         }
         self.show_assistant = true;
+        // every AI button is disabled without a model; this keeps a stray request from failing in the background
+        if self.ai_engine() == crate::assistant::AiEngine::Offline {
+            self.status = crate::assistant::NO_MODEL_HINT.into();
+            return;
+        }
         self.ai.chat.push(ChatItem::User(text.clone()));
         self.ai.busy = true;
         self.ai.cancel.store(false, Ordering::Relaxed);
@@ -1982,7 +1987,7 @@ impl OndinaApp {
                         }
                     });
                 });
-                if ui.button(RichText::new("✨ Ask the AI to fix the mix").color(theme::AI)).clicked() {
+                if self.ai_button(ui, RichText::new("✨ Ask the AI to fix the mix").color(theme::AI)) {
                     self.ask_ai(ondina_studio::prompts::FIX_MIX.into());
                 }
             });

@@ -99,7 +99,7 @@ impl OndinaApp {
                     self.status = format!("Committed {} regions", v["created_regions"].as_array().map(|a| a.len()).unwrap_or(0));
                 }
             }
-            if ui.button(RichText::new("✨ AI: fill the grid").color(theme::AI)).clicked() {
+            if self.ai_button(ui, RichText::new("✨ AI: fill the grid").color(theme::AI)) {
                 self.ask_ai(ondina_studio::prompts::FILL_GRID.into());
             }
         });

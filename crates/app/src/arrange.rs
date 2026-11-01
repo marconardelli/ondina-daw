@@ -892,7 +892,7 @@ impl OndinaApp {
                     }
                     ui.separator();
                 }
-                if ui.button("✨ Ask AI to write a part for this track").clicked() {
+                if self.ai_button(ui, "✨ Ask AI to write a part for this track") {
                     self.selected_track = Some(tid);
                     ui.close_menu();
                     self.ask_ai(ondina_studio::prompts::WRITE_PART.into());
@@ -1258,7 +1258,7 @@ impl OndinaApp {
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("✨ Ask AI to vary this region").clicked() {
+                    if self.ai_button(ui, "✨ Ask AI to vary this region") {
                         self.selected_region = Some(rid);
                         ui.close_menu();
                         self.ask_ai(ondina_studio::prompts::VARY_REGION.into());

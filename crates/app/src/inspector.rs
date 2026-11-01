@@ -616,7 +616,7 @@ impl OndinaApp {
                 }
             });
             ui.horizontal(|ui| {
-                if ui.button(RichText::new("✨ AI: design a sound").color(theme::AI)).clicked() {
+                if self.ai_button(ui, RichText::new("✨ AI: design a sound").color(theme::AI)) {
                     self.ask_ai(ondina_studio::prompts::design_sound(pid, info.name));
                 }
             });

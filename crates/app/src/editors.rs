@@ -216,7 +216,7 @@ impl OndinaApp {
                 self.cmd_merge(Command::SetRegionProperties { region_id: rid, name: None, muted: None, loop_count: None, transpose: Some(tr), velocity_offset: None, gain_db: None, fade_in: None, fade_out: None, reverse: None, color: None }, format!("tr{rid}"));
             }
             ui.separator();
-            if ui.button(RichText::new("✨ AI: continue / improve").color(theme::AI)).clicked() {
+            if self.ai_button(ui, RichText::new("✨ AI: continue / improve").color(theme::AI)) {
                 self.ask_ai(ondina_studio::prompts::CONTINUE_IMPROVE.into());
             }
         });
@@ -1076,7 +1076,7 @@ impl OndinaApp {
             if ui.button("Convert to MIDI").clicked() {
                 self.cmd(Command::ConvertPatternToMidi { region_id: rid });
             }
-            if ui.button(RichText::new("✨ AI: write a groove").color(theme::AI)).clicked() {
+            if self.ai_button(ui, RichText::new("✨ AI: write a groove").color(theme::AI)) {
                 self.ask_ai(ondina_studio::prompts::WRITE_GROOVE.into());
             }
         });
