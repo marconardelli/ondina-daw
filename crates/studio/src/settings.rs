@@ -30,6 +30,9 @@ pub struct Settings {
     /// Before Save replaces a project file, its previous version is kept next to it as `<file>.bak`
     /// (one copy, replaced at every save).
     pub keep_save_backup: bool,
+    /// Sizes of the main window's panels as the person left them (points, before the UI scale). `None` until a
+    /// panel is resized, so the window picks a size that fits the screen.
+    pub panels: PanelSizes,
     /// True when settings.json exists but could not be read (or could not be set aside after failing to parse):
     /// these are the defaults, and `save_to`/`try_save`/`save` leave the file alone until the person presses
     /// Save settings in the Settings window (`save_replacing`).
@@ -37,9 +40,21 @@ pub struct Settings {
     pub file_unread: bool,
 }
 
+/// Width of the side panels and height of the bottom panel in the main window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PanelSizes {
+    /// Inspector / Library on the left.
+    pub left: Option<f32>,
+    /// Assistant on the right.
+    pub assistant: Option<f32>,
+    /// Editor, Mixer or Clip Grid at the bottom (one height for the three).
+    pub bottom: Option<f32>,
+}
+
 impl Default for Settings {
     fn default() -> Self {
-        Settings { api_key: None, model: crate::ai::DEFAULT_MODEL.into(), effort: "medium".into(), mcp_enabled: true, mcp_port: 3917, audio_output: None, recent_projects: vec![], ui_scale: 1.0, provider: "auto".into(), local_url: "http://127.0.0.1:8080/v1".into(), local_model: "local".into(), vst3_folders: vec![], autosave_minutes: 3, keep_save_backup: true, file_unread: false }
+        Settings { api_key: None, model: crate::ai::DEFAULT_MODEL.into(), effort: "medium".into(), mcp_enabled: true, mcp_port: 3917, audio_output: None, recent_projects: vec![], ui_scale: 1.0, provider: "auto".into(), local_url: "http://127.0.0.1:8080/v1".into(), local_model: "local".into(), vst3_folders: vec![], autosave_minutes: 3, keep_save_backup: true, panels: PanelSizes::default(), file_unread: false }
     }
 }
 
@@ -188,6 +203,18 @@ mod tests {
         s.vst3_folders.push("C:\\Plugins".into());
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.vst3_folders, vec!["C:\\Plugins".to_string()]);
+    }
+
+    #[test]
+    fn settings_without_panel_sizes_load_with_none_and_keep_them_on_save() {
+        let s: Settings = serde_json::from_str(r#"{"model":"x"}"#).unwrap();
+        assert_eq!(s.panels, PanelSizes::default());
+        let mut s = s;
+        s.panels = PanelSizes { left: Some(250.0), assistant: None, bottom: Some(320.5) };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.panels, s.panels);
+        let partial: Settings = serde_json::from_str(r#"{"panels":{"left":300}}"#).unwrap();
+        assert_eq!(partial.panels, PanelSizes { left: Some(300.0), assistant: None, bottom: None });
     }
 
     #[test]

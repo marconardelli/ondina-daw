@@ -2217,42 +2217,7 @@ impl eframe::App for OndinaApp {
             .exact_height(24.0)
             .frame(egui::Frame::none().fill(theme::CHROME).inner_margin(egui::Margin::symmetric(theme::SP_5, 0.0)))
             .show(ctx, |ui| self.status_bar(ui));
-        if self.show_assistant {
-            egui::SidePanel::right("assistant")
-                .default_width(370.0)
-                .min_width(280.0)
-                .show(ctx, |ui| self.assistant_ui(ui));
-        }
-        if self.show_left {
-            egui::SidePanel::left("left")
-                .default_width(270.0)
-                .min_width(220.0)
-                .show(ctx, |ui| self.left_ui(ui));
-        }
-        match self.bottom {
-            BottomTab::Editor => {
-                egui::TopBottomPanel::bottom("editor")
-                    .resizable(true)
-                    .default_height(300.0)
-                    .min_height(160.0)
-                    .show(ctx, |ui| self.editor_ui(ui));
-            }
-            BottomTab::Mixer => {
-                egui::TopBottomPanel::bottom("mixer")
-                    .resizable(true)
-                    .default_height(330.0)
-                    .min_height(240.0)
-                    .show(ctx, |ui| self.mixer_ui(ui));
-            }
-            BottomTab::Live => {
-                egui::TopBottomPanel::bottom("live")
-                    .resizable(true)
-                    .default_height(300.0)
-                    .min_height(180.0)
-                    .show(ctx, |ui| self.live_ui(ui));
-            }
-            BottomTab::Hidden => {}
-        }
+        self.show_panels(ctx);
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(theme::BG))
             .show(ctx, |ui| self.arrange_ui(ui));

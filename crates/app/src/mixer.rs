@@ -15,13 +15,20 @@ const STRIP_W: f32 = 108.0;
 impl OndinaApp {
     pub fn mixer_ui(&mut self, ui: &mut egui::Ui) {
         let p = self.project();
-        egui::ScrollArea::horizontal().show(ui, |ui| {
-            ui.horizontal_top(|ui| {
-                for t in &p.tracks {
-                    self.channel_strip(ui, &p, Some(t), t.id, &t.channel);
-                }
-                ui.separator();
+        egui::Frame::none().inner_margin(theme::SP_4).show(ui, |ui| {
+            // the Master stays anchored on the right whatever the width; the tracks scroll beside it
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                 self.channel_strip(ui, &p, None, MASTER_ID, &p.master);
+                ui.separator();
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                    egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
+                        ui.horizontal_top(|ui| {
+                            for t in &p.tracks {
+                                self.channel_strip(ui, &p, Some(t), t.id, &t.channel);
+                            }
+                        });
+                    });
+                });
             });
         });
     }
@@ -34,6 +41,102 @@ impl OndinaApp {
             return;
         }
         self.exec(Command::OpenPluginEditor { plugin_id });
+    }
+
+    /// Buses a track can send or route to (not itself).
+    pub(crate) fn buses_for(p: &Project, id: Id) -> Vec<(Id, String)> {
+        p.tracks
+            .iter()
+            .filter(|b| b.kind == TrackKind::Bus && b.id != id)
+            .map(|b| (b.id, b.name.clone()))
+            .collect()
+    }
+
+    /// Entries of a "send" menu: the existing buses, then a new reverb or delay bus with the send to it.
+    pub(crate) fn add_send_items(&mut self, ui: &mut egui::Ui, id: Id, buses: &[(Id, String)]) {
+        for (bid, bname) in buses {
+            if ui.button(bname).clicked() {
+                self.cmd(Command::AddSend {
+                    track_id: id,
+                    bus_id: *bid,
+                    level_db: Some(-10.0),
+                    pre_fader: None,
+                });
+                ui.close_menu();
+            }
+        }
+        if ui.button("New reverb bus…").clicked() {
+            if let Some(v) = self.exec(Command::AddTrack {
+                kind: TrackKind::Bus,
+                name: Some("Reverb".into()),
+                patch: None,
+                instrument: None,
+                preset: None,
+                index: None,
+            }) {
+                if let Some(bid) = v["track_id"].as_u64() {
+                    self.cmd(Command::AddEffect {
+                        track_id: bid,
+                        kind: "reverb".into(),
+                        preset: Some("Reverb Return 100%".into()),
+                        index: None,
+                    });
+                    self.cmd(Command::AddSend {
+                        track_id: id,
+                        bus_id: bid,
+                        level_db: Some(-10.0),
+                        pre_fader: None,
+                    });
+                }
+            }
+            ui.close_menu();
+        }
+        if ui.button("New delay bus…").clicked() {
+            if let Some(v) = self.exec(Command::AddTrack {
+                kind: TrackKind::Bus,
+                name: Some("Delay".into()),
+                patch: None,
+                instrument: None,
+                preset: None,
+                index: None,
+            }) {
+                if let Some(bid) = v["track_id"].as_u64() {
+                    self.cmd(Command::AddEffect {
+                        track_id: bid,
+                        kind: "stereo_delay".into(),
+                        preset: Some("Delay Return 100%".into()),
+                        index: None,
+                    });
+                    self.cmd(Command::AddSend {
+                        track_id: id,
+                        bus_id: bid,
+                        level_db: Some(-12.0),
+                        pre_fader: None,
+                    });
+                }
+            }
+            ui.close_menu();
+        }
+    }
+
+    /// Entries of the output menu: Master or one of the buses.
+    pub(crate) fn output_items(&mut self, ui: &mut egui::Ui, id: Id, buses: &[(Id, String)]) {
+        if ui.button("Master").clicked() {
+            self.cmd(Command::SetTrackOutput {
+                track_id: id,
+                bus_id: None,
+            });
+            ui.close_menu();
+        }
+        for (bid, bname) in buses {
+            if ui.button(bname).clicked() {
+                self.cmd(Command::SetTrackOutput {
+                    track_id: id,
+                    bus_id: Some(*bid),
+                });
+                ui.close_menu();
+            }
+        }
     }
 
     fn channel_strip(
@@ -207,76 +310,9 @@ impl OndinaApp {
                                 }
                             });
                         }
-                        let buses: Vec<(Id, String)> = p
-                            .tracks
-                            .iter()
-                            .filter(|b| b.kind == TrackKind::Bus && b.id != id)
-                            .map(|b| (b.id, b.name.clone()))
-                            .collect();
+                        let buses = Self::buses_for(p, id);
                         widgets::icon_menu_button(ui, Icon::Send, RichText::new("send").small(), |ui| {
-                            for (bid, bname) in &buses {
-                                if ui.button(bname).clicked() {
-                                    self.cmd(Command::AddSend {
-                                        track_id: id,
-                                        bus_id: *bid,
-                                        level_db: Some(-10.0),
-                                        pre_fader: None,
-                                    });
-                                    ui.close_menu();
-                                }
-                            }
-                            if ui.button("New reverb bus…").clicked() {
-                                if let Some(v) = self.exec(Command::AddTrack {
-                                    kind: TrackKind::Bus,
-                                    name: Some("Reverb".into()),
-                                    patch: None,
-                                    instrument: None,
-                                    preset: None,
-                                    index: None,
-                                }) {
-                                    if let Some(bid) = v["track_id"].as_u64() {
-                                        self.cmd(Command::AddEffect {
-                                            track_id: bid,
-                                            kind: "reverb".into(),
-                                            preset: Some("Reverb Return 100%".into()),
-                                            index: None,
-                                        });
-                                        self.cmd(Command::AddSend {
-                                            track_id: id,
-                                            bus_id: bid,
-                                            level_db: Some(-10.0),
-                                            pre_fader: None,
-                                        });
-                                    }
-                                }
-                                ui.close_menu();
-                            }
-                            if ui.button("New delay bus…").clicked() {
-                                if let Some(v) = self.exec(Command::AddTrack {
-                                    kind: TrackKind::Bus,
-                                    name: Some("Delay".into()),
-                                    patch: None,
-                                    instrument: None,
-                                    preset: None,
-                                    index: None,
-                                }) {
-                                    if let Some(bid) = v["track_id"].as_u64() {
-                                        self.cmd(Command::AddEffect {
-                                            track_id: bid,
-                                            kind: "stereo_delay".into(),
-                                            preset: Some("Delay Return 100%".into()),
-                                            index: None,
-                                        });
-                                        self.cmd(Command::AddSend {
-                                            track_id: id,
-                                            bus_id: bid,
-                                            level_db: Some(-12.0),
-                                            pre_fader: None,
-                                        });
-                                    }
-                                }
-                                ui.close_menu();
-                            }
+                            self.add_send_items(ui, id, &buses);
                         });
                         // output
                         let out = match t.channel.output {
@@ -287,22 +323,7 @@ impl OndinaApp {
                             ),
                         };
                         ui.menu_button(RichText::new(short(&out, 14)).small(), |ui| {
-                            if ui.button("Master").clicked() {
-                                self.cmd(Command::SetTrackOutput {
-                                    track_id: id,
-                                    bus_id: None,
-                                });
-                                ui.close_menu();
-                            }
-                            for (bid, bname) in &buses {
-                                if ui.button(bname).clicked() {
-                                    self.cmd(Command::SetTrackOutput {
-                                        track_id: id,
-                                        bus_id: Some(*bid),
-                                    });
-                                    ui.close_menu();
-                                }
-                            }
+                            self.output_items(ui, id, &buses);
                         });
                     }
                     ui.add_space(4.0);

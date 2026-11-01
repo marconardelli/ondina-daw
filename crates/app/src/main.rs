@@ -29,6 +29,7 @@ mod note_clipboard;
 mod note_drag;
 mod note_menus;
 mod note_selection;
+mod panel_layout;
 mod piano_roll_view;
 mod region_edit;
 mod region_clipboard;
