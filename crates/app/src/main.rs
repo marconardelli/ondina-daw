@@ -31,6 +31,7 @@ mod note_selection;
 mod piano_roll_view;
 mod region_edit;
 mod region_clipboard;
+mod session_players;
 mod step_paint;
 mod theme;
 mod transport_keys;

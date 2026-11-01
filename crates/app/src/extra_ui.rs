@@ -39,6 +39,8 @@ pub struct ExtraState {
     stretch: f64,
     semis: f64,
     vari: f64,
+    /// Length and drummer choices of the session players in the track menu.
+    pub players: crate::session_players::PlayerChoices,
 }
 
 impl ExtraState {
