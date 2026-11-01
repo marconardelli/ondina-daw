@@ -39,7 +39,10 @@ or bounce to a NAS from the Save dialog.
 VST3 plug-ins are native code, so Ondina loads them only from a `.vst3` bundle on a local drive. `add_vst3`, projects
 that reference plug-ins, the native editor windows and the extra folders of `scan_vst3` all go through the same
 check: network shares, `\\?\` and `\\.\` device paths, URLs, NTFS streams and files that are not `.vst3` are refused
-before anything is loaded, and the path is checked again after Windows resolves links and junctions. A project that
+before anything is loaded, and the path is checked again after Windows resolves links and junctions; a plug-in path
+that Windows cannot resolve for any reason other than not existing is refused. An extra scan folder must itself
+resolve to a local drive (a drive letter mapped to a share does not), and so must every link or junction inside it,
+because the scanner loads every plug-in it finds; a folder that cannot be resolved is skipped. A project that
 references a refused plug-in still opens: the plug-in stays in the project but is not loaded (its track is silent
 there), and `open_project` lists it in `blocked_plugins`. This applies to the app's own menus too, because the risk
 comes from the project file: plug-ins kept on a NAS must be copied to a local folder.

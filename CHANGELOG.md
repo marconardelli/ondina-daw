@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Security
+
+- `scan_vst3` extra folders are checked after Windows resolves them: a folder on a drive letter mapped to a network
+  share, or one containing a link or junction that leads to a share, is skipped instead of scanned (scanning loads
+  every plug-in it finds). A folder that cannot be resolved is skipped too.
+- A plug-in path that Windows cannot resolve (for example access denied or a broken link) is now refused; only a path
+  that does not exist is still passed on, so the host can report it as not found.
+
 ## [0.8.1] - 2026-10-31
 
 ### Changed

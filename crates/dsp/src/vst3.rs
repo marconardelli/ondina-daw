@@ -85,7 +85,9 @@ pub fn resolve_plugin_path(path: &str) -> Result<String, String> {
     match Path::new(&abs).canonicalize() {
         Ok(c) => check_resolved(&c.display().to_string()).map_err(|e| refused(format!("{path}: {e}"))),
         // a path that does not exist: the host reports "not found" itself
-        Err(_) => Ok(abs),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(abs),
+        // anything else (access denied, a broken link...) could hide where the path leads
+        Err(e) => Err(refused(format!("{path}: cannot be resolved: {e}"))),
     }
 }
 
@@ -96,12 +98,55 @@ pub fn split_scan_paths(extra: &[String]) -> (Vec<String>, Vec<(String, String)>
     let mut kept = Vec::new();
     let mut skipped = Vec::new();
     for p in extra {
-        match local_absolute(p) {
+        match local_absolute(p).and_then(|abs| check_scan_folder(&abs)) {
             Ok(abs) => kept.push(abs),
             Err(e) => skipped.push((p.clone(), e)),
         }
     }
     (kept, skipped)
+}
+
+/// The resolved half of the scan-folder check. A mapped drive letter or a junction can make a
+/// local-looking folder lead to a share, so the folder must resolve to a local drive, and so must
+/// every link inside it: the scanner follows them and loads every plug-in it finds. A folder
+/// that cannot be resolved (it does not exist, access is denied) is skipped.
+fn check_scan_folder(abs: &str) -> Result<String, String> {
+    let resolved = Path::new(abs).canonicalize().map_err(|e| format!("{abs} cannot be resolved: {e}"))?;
+    let local = local_resolved(&resolved).ok_or_else(|| format!("{abs} leads to {}, which is not on a local drive", resolved.display()))?;
+    check_links_inside(Path::new(&local), 0)?;
+    Ok(local)
+}
+
+/// The resolved path without the `\\?\` prefix, if it is on a local drive (`\\?\UNC\...` is not).
+fn local_resolved(resolved: &Path) -> Option<String> {
+    let s = resolved.display().to_string();
+    let s = s.strip_prefix(r"\\?\").unwrap_or(&s).to_string();
+    is_drive_path(&s).then_some(s)
+}
+
+/// How deep the link check goes into a scan folder; deeper means a link loop, and the folder is skipped.
+const MAX_SCAN_DEPTH: usize = 8;
+
+/// Every symbolic link or junction under `dir` must resolve to a local drive.
+fn check_links_inside(dir: &Path, depth: usize) -> Result<(), String> {
+    if depth > MAX_SCAN_DEPTH {
+        return Err(format!("{} is nested too deeply (a link loop?)", dir.display()));
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return Ok(()) };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+        if meta.file_type().is_symlink() {
+            let target = path.canonicalize().map_err(|e| format!("{} is a link that cannot be resolved: {e}", path.display()))?;
+            if local_resolved(&target).is_none() {
+                return Err(format!("{} links to {}, which is not on a local drive", path.display(), target.display()));
+            }
+        }
+        if path.is_dir() {
+            check_links_inside(&path, depth + 1)?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -641,15 +686,39 @@ mod tests {
 
     #[test]
     fn split_scan_paths_skips_network_folders() {
-        let extra: Vec<String> = ["tools/vst3", "\\\\server\\vst", "C:\\VST", "http://x/vst"].iter().map(|s| s.to_string()).collect();
+        let local = std::env::temp_dir().join("ondina_scan_local");
+        std::fs::create_dir_all(&local).unwrap();
+        let local = local.display().to_string();
+        let extra: Vec<String> = ["src", local.as_str(), r"\\server\vst", r"C:\no-such-ondina-vst-folder", "http://x/vst"].iter().map(|s| s.to_string()).collect();
         let (kept, skipped) = split_scan_paths(&extra);
         assert_eq!(kept.len(), 2, "{kept:?}");
         assert!(Path::new(&kept[0]).is_absolute(), "{kept:?}");
-        assert_eq!(Path::new(&kept[0]), std::path::absolute("tools/vst3").unwrap());
-        assert_eq!(kept[1], "C:\\VST");
-        assert_eq!(skipped.len(), 2, "{skipped:?}");
-        assert_eq!(skipped[0].0, "\\\\server\\vst");
-        assert_eq!(skipped[1].0, "http://x/vst");
+        assert_eq!(kept[0], absolute("src"));
+        assert_eq!(kept[1], absolute(&local));
+        assert_eq!(skipped.len(), 3, "{skipped:?}");
+        assert_eq!(skipped[0].0, r"\\server\vst");
+        assert_eq!(skipped[1].0, r"C:\no-such-ondina-vst-folder", "a folder that cannot be resolved is not scanned");
+        assert_eq!(skipped[2].0, "http://x/vst");
         assert!(skipped.iter().all(|(_, r)| !r.is_empty()));
+    }
+
+    #[test]
+    fn resolved_scan_paths_must_be_on_a_local_drive() {
+        assert_eq!(local_resolved(Path::new(r"\\?\C:\VST3")).as_deref(), Some(r"C:\VST3"));
+        assert_eq!(local_resolved(Path::new(r"\\?\UNC\server\share\VST3")), None, "a mapped drive resolves to UNC");
+        assert_eq!(local_resolved(Path::new(r"\\server\share\VST3")), None);
+    }
+
+    #[test]
+    fn scan_folder_with_a_local_junction_is_kept() {
+        let base = std::env::temp_dir().join("ondina_scan_junction");
+        let _ = std::fs::remove_dir_all(&base);
+        let target = base.join("target");
+        std::fs::create_dir_all(&target).unwrap();
+        let folder = base.join("folder");
+        std::fs::create_dir_all(&folder).unwrap();
+        let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(folder.join("linked")).arg(&target).output().is_ok_and(|o| o.status.success());
+        let (kept, skipped) = split_scan_paths(&[folder.display().to_string()]);
+        assert_eq!(kept.len(), 1, "junction made: {made}, skipped: {skipped:?}");
     }
 }
