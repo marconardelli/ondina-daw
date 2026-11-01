@@ -2,7 +2,7 @@
 //! or external tools: Flex Time/Pitch, Stem Splitter, Live Loops transport, surround bounce,
 //! movies, VST3 hosting, live MIDI and settings.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -155,6 +155,11 @@ pub(crate) fn checked_output_path(source: Source, path: &str, allowed: &[&str], 
 /// Why a plug-in or a scan folder from MCP or the assistant is refused.
 const NOT_IN_VST3_FOLDER: &str = "is not in a standard VST3 folder or a VST3 folder added in Ondina (VST3 library > Add folder…)";
 
+/// Why a vst3 path stays out of the engine after an MCP client or the assistant opened the document.
+fn kept_out_reason(path: &str) -> String {
+    format!("{path} {NOT_IN_VST3_FOLDER}: open the project from the app to load it")
+}
+
 /// The extra folders `scan_vst3` hands to the scanner (the standard folders are always scanned): the
 /// user's VST3 folders plus `extra`. The scanner loads every plug-in it finds, so from MCP and the
 /// assistant an extra folder must lie inside one of `roots`; the others are skipped with the reason.
@@ -269,7 +274,7 @@ pub(crate) fn blocked_plugins_from(project: &Project, roots: Option<&[String]>) 
                 let reason = match ondina_dsp::vst3::resolve_plugin_path(p) {
                     Err(e) => e,
                     Ok(abs) if !ondina_dsp::vst3::is_under_trusted(&ondina_dsp::vst3::trusted_check_path(&abs), roots) => {
-                        format!("{p} {NOT_IN_VST3_FOLDER}: open the project from the app to load it")
+                        kept_out_reason(p)
                     }
                     Ok(_) => continue,
                 };
@@ -301,6 +306,30 @@ pub(crate) fn strip_untrusted_vst3(project: &mut Project, untrusted: &HashSet<St
 }
 
 impl Session {
+    /// The vst3 instances of the current document that the engine does not load, by plug-in id, with the reason:
+    /// paths the plug-in check refuses (a share, not a .vst3 bundle...) and paths kept out because an MCP client or
+    /// the assistant opened the document. Lexical only, never touches the disk, so the GUI can ask on every view
+    /// refresh while it holds the session lock.
+    pub fn unloaded_vst3(&self) -> HashMap<Id, String> {
+        let mut unloaded = HashMap::new();
+        for (_, pi) in plugins_with_owner(&self.project) {
+            if pi.kind != "vst3" {
+                continue;
+            }
+            let Some(p) = pi.vst3_path.as_deref() else { continue };
+            match ondina_dsp::vst3::check_plugin_path(p) {
+                Err(reason) => {
+                    unloaded.insert(pi.id, reason);
+                }
+                Ok(_) if self.is_untrusted_vst3(p) => {
+                    unloaded.insert(pi.id, kept_out_reason(p));
+                }
+                Ok(_) => {}
+            }
+        }
+        unloaded
+    }
+
     /// Opens an autosave copy as unsaved work: the project comes back through OpenProject, but without a file
     /// path, so the next save asks where to write instead of writing over the copy.
     pub fn open_recovered(&mut self, copy: &Path) -> Result<Value, String> {
@@ -523,7 +552,7 @@ impl Session {
                 }
                 // a native window would load the DLL that the engine keeps out after an MCP or assistant open
                 if let Some(s) = p.vst3_path.as_deref().filter(|s| self.is_untrusted_vst3(s)) {
-                    return Some(Err(format!("plug-in not loaded: {s} {NOT_IN_VST3_FOLDER}: open the project from the app to load it")));
+                    return Some(Err(format!("plug-in not loaded: {}", kept_out_reason(s))));
                 }
                 let path = p.vst3_path.clone().unwrap_or_default();
                 let params: Vec<(String, f32)> = p.params.iter().map(|(k, v)| (k.clone(), *v)).collect();
