@@ -280,6 +280,8 @@ pub struct OndinaApp {
     pub show_mcp_info: bool,
     pub show_about: bool,
     pub mix_report: Option<Value>,
+    /// Master loudness of the last mix analysis, shown in the mixer.
+    pub mix_loudness: Option<crate::mixer::MixLoudness>,
     pub rename_buf: String,
     /// Name and chord fields open in place; closed when the project is replaced.
     pub edits: crate::arrange::InPlaceEdits,
@@ -391,6 +393,7 @@ impl OndinaApp {
             show_mcp_info: false,
             show_about: false,
             mix_report: None,
+            mix_loudness: None,
             rename_buf: String::new(),
             edits: Default::default(),
             vst_filter: String::new(),
@@ -1685,12 +1688,7 @@ impl OndinaApp {
                     .clicked()
                 {
                     ui.close_menu();
-                    if let Some(v) = self.exec(Command::AnalyzeMix {
-                        start: None,
-                        end: None,
-                    }) {
-                        self.mix_report = Some(v);
-                    }
+                    self.analyze_mix();
                 }
                 if ui.button("Mastering Assistant (-14 LUFS)").clicked() {
                     ui.close_menu();
@@ -1953,50 +1951,7 @@ impl OndinaApp {
         });
         self.show_about = open;
 
-        if let Some(rep) = self.mix_report.clone() {
-            let mut open = true;
-            egui::Window::new("Mix Analysis").open(&mut open).default_width(520.0).show(ctx, |ui| {
-                let m = &rep["master"];
-                egui::Grid::new("mixrep").striped(true).show(ui, |ui| {
-                    for (label, key, unit) in [("Integrated loudness", "integrated_lufs", "LUFS"), ("Short-term max", "short_term_max_lufs", "LUFS"), ("Loudness range", "loudness_range_lu", "LU"), ("True peak", "true_peak_dbtp", "dBTP"), ("RMS", "rms_dbfs", "dBFS"), ("Crest factor", "crest_factor_db", "dB"), ("Stereo correlation", "stereo_correlation", "")] {
-                        ui.label(label);
-                        ui.label(RichText::new(format!("{} {}", m[key], unit)).monospace());
-                        ui.end_row();
-                    }
-                    ui.label("Spectral balance low/mid/high");
-                    ui.label(RichText::new(format!("{} / {} / {} %", m["spectral_balance_pct"][0], m["spectral_balance_pct"][1], m["spectral_balance_pct"][2])).monospace());
-                    ui.end_row();
-                });
-                ui.separator();
-                for a in rep["advice"].as_array().cloned().unwrap_or_default() {
-                    ui.label(format!("• {}", a.as_str().unwrap_or("")));
-                }
-                ui.separator();
-                egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
-                    egui::Grid::new("trk").striped(true).show(ui, |ui| {
-                        ui.label(RichText::new("Track").strong());
-                        ui.label(RichText::new("Peak").strong());
-                        ui.label(RichText::new("LUFS").strong());
-                        ui.label(RichText::new("Low/Mid/High %").strong());
-                        ui.end_row();
-                        for t in rep["tracks"].as_array().cloned().unwrap_or_default() {
-                            let a = &t["analysis"];
-                            ui.label(t["name"].as_str().unwrap_or(""));
-                            ui.label(format!("{}", a["peak_dbfs"]));
-                            ui.label(format!("{}", a["integrated_lufs"]));
-                            ui.label(format!("{}/{}/{}", a["spectral_balance_pct"][0], a["spectral_balance_pct"][1], a["spectral_balance_pct"][2]));
-                            ui.end_row();
-                        }
-                    });
-                });
-                if self.ai_button(ui, RichText::new("✨ Ask the AI to fix the mix").color(theme::AI)) {
-                    self.ask_ai(ondina_studio::prompts::FIX_MIX.into());
-                }
-            });
-            if !open {
-                self.mix_report = None;
-            }
-        }
+        self.mix_analysis_ui(ctx);
     }
 
     fn doc_prompt_ui(&mut self, ctx: &egui::Context) {
