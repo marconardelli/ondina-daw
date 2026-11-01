@@ -66,6 +66,18 @@ fn parse_name(n: &str) -> Option<u8> {
     ondina_core::theory::parse_note(n)
 }
 
+/// Space between the score's sheet and the edges of the editor.
+const SCORE_MARGIN: f32 = 12.0;
+
+/// Song bar number of a region's first measure: the score counts measures from the region start, the labels follow
+/// the song like the piano roll's ruler (the bar the measure starts in).
+fn score_first_bar(region_start: f64, beats_per_bar: f64) -> usize {
+    if beats_per_bar <= 0.0 {
+        return 1;
+    }
+    (region_start / beats_per_bar).floor().max(0.0) as usize + 1
+}
+
 /// Diatonic step number (C4 = 28).
 fn diatonic(p: u8) -> i32 {
     (p as i32 / 12) * 7 + LETTER[(p % 12) as usize]
@@ -247,16 +259,21 @@ impl OndinaApp {
         let per_beat = 64.0f32;
         let bpb = self.view.project.time_signature.beats_per_bar() as f32;
         let measure_w = per_beat * bpb + 14.0;
-        let per_row = ((ui.available_width() - 60.0) / measure_w).floor().max(1.0) as usize;
+        let per_row = ((ui.available_width() - 60.0 - 2.0 * SCORE_MARGIN) / measure_w).floor().max(1.0) as usize;
+        let first_bar = score_first_bar(region.start, f64::from(bpb));
         let rows = measures.len().div_ceil(per_row).max(1);
         let row_h = staff_gap * 4.0 + 90.0;
         egui::ScrollArea::vertical().show(ui, |ui| {
-            let (rect, _) = ui.allocate_exact_size(
-                vec2(ui.available_width(), rows as f32 * row_h + 20.0),
+            let (outer, _) = ui.allocate_exact_size(
+                vec2(ui.available_width(), rows as f32 * row_h + 20.0 + 2.0 * SCORE_MARGIN),
                 Sense::hover(),
             );
-            let painter = ui.painter_at(rect);
-            painter.rect_filled(rect, Rounding::ZERO, Color32::from_rgb(245, 243, 236));
+            // a sheet of paper on the dark ground, with a margin and a soft shadow
+            let painter = ui.painter_at(outer);
+            painter.rect_filled(outer, Rounding::ZERO, theme::GROUND);
+            let rect = outer.shrink(SCORE_MARGIN);
+            painter.rect_filled(rect.translate(vec2(0.0, 3.0)).expand(1.0), Rounding::same(theme::R_LG), Color32::from_black_alpha(90));
+            painter.rect_filled(rect, Rounding::same(theme::R_SM), Color32::from_rgb(245, 243, 236));
             let ink = Color32::from_rgb(25, 25, 30);
             // bottom line pitch: E4 (treble) or G2 (bass)
             let bottom = if bass { diatonic(43) } else { diatonic(64) };
@@ -292,7 +309,7 @@ impl OndinaApp {
                     painter.text(
                         pos2(mx + 2.0, line_y(4) - 12.0),
                         Align2::LEFT_BOTTOM,
-                        format!("{}", idx + 1),
+                        format!("{}", first_bar + idx),
                         FontId::proportional(9.0),
                         Color32::GRAY,
                     );
@@ -1026,4 +1043,18 @@ fn grab_frame(path: &str, t: f64) -> Option<egui::ColorImage> {
     let (w, h) = (320usize, 180usize);
     let px = ondina_studio::session_ext::movie_frame_rgb(path, t, w, h).ok()?;
     Some(egui::ColorImage::from_rgb([w, h], &px))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn score_bars_are_numbered_from_the_song() {
+        assert_eq!(score_first_bar(0.0, 4.0), 1);
+        assert_eq!(score_first_bar(16.0, 4.0), 5);
+        assert_eq!(score_first_bar(18.0, 4.0), 5, "a region starting mid-bar: the bar it starts in");
+        assert_eq!(score_first_bar(9.0, 3.0), 4, "3/4");
+        assert_eq!(score_first_bar(8.0, 0.0), 1);
+    }
 }
