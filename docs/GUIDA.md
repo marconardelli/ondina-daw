@@ -323,6 +323,11 @@ compatibile OpenAI all'indirizzo scelto in **Settings ⚙** (di default `http://
 ## Annulla e ripeti
 
 - Ctrl+Z annulla l'ultima modifica, Ctrl+Y la ripete.
+- Esc mentre trascini con il mouse (regioni, dissolvenze, marker, accordi, ciclo, intestazioni delle tracce, note,
+  bordi delle note, rettangolo di selezione, velocity, tratti nella corsia dei controller) annulla il gesto: tutto
+  torna com'era e non serve Ctrl+Z. Il ciclo, che si aggiorna mentre lo trascini, torna al suo posto; nella
+  cronologia può restare un passo "set_cycle" che non cambia nulla. Finché tieni premuto il pulsante non parte un
+  altro trascinamento: rilascia e ricomincia.
 - Tutto quello che l'assistente fa per una richiesta è un solo passo: Ctrl+Z, o **↶ Undo AI edit**
   nel pannello dell'assistente, riporta il progetto a com'era prima della richiesta. Il menu Edit
   mostra l'inizio della richiesta, per esempio *Undo assistant: Add drums*.
@@ -382,6 +387,7 @@ l'assistente o un client MCP.
 | Ctrl+A | seleziona tutte le note (piano roll) |
 | ← / → | sposta le note selezionate di un passo di snap |
 | ↑ / ↓, Maiusc+↑ / ↓ | trasporta le note selezionate di un semitono / un'ottava |
+| Esc (mentre trascini) | annulla il trascinamento |
 
 `,` e `.` da metà battuta portano all'inizio della battuta; durante la riproduzione, a meno di mezzo beat da una
 battuta o da un marker, `,` va a quello prima. Queste scorciatoie e Ctrl+T sono spente mentre scrivi in un campo di

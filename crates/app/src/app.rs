@@ -104,13 +104,17 @@ pub enum Drag {
         orig: f64,
         cur: f64,
     },
-    /// Drawing a new cycle on the ruler from `anchor`; `gesture` keys its single undo step.
+    /// Drawing a new cycle on the ruler from `anchor`; `gesture` keys its single undo step. `orig` is the cycle
+    /// when the press began and `sent` tells whether the drag has sent a range yet (Esc puts `orig` back).
     Cycle {
         anchor: f64,
         gesture: u64,
+        orig: Cycle,
+        sent: bool,
     },
     /// Moving the cycle (zone Body) or one of its edges on the ruler's cycle strip. `start`, `end` and `enabled` are
-    /// the cycle when the drag began; `sent` is the last range sent and `sent_at` when (egui time, seconds).
+    /// the cycle when the drag began; `sent` is the last range sent and `sent_at` when (egui time, seconds). Esc
+    /// puts the cycle back as it began only if `sent` is set: otherwise nothing has changed.
     CycleEdit {
         zone: crate::arrange::CycleZone,
         grab_beat: f64,
@@ -2070,6 +2074,7 @@ impl eframe::App for OndinaApp {
         self.poll_ai();
         self.update_meters();
         self.handle_close_request(ctx);
+        self.cancel_drag_on_escape(ctx);
         if self.doc_prompt.is_none() {
             self.handle_keys(ctx);
         }

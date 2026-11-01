@@ -28,7 +28,7 @@ fn is_black(p: i32) -> bool {
 }
 
 /// Removes the events that match `f` and tells whether there was one.
-fn take_event(events: &mut Vec<egui::Event>, f: impl Fn(&egui::Event) -> bool) -> bool {
+pub(crate) fn take_event(events: &mut Vec<egui::Event>, f: impl Fn(&egui::Event) -> bool) -> bool {
     let before = events.len();
     events.retain(|e| !f(e));
     events.len() != before

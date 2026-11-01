@@ -272,7 +272,7 @@ impl OndinaApp {
                 match ruler_drag_action(on_strip(o), shift, zone_at(o.x)) {
                     RulerDrag::DrawCycle => {
                         let anchor = self.snap_beat(self.x_to_beat(o.x, timeline_x).max(0.0));
-                        self.drag = Some(Drag::Cycle { anchor, gesture });
+                        self.drag = Some(Drag::Cycle { anchor, gesture, orig: p.cycle, sent: false });
                     }
                     RulerDrag::EditCycle(zone) => {
                         self.drag = Some(Drag::CycleEdit {
@@ -315,7 +315,7 @@ impl OndinaApp {
         let pointer_x = ui.input(|i| i.pointer.interact_pos().filter(|_| i.pointer.primary_down()).map(|pp| pp.x));
         let now = ui.input(|i| i.time);
         match self.drag {
-            Some(Drag::Cycle { anchor, gesture }) => {
+            Some(Drag::Cycle { anchor, gesture, .. }) => {
                 if let Some(x) = pointer_x {
                     let b = self.snap_beat(self.x_to_beat(x, timeline_x).max(0.0));
                     let (s, e) = if b < anchor { (b, anchor) } else { (anchor, b) };
@@ -328,6 +328,9 @@ impl OndinaApp {
                             },
                             cycle_gesture_key(gesture),
                         );
+                        if let Some(Drag::Cycle { sent, .. }) = &mut self.drag {
+                            *sent = true;
+                        }
                     }
                 }
             }
@@ -1278,9 +1281,6 @@ impl OndinaApp {
         let released = ui.input(|i| i.pointer.any_released());
         let pointer_beat = pointer_pos.map(|pp| self.x_to_beat(pp.x, timeline_x));
         let snap = self.snap;
-        if matches!(self.drag, Some(Drag::MoveTrack { .. })) && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.drag = None;
-        }
         match &mut self.drag {
             Some(Drag::MoveRegion {
                 grab_beat,
@@ -2012,7 +2012,7 @@ fn cycle_toggle(c: Cycle) -> Command {
 }
 
 /// Undo key for one cycle gesture: every frame of a drag merges into one step, and two drags in a row stay two.
-fn cycle_gesture_key(gesture: u64) -> String {
+pub(crate) fn cycle_gesture_key(gesture: u64) -> String {
     format!("cycle-{gesture}")
 }
 
