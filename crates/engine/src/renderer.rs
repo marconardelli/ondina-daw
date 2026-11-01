@@ -666,19 +666,25 @@ impl Renderer {
             if timeline_running {
                 for lane in &track.automation {
                     let Some(v) = lane.value_at(b0) else { continue };
+                    // The commands keep lanes finite and in range; a project built in code may not. inf or NaN
+                    // here would stay in the state of every reverb downstream, so it is skipped, and the channel
+                    // targets are held to the ranges of their commands.
+                    if !v.is_finite() {
+                        continue;
+                    }
                     if lane.target == "surround:azimuth" {
-                        sp.azimuth = v;
+                        sp.azimuth = v.clamp(-180.0, 180.0);
                     } else if lane.target == "surround:elevation" {
-                        sp.elevation = v;
+                        sp.elevation = v.clamp(-30.0, 90.0);
                     } else if lane.target == "surround:spread" {
                         sp.spread = v.clamp(0.0, 1.0);
                     } else if lane.target == "volume" {
-                        vol_db = v;
+                        vol_db = v.clamp(-96.0, 6.0);
                     } else if lane.target == "pan" {
-                        pan = v;
+                        pan = v.clamp(-1.0, 1.0);
                     } else if let Some(i) = lane.target.strip_prefix("send:").and_then(|s| s.parse::<usize>().ok()) {
                         if i < send_levels.len() {
-                            send_levels[i] = v;
+                            send_levels[i] = v.clamp(-96.0, 6.0);
                         }
                     } else if let Some(rest) = lane.target.strip_prefix("plugin:") {
                         if let Some((pid, param)) = rest.split_once(':') {
@@ -993,6 +999,29 @@ mod tests {
             assert!(l.iter().chain(&rr).all(|x| x.is_finite()));
         }
         assert!(r.beat > 0.0, "the transport did not move");
+    }
+
+    /// Automation that skipped the checks of the commands (values not finite or far out of range) must not put
+    /// inf or NaN into the mix, where a bus reverb would keep it.
+    #[test]
+    fn automation_that_is_not_finite_or_out_of_range_keeps_the_mix_finite() {
+        for bad in [f32::INFINITY, f32::NAN, 1000.0] {
+            let mut p = Project::new("t");
+            let src = add_track(&mut p, TrackKind::Instrument);
+            let held = Note { pitch: 60, velocity: 100, start: 0.0, length: 8.0 };
+            run(&mut p, Command::CreateMidiRegion { track_id: src, start: 0.0, length: 8.0, name: None, notes: Some(vec![held]) });
+            let bus = add_track(&mut p, TrackKind::Bus);
+            run(&mut p, Command::AddEffect { track_id: bus, kind: "reverb".into(), preset: None, index: None });
+            run(&mut p, Command::AddSend { track_id: src, bus_id: bus, level_db: Some(0.0), pre_fader: None });
+            let points = vec![AutomationPoint { beat: 0.0, value: bad }];
+            let t = p.tracks.iter_mut().find(|t| t.id == src).unwrap();
+            for target in ["volume", "pan", "send:0"] {
+                t.automation.push(AutomationLane { target: target.into(), points: points.clone(), enabled: true });
+            }
+            // `energy` asserts that every sample is finite
+            let e = energy(&p);
+            assert!(e.is_finite(), "{bad}: {e}");
+        }
     }
 
     #[test]
