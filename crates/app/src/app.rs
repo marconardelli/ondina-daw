@@ -15,11 +15,12 @@ use ondina_studio::mcp::HttpServerHandle;
 use ondina_studio::session::LogEntry;
 use ondina_studio::{Settings, SharedSession, Source};
 use crossbeam_channel::{Receiver, Sender};
-use eframe::egui::{self, Color32, Key, RichText};
+use eframe::egui::{self, Key, RichText};
 use parking_lot::Mutex;
 use serde_json::Value;
 
 use crate::bounce_menu;
+use crate::dialog;
 use crate::theme;
 use crate::doc_guard::{self, Answer, CloseStep, DocAction, Step};
 use crate::editors::take_event;
@@ -283,6 +284,10 @@ pub struct OndinaApp {
     pub show_settings: bool,
     pub show_mcp_info: bool,
     pub show_about: bool,
+    /// The Bounce dialog is open.
+    pub show_bounce: bool,
+    /// The settings as last written by the Settings window (`None` while it is closed).
+    pub settings_saved: Option<String>,
     pub mix_report: Option<Value>,
     /// Master loudness of the last mix analysis, shown in the mixer.
     pub mix_loudness: Option<crate::mixer::MixLoudness>,
@@ -290,6 +295,8 @@ pub struct OndinaApp {
     /// Name and chord fields open in place; closed when the project is replaced.
     pub edits: crate::arrange::InPlaceEdits,
     pub vst_filter: String,
+    /// Search text of the Library's patches.
+    pub library_filter: String,
     pub api_key_buf: String,
     pub devices_cache: Option<Value>,
     pub midi_inputs_cache: Vec<String>,
@@ -398,11 +405,14 @@ impl OndinaApp {
             show_settings: false,
             show_mcp_info: false,
             show_about: false,
+            show_bounce: false,
+            settings_saved: None,
             mix_report: None,
             mix_loudness: None,
             rename_buf: String::new(),
             edits: Default::default(),
             vst_filter: String::new(),
+            library_filter: String::new(),
             devices_cache: None,
             midi_inputs_cache: vec![],
             bounce_bits: 24,
@@ -1130,7 +1140,7 @@ impl OndinaApp {
             self.request_doc_action(ctx, DocAction::Open(None));
         }
         if b_ctrl {
-            self.bounce_dialog();
+            self.show_bounce = true;
         }
     }
 
@@ -1306,11 +1316,11 @@ impl OndinaApp {
             widgets::paint_logo(ui.painter(), egui::Rect::from_min_size(logo.min, egui::vec2(16.0, 16.0)));
             ui.menu_button("File", |ui| {
                 let ctx = ui.ctx().clone();
-                if ui.button("New Project      Ctrl+N").clicked() {
+                if ui.add(egui::Button::new("New Project").shortcut_text("Ctrl+N")).clicked() {
                     ui.close_menu();
                     self.request_doc_action(&ctx, DocAction::New);
                 }
-                if ui.button("Open…            Ctrl+O").clicked() {
+                if ui.add(egui::Button::new("Open…").shortcut_text("Ctrl+O")).clicked() {
                     ui.close_menu();
                     self.request_doc_action(&ctx, DocAction::Open(None));
                 }
@@ -1322,7 +1332,7 @@ impl OndinaApp {
                         }
                     }
                 });
-                if ui.button("Save             Ctrl+S").clicked() {
+                if ui.add(egui::Button::new("Save").shortcut_text("Ctrl+S")).clicked() {
                     ui.close_menu();
                     self.save(false);
                 }
@@ -1421,27 +1431,9 @@ impl OndinaApp {
                     }
                 }
                 ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label("Bounce bit depth");
-                    ui.selectable_value(&mut self.bounce_bits, 16, "16");
-                    ui.selectable_value(&mut self.bounce_bits, 24, "24");
-                    ui.selectable_value(&mut self.bounce_bits, 32, "32f");
-                });
-                ui.menu_button(
-                    format!("Bounce loudness: {}", self.bounce_loudness.label()),
-                    |ui| {
-                        for l in bounce_menu::Loudness::ALL {
-                            ui.radio_value(&mut self.bounce_loudness, l, l.label());
-                        }
-                    },
-                )
-                .response
-                .on_hover_text(
-                    "LUFS targets: one gain for the whole mix, peaks kept under -1 dBTP, no limiter",
-                );
-                if ui.button("Bounce to WAV…   Ctrl+B").clicked() {
+                if ui.add(egui::Button::new("Bounce to WAV\u{2026}").shortcut_text("Ctrl+B")).clicked() {
                     ui.close_menu();
-                    self.bounce_dialog();
+                    self.show_bounce = true;
                 }
                 ui.separator();
                 if ui.button("Settings…").clicked() {
@@ -1459,7 +1451,7 @@ impl OndinaApp {
                 if ui
                     .add_enabled(
                         self.view.undo.is_some(),
-                        egui::Button::new(format!("{undo}   Ctrl+Z")),
+                        egui::Button::new(undo).shortcut_text("Ctrl+Z"),
                     )
                     .clicked()
                 {
@@ -1475,7 +1467,7 @@ impl OndinaApp {
                 if ui
                     .add_enabled(
                         self.view.redo.is_some(),
-                        egui::Button::new(format!("{redo}   Ctrl+Y")),
+                        egui::Button::new(redo).shortcut_text("Ctrl+Y"),
                     )
                     .clicked()
                 {
@@ -1487,7 +1479,7 @@ impl OndinaApp {
                 if ui
                     .add_enabled(
                         self.selected_region.is_some(),
-                        egui::Button::new("Copy Region   Ctrl+C"),
+                        egui::Button::new("Copy Region").shortcut_text("Ctrl+C"),
                     )
                     .clicked()
                 {
@@ -1497,7 +1489,7 @@ impl OndinaApp {
                 if ui
                     .add_enabled(
                         self.selected_region.is_some(),
-                        egui::Button::new("Cut Region   Ctrl+X"),
+                        egui::Button::new("Cut Region").shortcut_text("Ctrl+X"),
                     )
                     .clicked()
                 {
@@ -1507,7 +1499,7 @@ impl OndinaApp {
                 if ui
                     .add_enabled(
                         self.region_clipboard.is_some(),
-                        egui::Button::new("Paste Region   Ctrl+V"),
+                        egui::Button::new("Paste Region").shortcut_text("Ctrl+V"),
                     )
                     .clicked()
                 {
@@ -1518,7 +1510,7 @@ impl OndinaApp {
                 if ui
                     .add_enabled(
                         self.selected_region.is_some(),
-                        egui::Button::new("Split Region at Playhead   Ctrl+T"),
+                        egui::Button::new("Split Region at Playhead").shortcut_text("Ctrl+T"),
                     )
                     .clicked()
                 {
@@ -1531,14 +1523,14 @@ impl OndinaApp {
                     }
                     ui.close_menu();
                 }
-                if ui.button("Add Marker at Playhead   Shift+M").clicked() {
+                if ui.add(egui::Button::new("Add Marker at Playhead").shortcut_text("Shift+M")).clicked() {
                     self.run_track_key(tk::TrackKey::Edit(tk::TrackEdit::Marker));
                     ui.close_menu();
                 }
                 if ui
                     .add_enabled(
                         self.selected_region.is_some(),
-                        egui::Button::new("Duplicate Region   Ctrl+D"),
+                        egui::Button::new("Duplicate Region").shortcut_text("Ctrl+D"),
                     )
                     .clicked()
                 {
@@ -1554,7 +1546,7 @@ impl OndinaApp {
                 if ui
                     .add_enabled(
                         self.can_repeat_notes(),
-                        egui::Button::new("Repeat Selected Notes   Ctrl+D"),
+                        egui::Button::new("Repeat Selected Notes").shortcut_text("Ctrl+D"),
                     )
                     .clicked()
                 {
@@ -1564,7 +1556,7 @@ impl OndinaApp {
                 if ui
                     .add_enabled(
                         self.selected_region.is_some(),
-                        egui::Button::new("Delete Region   Del"),
+                        egui::Button::new("Delete Region").shortcut_text("Del"),
                     )
                     .clicked()
                 {
@@ -1636,26 +1628,26 @@ impl OndinaApp {
                     .and_then(|t| self.view.project.track(t))
                     .map_or((false, false), |t| (t.channel.mute, t.channel.solo));
                 if ui
-                    .add_enabled(any, egui::Button::new("Select Previous Track   ↑"))
+                    .add_enabled(any, egui::Button::new("Select Previous Track").shortcut_text("Up"))
                     .clicked()
                 {
                     self.run_track_key(tk::TrackKey::Step(tk::Dir::Back));
                     ui.close_menu();
                 }
                 if ui
-                    .add_enabled(any, egui::Button::new("Select Next Track   ↓"))
+                    .add_enabled(any, egui::Button::new("Select Next Track").shortcut_text("Down"))
                     .clicked()
                 {
                     self.run_track_key(tk::TrackKey::Step(tk::Dir::Forward));
                     ui.close_menu();
                 }
-                let mute = if muted { "Unmute Track   M" } else { "Mute Track   M" };
-                if ui.add_enabled(has, egui::Button::new(mute)).clicked() {
+                let mute = if muted { "Unmute Track" } else { "Mute Track" };
+                if ui.add_enabled(has, egui::Button::new(mute).shortcut_text("M")).clicked() {
                     self.run_track_key(tk::TrackKey::Edit(tk::TrackEdit::Mute));
                     ui.close_menu();
                 }
-                let solo = if soloed { "Unsolo Track   S" } else { "Solo Track   S" };
-                if ui.add_enabled(has, egui::Button::new(solo)).clicked() {
+                let solo = if soloed { "Unsolo Track" } else { "Solo Track" };
+                if ui.add_enabled(has, egui::Button::new(solo).shortcut_text("S")).clicked() {
                     self.run_track_key(tk::TrackKey::Edit(tk::TrackEdit::Solo));
                     ui.close_menu();
                 }
@@ -1791,111 +1783,11 @@ impl OndinaApp {
     }
 
     fn windows(&mut self, ctx: &egui::Context) {
-        let mut open = self.show_settings;
-        egui::Window::new("Settings").open(&mut open).resizable(false).show(ctx, |ui| {
-            if self.settings.file_unread {
-                ui.label(RichText::new("⚠ settings.json could not be read when Ondina started.").color(theme::ACCENT));
-                ui.label(RichText::new("The defaults are in use. The file is left as it is until you press Save settings, which replaces it.").small().color(theme::TEXT_DIM));
-                ui.separator();
-            }
-            ui.heading("AI assistant");
-            ui.horizontal(|ui| {
-                ui.label("Anthropic API key");
-                ui.add(egui::TextEdit::singleline(&mut self.api_key_buf).password(true).desired_width(260.0));
-            });
-            if std::env::var("ANTHROPIC_API_KEY").map(|k| !k.is_empty()).unwrap_or(false) {
-                ui.label(RichText::new("Using ANTHROPIC_API_KEY from the environment.").small().color(theme::TEXT_DIM));
-            }
-            ui.horizontal(|ui| {
-                ui.label("Provider");
-                for (v, l) in [("auto", "Auto"), ("local", "Local (offline)"), ("anthropic", "Claude API")] {
-                    ui.selectable_value(&mut self.settings.provider, v.to_string(), l);
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("Local endpoint");
-                ui.text_edit_singleline(&mut self.settings.local_url);
-            });
-            ui.label(RichText::new(match ondina_studio::local_ai::bundled_llm() { Some((_, m)) => format!("Bundled local model: {}", m.file_name().and_then(|f| f.to_str()).unwrap_or("")), None => "No bundled local model (tools/llm); any OpenAI-compatible server works.".into() }).small().color(theme::TEXT_DIM));
-            ui.horizontal(|ui| {
-                ui.label("Claude model");
-                ui.text_edit_singleline(&mut self.settings.model);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Effort");
-                for e in ["low", "medium", "high", "xhigh", "max"] {
-                    ui.selectable_value(&mut self.settings.effort, e.to_string(), e);
-                }
-            });
-            ui.separator();
-            ui.heading("MCP server");
-            ui.checkbox(&mut self.settings.mcp_enabled, "Enable HTTP MCP endpoint (restart required)");
-            ui.horizontal(|ui| {
-                ui.label("Port");
-                ui.add(egui::DragValue::new(&mut self.settings.mcp_port).range(1024..=65535));
-            });
-            ui.separator();
-            ui.heading("Audio & MIDI");
-            if self.devices_cache.is_none() {
-                self.devices_cache = self.exec(Command::ListAudioDevices {});
-                if let Some(v) = self.exec(Command::ListMidiInputs {}) {
-                    self.midi_inputs_cache = v["inputs"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
-                }
-            }
-            if let Some(d) = self.devices_cache.clone() {
-                ui.label(format!("Host: {}  ·  current output: {}", d["host"].as_str().unwrap_or(""), d["current_output"].as_str().unwrap_or("")));
-                egui::ComboBox::from_label("Output device").selected_text(self.settings.audio_output.clone().unwrap_or("Default".into())).show_ui(ui, |ui| {
-                    for o in d["outputs"].as_array().cloned().unwrap_or_default() {
-                        let name = o.as_str().unwrap_or("").to_string();
-                        if ui.selectable_label(self.settings.audio_output.as_deref() == Some(&name), &name).clicked() {
-                            self.settings.audio_output = Some(name.clone());
-                            self.exec(Command::SetAudioDevice { output: Some(name), input: None });
-                            self.devices_cache = None;
-                        }
-                    }
-                });
-            }
-            ui.horizontal(|ui| {
-                ui.label("MIDI input");
-                for name in self.midi_inputs_cache.clone() {
-                    if ui.button(&name).clicked() {
-                        self.exec(Command::ConnectMidiInput { name: Some(name) });
-                    }
-                }
-                if self.midi_inputs_cache.is_empty() {
-                    ui.label(RichText::new("none found").color(theme::TEXT_DIM));
-                }
-            });
-            ui.separator();
-            ui.heading("Autosave");
-            ui.horizontal(|ui| {
-                ui.label("Save a recovery copy every");
-                ui.add(egui::DragValue::new(&mut self.settings.autosave_minutes).range(0..=60).suffix(" min"));
-            });
-            ui.label(RichText::new("0 turns autosave off. After a crash Ondina offers the copy back at the next start.").small().color(theme::TEXT_DIM));
-            ui.checkbox(&mut self.settings.keep_save_backup, "Keep a backup of the previous save");
-            ui.label(RichText::new("Before Save replaces a project file, its previous version is kept next to it as <name>.ondina.bak.").small().color(theme::TEXT_DIM));
-            ui.horizontal(|ui| {
-                ui.label("UI scale (restart)");
-                ui.add(egui::Slider::new(&mut self.settings.ui_scale, 0.75..=2.0));
-            });
-            ui.separator();
-            if ui.button("Save settings").clicked() {
-                self.settings.api_key = if self.api_key_buf.trim().is_empty() { None } else { Some(self.api_key_buf.trim().to_string()) };
-                let saved = self.settings.save_replacing();
-                if let Some(mut s) = self.session.try_lock_for(Duration::from_millis(300)) {
-                    s.settings = self.settings.clone();
-                }
-                self.status = match saved {
-                    Ok(()) => "Settings saved".into(),
-                    Err(e) => format!("⚠ Settings not saved: {e}"),
-                };
-            }
-        });
-        self.show_settings = open;
+        self.settings_window(ctx);
+        self.bounce_window(ctx);
 
         let mut open = self.show_mcp_info;
-        egui::Window::new("MCP server").open(&mut open).default_width(560.0).show(ctx, |ui| {
+        dialog::window("MCP Server").open(&mut open).default_width(560.0).show(ctx, |ui| {
             let addr = self.mcp.as_ref().map(|h| h.address.clone()).unwrap_or_else(|| format!("http://127.0.0.1:{}/mcp", self.settings.mcp_port));
             ui.label(format!("Ondina exposes its complete API ({} tools) over the Model Context Protocol.", ondina_studio::mcp::tools().len()));
             ui.add_space(4.0);
@@ -1913,15 +1805,15 @@ impl OndinaApp {
             ui.label(RichText::new("Recent external activity").strong());
             egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
                 for l in self.view.log.iter().filter(|l| l.source != Source::Gui).take(60) {
-                    let col = if l.source == Source::Ai { theme::AI } else { Color32::from_rgb(100, 200, 120) };
-                    ui.label(RichText::new(format!("[{:?}] {} {} — {}", l.source, l.command, if l.ok { "✓" } else { "✗" }, l.message)).small().color(col));
+                    let col = if l.source == Source::Ai { theme::AI } else { theme::PLAY };
+                    ui.label(RichText::new(format!("[{:?}] {} {} — {}", l.source, l.command, if l.ok { "ok" } else { "failed" }, l.message)).small().color(col));
                 }
             });
         });
         self.show_mcp_info = open;
 
         let mut open = self.show_about;
-        egui::Window::new("Ondina DAW").open(&mut open).show(ctx, |ui| {
+        dialog::window("Keyboard Shortcuts & About").open(&mut open).show(ctx, |ui| {
             ui.heading("Ondina DAW");
             ui.label("A native Windows digital audio workstation written in Rust, with an AI assistant and a full MCP API.");
             ui.separator();
@@ -1964,40 +1856,22 @@ impl OndinaApp {
         let Some(action) = self.doc_prompt.clone() else {
             return;
         };
-        let screen = ctx.screen_rect();
-        egui::Area::new(egui::Id::new("doc_prompt_backdrop"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(screen.min)
-            .show(ctx, |ui| {
-                ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(150));
-                ui.allocate_rect(screen, egui::Sense::click_and_drag());
-            });
+        dialog::backdrop(ctx, "doc_prompt_backdrop");
         let question = doc_guard::prompt_question(&self.view.project.name, &action);
         let mut answer = None;
-        let shown = egui::Window::new("Unsaved Changes")
-            .id(egui::Id::new("doc_prompt"))
-            .order(egui::Order::Foreground)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .collapsible(false)
-            .resizable(false)
-            .movable(false)
+        let shown = dialog::modal("Unsaved Changes", "doc_prompt")
             .show(ctx, |ui| {
                 ui.label(RichText::new(question).strong());
-                ui.label(
-                    RichText::new("Your changes will be lost if you don't save them.")
-                        .small()
-                        .color(theme::TEXT_DIM),
-                );
-                ui.add_space(8.0);
+                dialog::hint(ui, "Your changes will be lost if you don't save them.");
+                ui.add_space(theme::SP_5);
                 ui.horizontal(|ui| {
-                    let save = egui::Button::new(RichText::new("Save").color(Color32::BLACK)).fill(theme::ACCENT);
-                    if ui.add(save).clicked() {
+                    if dialog::primary_button(ui, "Save").clicked() {
                         answer = Some(Answer::Save);
                     }
-                    if ui.button("Don't Save").clicked() {
+                    if dialog::secondary_button(ui, "Don't Save").clicked() {
                         answer = Some(Answer::DontSave);
                     }
-                    if ui.button("Cancel").clicked() {
+                    if dialog::secondary_button(ui, "Cancel").clicked() {
                         answer = Some(Answer::Cancel);
                     }
                 });
@@ -2034,23 +1908,10 @@ impl OndinaApp {
         if self.recovery.is_empty() {
             return;
         }
-        let screen = ctx.screen_rect();
-        egui::Area::new(egui::Id::new("recovery_backdrop"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(screen.min)
-            .show(ctx, |ui| {
-                ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(150));
-                ui.allocate_rect(screen, egui::Sense::click_and_drag());
-            });
+        dialog::backdrop(ctx, "recovery_backdrop");
         let now = crate::autosave::unix_secs();
         let mut choice = None;
-        let shown = egui::Window::new("Recover Unsaved Work")
-            .id(egui::Id::new("recovery_prompt"))
-            .order(egui::Order::Foreground)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .collapsible(false)
-            .resizable(false)
-            .movable(false)
+        let shown = dialog::modal("Recover Unsaved Work", "recovery_prompt")
             .show(ctx, |ui| {
                 ui.label(RichText::new("Ondina did not close normally. These copies of unsaved work were found:").strong());
                 ui.add_space(6.0);
@@ -2064,11 +1925,10 @@ impl OndinaApp {
                                 ui.label(RichText::new(format!("{from} · {when}")).small().color(theme::TEXT_DIM));
                             });
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.button("Discard").clicked() {
+                                if dialog::secondary_button(ui, "Discard").clicked() {
                                     choice = Some(Choice::Discard(i));
                                 }
-                                let recover = egui::Button::new(RichText::new("Recover").color(Color32::BLACK)).fill(theme::ACCENT);
-                                if ui.add(recover).clicked() {
+                                if dialog::primary_button(ui, "Recover").clicked() {
                                     choice = Some(Choice::Recover(i));
                                 }
                             });
@@ -2083,10 +1943,10 @@ impl OndinaApp {
                 );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Discard All").clicked() {
+                    if dialog::secondary_button(ui, "Discard All").clicked() {
                         choice = Some(Choice::DiscardAll);
                     }
-                    if ui.button("Decide Later").clicked() {
+                    if dialog::secondary_button(ui, "Decide Later").clicked() {
                         choice = Some(Choice::Later);
                     }
                 });
