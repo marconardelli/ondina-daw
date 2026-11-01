@@ -7,6 +7,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-11-01
+
+### Changed
+
+- `new_project` and `open_project` called by an MCP client or the assistant no longer replace a project with unsaved
+  changes: they return an error unless the new optional `discard_unsaved` parameter is `true`. The window keeps
+  asking Save / Don't Save / Cancel as before.
+- The session bassist, keyboard player, arpeggiator and melody generator repeat the chord track after its last chord,
+  so every bar asked for gets notes (an 8-bar part over a 4-bar progression plays it twice), as the drummer already
+  did.
+- MCP clients and the assistant can no longer read files on network shares (`\\server\share`, `//server`,
+  `\\?\UNC\`) with `import_audio`, `set_sampler_sample`, `import_midi` and `open_project`; audio files a project lists
+  on a share are reported in `blocked_audio_files` instead of being read. Opening and importing from the app is not
+  restricted.
+- Limits on command input, with a clear error instead of a crash or a hang: a render (`bounce`, `analyze_mix`,
+  `bounce_in_place`, surround, binaural, ADM and movie export) covers at most 60 minutes of the song; a pattern has at
+  most 65536 steps; the Live Loops grid has at most 256 scenes; a generator writes at most 512 bars, starts at a beat
+  from 0 to 1000000 and follows chords of at least 1/4 beat.
+- `set_pattern_swing` refuses a value outside 0..1 and returns the swing; `set_pattern_row` refuses a string whose
+  number of steps differs from the pattern, instead of correcting the input without saying so.
+
+### Fixed
+
+- A time signature of 0 beats per bar (from `new_project`, a MIDI file or a project file) and a project file with an
+  empty tempo map no longer stop the audio until Ondina is restarted. Project files are checked when they are opened:
+  invalid time signatures, tempo maps and patterns are refused, and tempos, cycle ranges and automation values out of
+  range are put back in range.
+- Automation values are kept in the range of their target (for example -96..6 dB for volume): a volume point of
+  +1000 dB no longer turns into noise or silence that stays in the bus reverbs, and values that are not numbers are
+  refused.
+- MCP tool annotations: only tools that just read are marked read-only. `save_project`, `bounce` and the exports,
+  `undo`/`redo`, `scan_vst3`, `set_ai_settings`, the transport and the device tools were marked read-only, so a client
+  could run them without asking.
+- Tool descriptions no longer promise master automation on `track_id 0` or automation of VST3 parameters, which
+  Ondina does not support.
+
 ## [0.19.1] - 2026-11-01
 
 ### Changed
@@ -587,7 +623,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.19.1...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.19.2...HEAD
+[0.19.2]: https://github.com/marconardelli/ondina-daw/compare/v0.19.1...v0.19.2
 [0.19.1]: https://github.com/marconardelli/ondina-daw/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/marconardelli/ondina-daw/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/marconardelli/ondina-daw/compare/v0.17.0...v0.18.0
