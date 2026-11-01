@@ -1,7 +1,7 @@
 //! Hosting of third-party VST3 plug-ins (instruments and effects) through `vst3-host`.
 //! Parameters are exposed with ids "p<number>" and normalized values 0..1.
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use vst3_host::audio::AudioBuffers;
 use vst3_host::midi::MidiChannel;
@@ -147,6 +147,81 @@ fn check_links_inside(dir: &Path, depth: usize) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The folders where Windows installs VST3 plug-ins: the system-wide Common Files\VST3 (both Program
+/// Files) and the per-user %LOCALAPPDATA%\Programs\Common\VST3. Lexical only.
+pub fn standard_vst3_folders() -> Vec<String> {
+    let mut folders = Vec::new();
+    for var in ["CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432"] {
+        if let Some(v) = std::env::var_os(var) {
+            folders.push(PathBuf::from(v).join("VST3").display().to_string());
+        }
+    }
+    if let Some(v) = std::env::var_os("LOCALAPPDATA") {
+        folders.push(PathBuf::from(v).join("Programs").join("Common").join("VST3").display().to_string());
+    }
+    // the folders vst3-host always scans, so that a missing variable does not drop the main one
+    folders.push(r"C:\Program Files\Common Files\VST3".to_string());
+    folders.push(r"C:\Program Files (x86)\Common Files\VST3".to_string());
+    folders
+}
+
+/// A folder in the form used to compare plug-in paths: resolved by Windows when it exists (a junction
+/// or a mapped drive is followed), the lexical absolute path when it does not. None for anything that
+/// is not on a local drive.
+fn root_form(path: &str) -> Option<String> {
+    let abs = local_absolute(path).ok()?;
+    match Path::new(&abs).canonicalize() {
+        Ok(c) => local_resolved(&c),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(abs),
+        Err(_) => None,
+    }
+}
+
+/// The folders MCP clients and the assistant may load plug-ins from: the standard VST3 folders plus the
+/// folders the user added in the app (`Settings::vst3_folders`). It touches the file system once per
+/// folder, so call it once per command, never per plug-in, and never on the audio thread.
+pub fn trusted_roots(user_folders: &[String]) -> Vec<String> {
+    standard_vst3_folders().iter().chain(user_folders).filter_map(|p| root_form(p)).collect()
+}
+
+/// The components of a path on a local drive, lower-cased so that comparisons follow Windows (case
+/// does not matter, `\` and `/` are the same). None for a relative path, a share, a device path, or a
+/// path with `.` or `..` in it: the caller compares paths Windows already resolved.
+fn path_key(path: &str) -> Option<Vec<String>> {
+    let p = path.strip_prefix(r"\\?\").unwrap_or(path);
+    if !is_drive_path(p) {
+        return None;
+    }
+    let mut key = Vec::new();
+    for c in Path::new(p).components() {
+        match c {
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => key.push(c.as_os_str().to_string_lossy().to_lowercase()),
+            Component::CurDir | Component::ParentDir => return None,
+        }
+    }
+    Some(key)
+}
+
+/// Whether the plug-in at `resolved` (a path `resolve_plugin_path` returned) lies inside one of
+/// `roots`, compared component by component: `C:\VST3evil` is not inside `C:\VST3`. A root must be a
+/// folder on a local drive, not a whole drive.
+pub fn is_under_trusted(resolved: &str, roots: &[String]) -> bool {
+    let Some(p) = path_key(resolved) else { return false };
+    // prefix, root and at least one folder: `C:\` alone is not a root
+    roots.iter().filter_map(|r| path_key(r)).filter(|r| r.len() >= 3).any(|r| p.len() >= r.len() && p[..r.len()] == r[..])
+}
+
+/// Check a folder the user adds to the VST3 library: the same rules as a scan folder (local drive,
+/// links inside it local too), and not a whole drive. Returns the resolved folder.
+pub fn check_user_folder(path: &str) -> Result<String, String> {
+    let abs = local_absolute(path)?;
+    let resolved = check_scan_folder(&abs)?;
+    if path_key(&resolved).map_or(0, |k| k.len()) < 3 {
+        return Err(format!("{path} is a whole drive: pick the folder that holds the plug-ins"));
+    }
+    Ok(resolved)
 }
 
 #[derive(Debug, Clone)]
@@ -720,5 +795,73 @@ mod tests {
         let made = std::process::Command::new("cmd").args(["/C", "mklink", "/J"]).arg(folder.join("linked")).arg(&target).output().is_ok_and(|o| o.status.success());
         let (kept, skipped) = split_scan_paths(&[folder.display().to_string()]);
         assert_eq!(kept.len(), 1, "junction made: {made}, skipped: {skipped:?}");
+    }
+
+    fn roots(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn is_under_trusted_compares_whole_components() {
+        let r = roots(&["C:\\VST3"]);
+        for good in ["C:\\VST3\\X.vst3", "C:\\VST3\\Sub\\X.vst3\\Contents\\x86_64-win\\X.vst3", "\\\\?\\C:\\VST3\\X.vst3"] {
+            assert!(is_under_trusted(good, &r), "{good} was refused");
+        }
+        for bad in ["C:\\VST3evil\\X.vst3", "D:\\VST3\\X.vst3", "C:\\X.vst3"] {
+            assert!(!is_under_trusted(bad, &r), "{bad} was accepted");
+        }
+    }
+
+    #[test]
+    fn is_under_trusted_ignores_case_and_separators() {
+        assert!(is_under_trusted("c:\\vst3\\x.VST3", &roots(&["C:\\VST3"])));
+        assert!(is_under_trusted("C:\\VST3\\X.vst3", &roots(&["c:/Vst3/"])));
+    }
+
+    #[test]
+    fn is_under_trusted_refuses_relative_and_parent_paths() {
+        let r = roots(&["C:\\VST3"]);
+        for bad in ["VST3\\X.vst3", "..\\X.vst3", "C:\\VST3\\..\\evil\\X.vst3", "C:VST3\\X.vst3", "\\\\server\\VST3\\X.vst3", ""] {
+            assert!(!is_under_trusted(bad, &r), "{bad:?} was accepted");
+        }
+    }
+
+    #[test]
+    fn is_under_trusted_ignores_drive_and_empty_roots() {
+        let r = roots(&["C:\\", "", "VST3", "\\\\server\\share"]);
+        assert!(!is_under_trusted("C:\\X.vst3", &r));
+        assert!(!is_under_trusted("C:\\VST3\\X.vst3", &r));
+    }
+
+    #[test]
+    fn standard_vst3_folders_include_common_files() {
+        let folders = standard_vst3_folders();
+        assert!(folders.iter().any(|f| f == "C:\\Program Files\\Common Files\\VST3"), "{folders:?}");
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let per_user = std::path::PathBuf::from(local).join("Programs").join("Common").join("VST3").display().to_string();
+            assert!(folders.contains(&per_user), "{folders:?}");
+        }
+    }
+
+    #[test]
+    fn trusted_roots_resolve_user_folders_and_drop_network_ones() {
+        let dir = std::env::temp_dir().join("ondina_trusted_root");
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.display().to_string();
+        let r = trusted_roots(&[dir.clone(), "\\\\server\\vst".into(), "C:\\no-such-ondina-root".into()]);
+        assert!(r.contains(&absolute(&dir)), "{r:?}");
+        assert!(r.iter().any(|x| x == "C:\\no-such-ondina-root"), "{r:?}");
+        assert!(r.iter().all(|x| !x.starts_with("\\\\")), "{r:?}");
+    }
+
+    #[test]
+    fn check_user_folder_refuses_drives_and_shares() {
+        assert!(check_user_folder("C:\\").is_err());
+        assert!(check_user_folder("\\\\server\\vst").is_err());
+        assert!(check_user_folder("C:\\no-such-ondina-folder").is_err());
+        let dir = std::env::temp_dir().join("ondina_trusted_root");
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.display().to_string();
+        assert_eq!(check_user_folder(&dir).unwrap(), absolute(&dir));
     }
 }
