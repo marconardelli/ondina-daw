@@ -22,14 +22,14 @@ use crate::renderer::{LiveAction, LiveLogEntry, RecordedEvent, Renderer};
 pub enum EngineMsg {
     Project(Arc<Project>),
     Pool(Arc<AudioPool>),
-    Play { count_in_beats: f64 },
-    Stop,
-    Locate(f64),
+    Play { count_in_beats: f64, generation: u64 },
+    Stop { generation: u64 },
+    Locate { beat: f64, generation: u64 },
     Live(Id, MidiKind),
     Panic,
     Record(bool),
-    LiveLaunch(Id),
-    LiveScene(usize),
+    LiveLaunch { cell: Id, generation: u64 },
+    LiveScene { scene: usize, generation: u64 },
     LiveStop(Option<Id>),
 }
 
@@ -42,9 +42,67 @@ pub struct LiveState {
     pub queued: Vec<(f64, Id, Option<Id>)>,
 }
 
+/// A transport change asked by the control thread. Until the audio thread publishes a block rendered after it,
+/// readers see the asked value instead of the published one, so a block that was already being rendered cannot
+/// show the old state again.
+///
+/// Why it holds with atomics only: `publish` stores the published values first and the applied generation after
+/// them (Release), so a reader that sees `applied >= asked` (Acquire) also sees a published value that contains the
+/// command. Otherwise the reader takes `value`, stored before the Release increment of `asked` it has just seen.
+/// `publish` never has to compare generations, so there is no check-then-act window.
+#[derive(Default)]
+struct Request {
+    asked: AtomicU64,
+    applied: AtomicU64,
+    value: AtomicU64,
+}
+
+impl Request {
+    /// Store the asked value, then the new generation (Release: whoever sees the generation sees the value).
+    fn ask(&self, value: u64) -> u64 {
+        self.value.store(value, Ordering::Relaxed);
+        self.asked.fetch_add(1, Ordering::Release) + 1
+    }
+
+    /// The asked value while the audio thread has not yet published the generation that applies it.
+    fn pending(&self) -> Option<u64> {
+        let asked = self.asked.load(Ordering::Acquire);
+        if self.applied.load(Ordering::Acquire) >= asked {
+            None
+        } else {
+            Some(self.value.load(Ordering::Relaxed))
+        }
+    }
+
+    /// Called by `publish` after the published values are stored (Release orders them before the generation).
+    fn mark_applied(&self, generation: u64) {
+        self.applied.store(generation, Ordering::Release);
+    }
+
+    fn applied(&self) -> u64 {
+        self.applied.load(Ordering::Acquire)
+    }
+}
+
+/// The newest transport generations the renderer has applied; `publish` hands them to `Shared` after the values.
+#[derive(Default, Clone, Copy)]
+struct Applied {
+    locate: u64,
+    run: u64,
+}
+
+impl Applied {
+    /// A renderer that replaces another (device change) starts from what the old one last published.
+    fn from_shared(shared: &Shared) -> Applied {
+        Applied { locate: shared.locate.applied(), run: shared.run.applied() }
+    }
+}
+
 #[derive(Default)]
 pub struct Shared {
-    pub playing: AtomicBool,
+    playing: AtomicBool,
+    locate: Request,
+    run: Request,
     pub recording: AtomicBool,
     beat_bits: AtomicU64,
     pub sample_rate: AtomicU32,
@@ -62,8 +120,19 @@ pub struct Shared {
 }
 
 impl Shared {
+    /// The state the last transport command asked for until the audio thread has applied it, then the published one.
     pub fn beat(&self) -> f64 {
-        f64::from_bits(self.beat_bits.load(Ordering::Relaxed))
+        match self.locate.pending() {
+            Some(bits) => f64::from_bits(bits),
+            None => f64::from_bits(self.beat_bits.load(Ordering::Relaxed)),
+        }
+    }
+    /// The state the last transport command asked for until the audio thread has applied it, then the published one.
+    pub fn is_playing(&self) -> bool {
+        match self.run.pending() {
+            Some(v) => v != 0,
+            None => self.playing.load(Ordering::Relaxed),
+        }
     }
     fn set_beat(&self, b: f64) {
         self.beat_bits.store(b.to_bits(), Ordering::Relaxed);
@@ -191,21 +260,22 @@ impl Engine {
     pub fn play(&self, from: Option<f64>, count_in_beats: f64) {
         self.shared.overloads.store(0, Ordering::Relaxed);
         if let Some(b) = from {
-            self.send(EngineMsg::Locate(b));
-            self.shared.set_beat(b);
+            self.locate(b);
         }
-        self.send(EngineMsg::Play { count_in_beats });
-        self.shared.playing.store(true, Ordering::Relaxed);
+        let generation = self.shared.run.ask(1);
+        self.send(EngineMsg::Play { count_in_beats, generation });
     }
 
     pub fn stop(&self) {
-        self.send(EngineMsg::Stop);
-        self.shared.playing.store(false, Ordering::Relaxed);
+        let generation = self.shared.run.ask(0);
+        self.send(EngineMsg::Stop { generation });
     }
 
     pub fn locate(&self, beat: f64) {
-        self.send(EngineMsg::Locate(beat));
-        self.shared.set_beat(beat);
+        // the same clamp as `Renderer::locate`, so the asked and the published beat agree
+        let beat = beat.max(0.0);
+        let generation = self.shared.locate.ask(beat.to_bits());
+        self.send(EngineMsg::Locate { beat, generation });
     }
 
     pub fn live(&self, track: Id, kind: MidiKind) {
@@ -217,13 +287,13 @@ impl Engine {
     }
 
     pub fn live_launch(&self, cell: Id) {
-        self.send(EngineMsg::LiveLaunch(cell));
-        self.shared.playing.store(true, Ordering::Relaxed);
+        let generation = self.shared.run.ask(1);
+        self.send(EngineMsg::LiveLaunch { cell, generation });
     }
 
     pub fn live_scene(&self, scene: usize) {
-        self.send(EngineMsg::LiveScene(scene));
-        self.shared.playing.store(true, Ordering::Relaxed);
+        let generation = self.shared.run.ask(1);
+        self.send(EngineMsg::LiveScene { scene, generation });
     }
 
     pub fn live_stop(&self, track: Option<Id>) {
@@ -235,7 +305,7 @@ impl Engine {
     }
 
     pub fn is_playing(&self) -> bool {
-        self.shared.playing.load(Ordering::Relaxed)
+        self.shared.is_playing()
     }
 
     pub fn is_recording(&self) -> bool {
@@ -347,31 +417,46 @@ impl Drop for Engine {
     }
 }
 
-fn handle_msg(r: &mut Renderer, m: EngineMsg, shared: &Shared) {
+/// Apply a message to the renderer. Transport generations are only noted here: `publish` marks them applied after
+/// it has stored the values of a block rendered with them.
+fn handle_msg(r: &mut Renderer, m: EngineMsg, applied: &mut Applied) {
     match m {
         EngineMsg::Project(p) => r.set_project(p),
         EngineMsg::Pool(p) => r.set_pool(p),
-        EngineMsg::Play { count_in_beats } => {
+        EngineMsg::Play { count_in_beats, generation } => {
             r.count_in_beats = count_in_beats;
             r.play();
+            applied.run = applied.run.max(generation);
         }
-        EngineMsg::Stop => {
+        EngineMsg::Stop { generation } => {
             r.stop();
-            shared.playing.store(false, Ordering::Relaxed);
+            applied.run = applied.run.max(generation);
         }
-        EngineMsg::Locate(b) => r.locate(b),
+        EngineMsg::Locate { beat, generation } => {
+            r.locate(beat);
+            applied.locate = applied.locate.max(generation);
+        }
         EngineMsg::Live(t, k) => r.live_event(t, k),
         EngineMsg::Panic => r.panic(),
         EngineMsg::Record(on) => r.recording = on,
-        EngineMsg::LiveLaunch(c) => r.launch_cell(c),
-        EngineMsg::LiveScene(sc) => r.launch_scene(sc),
+        EngineMsg::LiveLaunch { cell, generation } => {
+            r.launch_cell(cell);
+            applied.run = applied.run.max(generation);
+        }
+        EngineMsg::LiveScene { scene, generation } => {
+            r.launch_scene(scene);
+            applied.run = applied.run.max(generation);
+        }
         EngineMsg::LiveStop(t) => r.stop_live(t),
     }
 }
 
-fn publish(r: &mut Renderer, shared: &Shared) {
+fn publish(r: &mut Renderer, shared: &Shared, applied: &Applied) {
+    // values first, then the generations they contain (see `Request`)
     shared.set_beat(r.beat);
     shared.playing.store(r.playing, Ordering::Relaxed);
+    shared.locate.mark_applied(applied.locate);
+    shared.run.mark_applied(applied.run);
     if let Some(mut m) = shared.meters.try_lock() {
         // latest block peaks with a short release so slow readers (MCP) still see activity
         for (id, p) in r.track_peaks() {
@@ -438,6 +523,7 @@ where
     let sr = config.sample_rate.0 as f32;
     let mut bl = vec![0.0f32; 8192];
     let mut br = vec![0.0f32; 8192];
+    let mut applied = Applied::from_shared(&shared);
     device
         .build_output_stream(
             config,
@@ -445,7 +531,7 @@ where
                 let _ftz = FlushToZero::enable();
                 let t0 = Instant::now();
                 while let Ok(m) = rx.try_recv() {
-                    handle_msg(&mut renderer, m, &shared);
+                    handle_msg(&mut renderer, m, &mut applied);
                 }
                 let frames = data.len() / channels.max(1);
                 if bl.len() < frames {
@@ -464,7 +550,7 @@ where
                         *s = T::from_sample(v.clamp(-1.0, 1.0));
                     }
                 }
-                publish(&mut renderer, &shared);
+                publish(&mut renderer, &shared, &applied);
                 let budget = frames as f32 / sr;
                 let load = t0.elapsed().as_secs_f32() / budget.max(1e-6);
                 shared.record_block_load(load);
@@ -482,6 +568,7 @@ fn null_device(rx: &Receiver<EngineMsg>, shared: &Arc<Shared>, project: Arc<Proj
     *shared.device_name.lock() = "Null device (no audio output)".into();
     let mut r = Renderer::new(sr as f32, project, pool);
     r.beat = beat;
+    let mut applied = Applied::from_shared(shared);
     let frames = 480;
     let mut l = vec![0.0; frames];
     let mut rr = vec![0.0; frames];
@@ -489,10 +576,10 @@ fn null_device(rx: &Receiver<EngineMsg>, shared: &Arc<Shared>, project: Arc<Proj
     let mut next = Instant::now();
     loop {
         while let Ok(m) = rx.try_recv() {
-            handle_msg(&mut r, m, shared);
+            handle_msg(&mut r, m, &mut applied);
         }
         r.render(&mut l, &mut rr);
-        publish(&mut r, shared);
+        publish(&mut r, shared, &applied);
         next += period;
         let now = Instant::now();
         let wait = if next > now { next - now } else {
@@ -558,4 +645,73 @@ mod tests {
         assert_eq!(e.shared.overloads(), 0);
         e.stop();
     }
+
+    #[test]
+    fn a_block_rendered_before_a_transport_command_does_not_hide_it() {
+        let shared = Shared::default();
+        let mut r = Renderer::new(48000.0, Arc::new(Project::new("t")), Arc::new(AudioPool::new()));
+        let mut applied = Applied::from_shared(&shared);
+        // the audio thread has drained its messages and is rendering at beat 7 while playing...
+        r.beat = 7.0;
+        r.playing = true;
+        // ...when the control thread moves the playhead and stops
+        let locate_gen = shared.locate.ask(3.0f64.to_bits());
+        let run_gen = shared.run.ask(0);
+        publish(&mut r, &shared, &applied);
+        assert_eq!(shared.beat(), 3.0);
+        assert!(!shared.is_playing());
+        // next block: both commands are applied and published
+        handle_msg(&mut r, EngineMsg::Locate { beat: 3.0, generation: locate_gen }, &mut applied);
+        handle_msg(&mut r, EngineMsg::Stop { generation: run_gen }, &mut applied);
+        publish(&mut r, &shared, &applied);
+        assert_eq!(shared.beat(), 3.0);
+        assert!(!shared.is_playing());
+        // from now on readers see what the audio thread publishes
+        r.beat = 5.0;
+        r.playing = true;
+        publish(&mut r, &shared, &applied);
+        assert_eq!(shared.beat(), 5.0);
+        assert!(shared.is_playing());
+    }
+
+    #[test]
+    fn an_older_generation_never_lowers_the_applied_one() {
+        let mut r = Renderer::new(48000.0, Arc::new(Project::new("t")), Arc::new(AudioPool::new()));
+        let mut applied = Applied { locate: 5, run: 0 };
+        handle_msg(&mut r, EngineMsg::Locate { beat: 1.0, generation: 3 }, &mut applied);
+        assert_eq!(applied.locate, 5);
+        assert_eq!(r.beat, 1.0);
+    }
+
+    /// Busy-wait instead of sleeping: on Windows a short sleep lasts a whole timer tick.
+    fn spin(d: Duration) {
+        let t = Instant::now();
+        while t.elapsed() < d {
+            std::hint::spin_loop();
+        }
+    }
+
+    #[test]
+    fn locate_play_and_stop_are_visible_at_once_on_the_null_device() {
+        let e = Engine::new(Arc::new(Project::new("t")), Arc::new(AudioPool::new()), false);
+        for i in 0..200 {
+            let x = (i % 13) as f64 * 0.75 + 0.5;
+            e.locate(x);
+            assert_eq!(e.position(), x, "locate {i}");
+            spin(Duration::from_micros(250));
+        }
+        for i in 0..200 {
+            e.play(None, 0.0);
+            assert!(e.is_playing(), "play {i}");
+            spin(Duration::from_micros(250));
+            e.stop();
+            assert!(!e.is_playing(), "stop {i}");
+            spin(Duration::from_micros(250));
+        }
+        e.play(Some(16.0), 0.0);
+        let p = e.position();
+        assert!((16.0..17.0).contains(&p), "{p}");
+        e.stop();
+    }
 }
+
