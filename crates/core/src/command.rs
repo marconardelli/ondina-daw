@@ -6,7 +6,9 @@
 //! the doc comment becomes the tool description and the fields become the input schema.
 //!
 //! Conventions: positions/lengths are in beats (quarter notes, beat 0 = start of bar 1);
-//! the master channel is addressed with track_id 0; MIDI pitch 60 = C4.
+//! MIDI pitch 60 = C4. track_id 0 addresses the master channel only in the channel commands
+//! (set_volume, set_pan, set_mute, set_solo, add_effect, add_vst3, set_surround_pan, get_track);
+//! the others, automation included, need a track or bus id.
 
 use std::collections::BTreeMap;
 
@@ -351,11 +353,11 @@ pub enum Command {
     ClearChords {},
 
     // ------------------------------------------------------------------ automation
-    /// Replace the automation of a parameter. target: "volume" (dB), "pan" (-1..1), "send:<index>" (dB), or "plugin:<plugin_id>:<param>". track_id 0 = master.
+    /// Replace the automation of a parameter on a track or bus (the master has no automation: track_id 0 is refused). target: "volume" (dB, -96..6), "pan" (-1..1), "send:<index>" (dB, -96..6), "surround:azimuth" (degrees, -180..180), "surround:elevation" (degrees, -30..90), "surround:spread" (0..1), or "plugin:<plugin_id>:<param>" for a parameter of a built-in plug-in on the same track (its range is in get_plugin). VST3 parameters cannot be automated: set them with set_plugin_param. Values outside the range are clamped; values that are not finite are refused. Returns the stored points.
     SetAutomation { track_id: Id, target: String, points: Vec<AutomationPoint> },
-    /// Add one automation point.
+    /// Add one automation point to a track or bus lane, with the same targets, ranges and limits as set_automation (no master automation). Returns the number of points and the stored value.
     AddAutomationPoint { track_id: Id, target: String, beat: f64, value: f32 },
-    /// Remove automation for a target, or all automation of the track if target omitted.
+    /// Remove automation for a target, or all automation of the track if target omitted (tracks and buses; the master has no automation).
     ClearAutomation { track_id: Id, target: Option<String> },
 
     // ------------------------------------------------------------------ markers & arrangement
@@ -513,7 +515,7 @@ pub enum Command {
     // ------------------------------------------------------------------ third-party plug-ins (VST3)
     /// Scan the standard VST3 folders, the VST3 folders the user added in Ondina and extra_paths for third-party plug-ins. extra_paths must be folders on a local drive: network shares, device paths and URLs are skipped and listed in skipped_paths. From MCP clients and the assistant an extra folder must also be inside a standard VST3 folder or a folder the user added in Ondina's VST3 library; other folders are skipped and listed in skipped_paths too. scanned_folders lists the extra folders that were scanned.
     ScanVst3 { extra_paths: Option<Vec<String>> },
-    /// Load a VST3 plug-in (path to a .vst3 bundle on a local drive) as instrument or insert effect on a track (track_id 0 = master). Network shares, device paths, URLs and files that are not .vst3 are refused. From MCP clients and the assistant the bundle must also be inside a standard VST3 folder (Common Files\VST3, %LOCALAPPDATA%\Programs\Common\VST3) or a folder the user added in Ondina's VST3 library (Add folder…): if it is refused, ask the user to add its folder. Its parameters are then addressable as "p<id>" (normalized 0..1) with set_plugin_param.
+    /// Load a VST3 plug-in (path to a .vst3 bundle on a local drive) as instrument or insert effect on a track (track_id 0 = master). Network shares, device paths, URLs and files that are not .vst3 are refused. From MCP clients and the assistant the bundle must also be inside a standard VST3 folder (Common Files\VST3, %LOCALAPPDATA%\Programs\Common\VST3) or a folder the user added in Ondina's VST3 library (Add folder…): if it is refused, ask the user to add its folder. Its parameters are then addressable as "p<id>" (normalized 0..1) with set_plugin_param; they cannot be automated (set_automation accepts built-in plug-ins only).
     AddVst3 { track_id: Id, path: String, as_instrument: Option<bool>, index: Option<usize> },
 
     /// Open the native editor window of a VST3 plug-in. Knob moves in the window are applied to the project (undoable) and to the playing instance. Refused for a plug-in that open_project listed in blocked_plugins.

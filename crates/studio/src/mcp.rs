@@ -32,7 +32,7 @@ Ondina is a digital audio workstation. Everything is controlled through tools th
 - Time is in **beats** (quarter notes). Beat 0 = start of bar 1. In 4/4 a bar is 4 beats: bar N starts at beat (N-1)*4.
 - Note positions inside a region are relative to the region start.
 - MIDI pitch 60 = C4 (middle C). Drums use the General MIDI map: 36 kick, 38 snare, 39 clap, 42 closed hat, 46 open hat, 49 crash, 51 ride, 45/47/50 toms.
-- track_id 0 addresses the master channel (volume, pan, effects).
+- track_id 0 addresses the master channel in set_volume, set_pan, set_mute, set_solo, add_effect, add_vst3, set_surround_pan and get_track. The master has no automation, and other track commands need a track or bus id.
 - Every edit is undoable with `undo`.
 - `get_selection` tells you what the user selected in the Ondina window (track, region, notes with their index, playhead, cycle). When the user says "these notes" or "this region", call it first and pass the note `index` values as `indices` to `quantize_notes`, `transpose_notes`, `humanize_notes`, `set_note_velocities`, `set_note_lengths`, `snap_notes_to_key`, `add_harmony` or `remove_notes`. Read it again after editing: indices change when notes move.
 - `get_activity` tells you what happened since you last looked: the edits the user made in the window, the assistant's and other clients' tool calls, and whether the project was replaced (`document`) or Ondina restarted (`session_id`). Keep `latest_seq` and pass it as `since` next time.
@@ -88,7 +88,7 @@ fn handle_one(session: &SharedSession, msg: &Value) -> Option<Value> {
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}, "resources": {"listChanged": false, "subscribe": false}, "prompts": {"listChanged": false}},
                     "serverInfo": {"name": SERVER_NAME, "title": "Ondina DAW", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": "Ondina DAW: a full digital audio workstation. Call get_project first to learn track/region/plugin ids. Positions are in beats (quarter notes); track_id 0 is the master. Read resource ondina://guide for the full workflow."
+                    "instructions": "Ondina DAW: a full digital audio workstation. Call get_project first to learn track/region/plugin ids. Positions are in beats (quarter notes); track_id 0 is the master in the mixer commands that say so (not in automation). Read resource ondina://guide for the full workflow."
                 }),
             )
         }
