@@ -42,7 +42,7 @@ Ondina is a digital audio workstation. Everything is controlled through tools th
 2. `set_tempo`, `set_key`, `set_time_signature`. For imported or played MIDI, `detect_key` finds the key (check `alternatives`: relative major/minor keys are close) and `apply: true` sets it.
 3. `set_chord_progression` (symbols or roman numerals) for the harmony.
 4. `add_track` with a `patch` from `list_patches` (e.g. "Pop Drum Kit", "Deep Sub Bass", "Lush Pad", "Stage Electric Piano", "Supersaw Lead").
-5. Fill tracks: session players `generate_drums`, `generate_bass`, `generate_chords`, `generate_arpeggio`, `generate_melody` — or write exact notes with `create_midi_region` / `add_notes`. `add_harmony` doubles a line a 3rd, 5th, 6th or octave above or below, in the key. `set_note_lengths` tidies a played part (legato, no overlaps, a fixed or scaled length) without moving notes, so indices stay valid.
+5. Fill tracks: session players `generate_drums`, `generate_bass`, `generate_chords`, `generate_arpeggio`, `generate_melody` — or write exact notes with `create_midi_region` / `add_notes`. `add_harmony` doubles a line a 3rd, 5th, 6th or octave above or below, in the key. `set_note_lengths` tidies a played part (legato, no overlaps, a fixed or scaled length) without moving notes, so indices stay valid. For drums in the step sequencer, `create_pattern_region` makes a pattern; `set_pattern_row` writes a row, `add_pattern_row` adds a drum sound, `update_pattern_row` renames a row, changes its pitch or mutes it, and `remove_pattern_row` deletes it (the rows after it move up one index: read `get_region` again).
 6. Arrange: `add_marker` (with length for sections), `copy_section`, `duplicate_region`, `paste_region` (a region object from `get_project_json` onto any track of the same type).
 7. Mix: `set_volume`, `set_pan`, `add_effect`, buses + `add_send` for shared reverb/delay, `set_automation`.
 8. Listen: `analyze_mix` returns loudness, peaks, spectral balance and advice. `auto_master` builds a master chain.
@@ -102,7 +102,7 @@ fn handle_one(session: &SharedSession, msg: &Value) -> Option<Value> {
                         "title": title_case(&t.name),
                         "description": t.description,
                         "inputSchema": t.input_schema,
-                        "annotations": {"readOnlyHint": t.read_only, "destructiveHint": matches!(t.name.as_str(), "remove_track" | "delete_region" | "new_project" | "delete_section" | "remove_notes" | "replace_notes" | "replace_cc" | "open_project"), "idempotentHint": t.read_only, "openWorldHint": false}
+                        "annotations": {"readOnlyHint": t.read_only, "destructiveHint": matches!(t.name.as_str(), "remove_track" | "delete_region" | "new_project" | "delete_section" | "remove_notes" | "replace_notes" | "replace_cc" | "remove_pattern_row" | "open_project"), "idempotentHint": t.read_only, "openWorldHint": false}
                     })
                 })
                 .collect();
@@ -472,5 +472,20 @@ mod tests {
         let (status, _) = post_with(&h.address, &[("Origin", "null")], &init_request());
         assert_eq!(status, 401);
         h.shutdown();
+    }
+
+    #[test]
+    fn pattern_row_tools_are_listed_with_their_hints() {
+        let s = Session::shared(false);
+        let list = handle(&s, &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})).unwrap();
+        let tools = list["result"]["tools"].as_array().unwrap();
+        let tool = |name: &str| tools.iter().find(|t| t["name"] == name).unwrap_or_else(|| panic!("{name} is not listed")).clone();
+        let remove = tool("remove_pattern_row");
+        let update = tool("update_pattern_row");
+        assert_eq!(remove["annotations"]["destructiveHint"], true);
+        assert_eq!(update["annotations"]["destructiveHint"], false);
+        assert_eq!(remove["annotations"]["readOnlyHint"], false);
+        assert_eq!(update["annotations"]["readOnlyHint"], false);
+        assert!(GUIDE.contains("update_pattern_row") && GUIDE.contains("remove_pattern_row"));
     }
 }
