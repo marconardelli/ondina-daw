@@ -41,7 +41,7 @@ pub struct Project {
     #[serde(default)]
     pub notes: String,
     pub next_id: Id,
-    /// Live Loops grid (cells × scenes).
+    /// Clip Grid (cells × scenes).
     #[serde(default)]
     pub live: LiveLoops,
     /// Output format for surround / spatial mixing.
@@ -72,7 +72,7 @@ fn default_metronome_level_db() -> f32 {
     METRONOME_DEFAULT_DB
 }
 
-/// Most scenes the Live Loops grid can have (`add_scene`, `create_live_cell`).
+/// Most scenes the Clip Grid can have (`add_scene`, `create_live_cell`).
 pub const MAX_SCENES: usize = 256;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -468,17 +468,21 @@ pub struct AudioFileRef {
     pub duration_sec: f64,
 }
 
-pub const TRACK_COLORS: [[u8; 3]; 10] = [
-    [86, 156, 214],
-    [106, 190, 120],
-    [230, 170, 70],
-    [214, 92, 92],
-    [170, 120, 220],
-    [80, 190, 190],
-    [220, 120, 170],
-    [180, 180, 90],
-    [120, 140, 230],
-    [230, 130, 80],
+/// The twelve colors new tracks take in turn ("Graphite Tide" track palette). The GUI theme reads them from here,
+/// so the two never drift apart. Projects keep the colors stored in them.
+pub const TRACK_COLORS: [[u8; 3]; 12] = [
+    [0x4A, 0x90, 0xD9],
+    [0x4C, 0xAF, 0x7D],
+    [0xD9, 0xA4, 0x41],
+    [0xE0, 0x70, 0x5F],
+    [0x9A, 0x7B, 0xD9],
+    [0x3F, 0xB0, 0xA8],
+    [0xD4, 0x6B, 0xA3],
+    [0xC9, 0x8B, 0x5A],
+    [0x7F, 0xA6, 0x50],
+    [0x5F, 0x7F, 0xD9],
+    [0xB8, 0xB8, 0xB8],
+    [0x8C, 0x6B, 0xD9],
 ];
 
 impl Default for Project {

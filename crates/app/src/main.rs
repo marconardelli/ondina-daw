@@ -15,12 +15,15 @@ mod automation_lane;
 mod autosave;
 mod bounce_menu;
 mod cc_lane;
+mod control_bar;
 mod doc_guard;
 mod drag_cancel;
+mod editor_header;
 mod editors;
 mod file_drop;
 mod extra_ui;
 mod inspector;
+mod inspector_strip;
 mod key_menu;
 mod metronome_ui;
 mod mixer;
@@ -28,14 +31,20 @@ mod note_clipboard;
 mod note_drag;
 mod note_menus;
 mod note_selection;
+mod panel_layout;
 mod piano_roll_view;
+mod pr_toolbar;
+mod plugin_params;
 mod region_edit;
 mod region_clipboard;
 mod session_players;
+mod settings_ui;
+mod status_bar;
 mod step_paint;
-mod theme;
 mod transport_keys;
 
+// The look (tokens, fonts, hand-drawn controls) lives in the crate's library so later views can share it.
+pub(crate) use ondina_app::{chrome, dialog, theme, widgets};
 use ondina_studio::{Session, Settings, Source};
 
 fn main() -> eframe::Result<()> {

@@ -2052,7 +2052,7 @@ struct Pruned {
 
 /// Drops everything that still refers to a track that was just removed: sends to it on the other tracks
 /// (with their lanes, renumbering the later `send:<i>` lanes), output routing to it, lanes on other tracks that
-/// target its plug-ins, its Live Loops cells and the MIDI input routes to it.
+/// target its plug-ins, its Clip Grid cells and the MIDI input routes to it.
 fn prune_references(project: &mut Project, removed: &Track) -> Pruned {
     let mut automation_lanes = 0;
     for t in &mut project.tracks {

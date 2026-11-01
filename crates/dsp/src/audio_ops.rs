@@ -1,4 +1,4 @@
-//! Offline audio processing: Flex Time (WSOLA time-stretch), Flex Pitch (pitch shift,
+//! Offline audio processing: Time Warp (WSOLA time-stretch), Pitch Edit (pitch shift,
 //! pitch correction, audio-to-MIDI via YIN), Varispeed, Smart Tempo and Stem Splitter.
 
 use std::f32::consts::PI;

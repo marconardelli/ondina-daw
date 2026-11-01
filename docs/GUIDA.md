@@ -189,7 +189,7 @@ R (registrazione), lo slider del volume e il meter.
   scorciatoie da tastiera sono spente.
 - Ogni spostamento o rinomina si annulla con un solo Ctrl+Z.
 - Cancellando una traccia, una mandata o un plug-in, Ondina toglie anche ciò che puntava a loro: le
-  automazioni delle mandate e dei parametri del plug-in, le celle di Live Loops della traccia e le route
+  automazioni delle mandate e dei parametri del plug-in, le celle della Clip Grid della traccia e le route
   MIDI verso di lei. Le automazioni delle mandate rimaste restano sulle mandate giuste. Un solo Ctrl+Z
   rimette tutto a posto (una cella che stava suonando va rilanciata).
 - **Duplicate track** copia anche l'automazione: volume, pan, mandate e parametri dei plug-in. Nella copia
@@ -390,7 +390,7 @@ esempio "C Major"). La usano Snap to key, Harmony, il Transposer con "Lock to Pr
 
 - **Detect from MIDI**, la prima voce del menu, stima la tonalità dalle note delle parti MIDI delle tracce strumento
   e la imposta come tonalità del progetto. Non contano le tracce Drum Kit, i pattern dello step sequencer, le
-  regioni mute e le celle di Live Loops. Le note lunghe e forti pesano più di quelle brevi e piano, e conta la
+  regioni mute e le celle della Clip Grid. Le note lunghe e forti pesano più di quelle brevi e piano, e conta la
   trasposizione della regione.
 - La barra di stato mostra la tonalità trovata, la confidenza (da 0 a 1) e le tonalità vicine. Le tonalità relative
   (Do maggiore e La minore) hanno le stesse note e spesso escono vicine: se la parte suona minore, scegli la
@@ -621,7 +621,7 @@ compatibile OpenAI all'indirizzo scelto in **Settings ⚙** (di default `http://
   mano) viene usato così com'è e resta acceso.
 - Il modello locale riceve 46 tool, scelti perché stiano nel suo contesto. Bastano per i pulsanti ✨
   del piano roll (*continue / improve*), dello step sequencer (*write a groove*), degli editor dei
-  plug-in (*design a sound*), di Live Loops (*fill the grid*), del report del mix e dei menu della
+  plug-in (*design a sound*), della Clip Grid (*fill the grid*), del report del mix e dei menu della
   finestra di arrangiamento. Se nel piano roll hai selezionato delle note, il modello modifica solo
   quelle: può quantizzarle, umanizzarle, trasporle, portarle nella tonalità del progetto o aggiungere
   una voce in armonia (per esempio "umanizza le note selezionate"). Claude riceve tutti i tool.

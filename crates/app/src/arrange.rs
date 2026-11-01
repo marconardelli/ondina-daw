@@ -1,5 +1,7 @@
 //! Tracks area: headers, ruler, marker & chord lanes, regions, playhead.
 
+use std::borrow::Cow;
+
 use ondina_core::command::Command;
 use ondina_core::model::*;
 use ondina_core::ops::{pattern_to_notes, resolve_chord_symbol};
@@ -15,8 +17,9 @@ use crate::piano_roll_view::{wheel_zoom, zoom_factor};
 use crate::region_edit::{self, region_name_field, FadeGeom, FadeHandle};
 use crate::session_players::{self, Player};
 use crate::theme;
+use crate::widgets::{self, Icon};
 
-const HEADER_W: f32 = 210.0;
+const HEADER_W: f32 = 224.0;
 const RULER_H: f32 = 30.0;
 /// Height of the cycle strip at the top of the ruler; the bar numbers and the playhead use the rest.
 const CYCLE_STRIP_H: f32 = 11.0;
@@ -27,14 +30,30 @@ const CYCLE_EDGE_PX: f32 = 6.0;
 /// session merges steps with the same key only within 1.5 s).
 const CYCLE_RESEND_S: f64 = 0.5;
 const CYCLE_STRIP_HINT: &str = "Cycle strip: drag the cycle to move it, drag an edge to resize it, click it to turn cycle on or off, drag on empty space to draw a new cycle. Shift+drag anywhere on the ruler also draws one.";
-const LANE_H: f32 = 18.0;
+const LANE_H: f32 = 20.0;
 /// Width of the grab strip on a region's right edge. Narrow regions get a third of their width
 /// instead, so there is always some body left to grab for moving.
 const REGION_EDGE_PX: f32 = 6.0;
 /// Below this track height the M/S/R buttons move onto the name row and the volume slider is hidden
 /// (the mixer still has it).
 const HEADER_FULL_H: f32 = 46.0;
-const HEADER_BUTTON_H: f32 = 16.0;
+const HEADER_BUTTON_H: f32 = 18.0;
+const HEADER_BUTTON_W: f32 = 22.0;
+const HEADER_BUTTON_GAP: f32 = 3.0;
+/// Height of the name row of a track header, and the gap between it and the button row.
+const HEADER_NAME_H: f32 = 16.0;
+const HEADER_ROW_GAP: f32 = 6.0;
+/// Width of the color bar on the left of a track header and of the meter column on its right.
+const HEADER_COLOR_W: f32 = 4.0;
+const HEADER_METER_W: f32 = 10.0;
+/// Width kept for the volume value right of the slider.
+const HEADER_VALUE_W: f32 = 30.0;
+/// Lowest level the header volume slider sends; its left end.
+const HEADER_VOLUME_MIN_DB: f32 = -96.0;
+/// A region's rect leaves this much of its lane free above and below.
+const REGION_INSET_Y: f32 = 2.0;
+/// Height of the colored strip with the region name. With the inset it ends where the automation overlay begins.
+const REGION_HEAD_H: f32 = 14.0;
 
 /// A marker, track or region name being edited in place.
 pub struct InPlaceRename {
@@ -193,41 +212,33 @@ impl OndinaApp {
         let ruler = Rect::from_min_max(pos2(timeline_x, top), pos2(full.right(), top + RULER_H));
         let strip = Rect::from_min_max(ruler.min, pos2(ruler.right(), top + CYCLE_STRIP_H));
         let numbers = Rect::from_min_max(pos2(timeline_x, strip.bottom()), ruler.max);
-        painter.rect_filled(ruler, Rounding::ZERO, theme::PANEL);
-        painter.rect_filled(strip, Rounding::ZERO, theme::BG);
+        painter.rect_filled(ruler, Rounding::ZERO, theme::PANEL_BG);
+        painter.rect_filled(strip, Rounding::ZERO, theme::CHROME);
         let visible_beats = ((full.right() - timeline_x) / self.px_per_beat) as f64;
         let bar_px = bpb as f32 * self.px_per_beat;
-        let label_every = if bar_px < 18.0 {
-            8
-        } else if bar_px < 36.0 {
-            4
-        } else if bar_px < 60.0 {
-            2
-        } else {
-            1
-        };
+        let label_every = bar_label_every(bar_px);
         let first_bar = (self.scroll_beat / bpb).floor() as i64;
         let last_bar = ((self.scroll_beat + visible_beats) / bpb).ceil() as i64;
-        // cycle band: solid in the strip with both edges marked, a faint tint behind the bar numbers
+        // cycle band: amber in the strip with both edges marked, a faint tint behind the bar numbers
         let has_cycle = p.cycle.end > p.cycle.start;
         let cx0 = self.beat_to_x(p.cycle.start, timeline_x);
         let cx1 = self.beat_to_x(p.cycle.end, timeline_x);
         if has_cycle && cx1 > timeline_x {
             let x0 = cx0.max(timeline_x);
             let (col, edge_col) = if p.cycle.enabled {
-                (theme::CYCLE, theme::ACCENT)
+                (theme::CYCLE, theme::SOLO)
             } else {
-                (Color32::from_rgba_premultiplied(80, 80, 80, 60), theme::TEXT_DIM)
+                (theme::CYCLE_OFF, theme::TEXT_3)
             };
             painter.rect_filled(
-                Rect::from_min_max(pos2(x0, strip.top() + 1.0), pos2(cx1, strip.bottom() - 1.0)),
-                Rounding::same(3.0_f32),
+                Rect::from_min_max(pos2(x0, strip.top() + 2.0), pos2(cx1, strip.bottom() - 2.0)),
+                Rounding::same(2.0_f32),
                 col,
             );
             painter.rect_filled(
                 Rect::from_min_max(pos2(x0, numbers.top()), pos2(cx1, numbers.bottom())),
                 Rounding::ZERO,
-                col.gamma_multiply(0.4),
+                col.gamma_multiply(0.22),
             );
             for x in [cx0, cx1] {
                 if x >= timeline_x {
@@ -238,25 +249,42 @@ impl OndinaApp {
                 }
             }
         }
+        // beat ticks when there is room for them, then the bar ticks with their numbers
+        if self.px_per_beat >= 12.0 {
+            let mut b = (self.scroll_beat).floor();
+            while b < self.scroll_beat + visible_beats {
+                let x = self.beat_to_x(b, timeline_x);
+                if x >= timeline_x && (b / bpb).fract().abs() > 1e-6 {
+                    painter.line_segment(
+                        [pos2(x, numbers.bottom() - 5.0), pos2(x, numbers.bottom())],
+                        Stroke::new(1.0_f32, theme::RULER_BEAT_TICK),
+                    );
+                }
+                b += 1.0;
+            }
+        }
         for bar in first_bar..=last_bar {
             let x = self.beat_to_x(bar as f64 * bpb, timeline_x);
             if x < timeline_x {
                 continue;
             }
-            painter.line_segment(
-                [pos2(x, numbers.top() + numbers.height() * 0.45), pos2(x, numbers.bottom())],
-                Stroke::new(1.0_f32, theme::TEXT_DIM),
-            );
-            if bar % label_every == 0 {
+            let labelled = bar % label_every == 0;
+            let tick_top = if labelled { numbers.top() + 1.0 } else { numbers.bottom() - 7.0 };
+            painter.line_segment([pos2(x, tick_top), pos2(x, numbers.bottom())], Stroke::new(1.0_f32, theme::RULER_TICK));
+            if labelled {
                 painter.text(
-                    pos2(x + 3.0, numbers.top() + 2.0),
-                    Align2::LEFT_TOP,
+                    pos2(x + 4.0, numbers.center().y),
+                    Align2::LEFT_CENTER,
                     format!("{}", bar + 1),
-                    FontId::proportional(11.0),
-                    theme::TEXT_DIM,
+                    theme::number_font(),
+                    theme::TEXT_2,
                 );
             }
         }
+        painter.line_segment(
+            [pos2(timeline_x, ruler.bottom() - 0.5), pos2(full.right(), ruler.bottom() - 0.5)],
+            Stroke::new(1.0_f32, theme::HAIRLINE),
+        );
         let ruler_resp = ui.interact(ruler, ui.id().with("ruler"), Sense::click_and_drag());
         let shift = ui.input(|i| i.modifiers.shift);
         let zone_at = |x: f32| if has_cycle { cycle_hit_zone(x, cx0, cx1) } else { CycleZone::Outside };
@@ -387,13 +415,10 @@ impl OndinaApp {
             pos2(timeline_x, top + RULER_H),
             pos2(full.right(), top + RULER_H + LANE_H),
         );
-        painter.rect_filled(mlane, Rounding::ZERO, theme::LANE_ALT);
-        painter.text(
-            pos2(full.left() + 8.0, mlane.center().y),
-            Align2::LEFT_CENTER,
-            "Markers",
-            FontId::proportional(11.0),
-            theme::TEXT_DIM,
+        painter.rect_filled(mlane, Rounding::ZERO, theme::GROUND);
+        painter.line_segment(
+            [pos2(timeline_x, mlane.bottom() - 0.5), pos2(full.right(), mlane.bottom() - 0.5)],
+            Stroke::new(1.0_f32, theme::LANE_LINE),
         );
         // Background first: markers registered after it sit on top and get clicks, drags and menus.
         let mresp = ui.interact(mlane, ui.id().with("mlane"), Sense::click());
@@ -409,7 +434,7 @@ impl OndinaApp {
             }
         }
         let mut rename_rect: Option<Rect> = None;
-        for m in &p.markers {
+        for (mi, m) in p.markers.iter().enumerate() {
             // a marker being dragged is drawn where it will land
             let (beat, len, ghost) = match &self.drag {
                 Some(Drag::MoveMarker { id, cur_beat, .. }) if *id == m.id => {
@@ -429,24 +454,25 @@ impl OndinaApp {
                 pos2(x.max(timeline_x), mlane.top() + 1.0),
                 vec2((w - (timeline_x - x).max(0.0)).max(2.0), LANE_H - 2.0),
             );
-            let col = if m.length.is_some() {
-                Color32::from_rgb(70, 95, 140)
-            } else {
-                Color32::from_rgb(110, 90, 60)
-            };
-            painter.rect_filled(r, Rounding::same(2.0_f32), col);
+            let (fill, ink) = marker_chip_colors(mi);
+            let chip = chip_rect(r);
+            painter.rect_filled(chip, Rounding::same(3.0_f32), fill);
+            if m.length.is_none() {
+                // a point marker: a flag line on its beat
+                painter.line_segment([pos2(chip.left() + 0.5, chip.top()), pos2(chip.left() + 0.5, chip.bottom())], Stroke::new(1.0_f32, ink));
+            }
             if ghost {
-                painter.rect_stroke(r, Rounding::same(2.0_f32), Stroke::new(1.5_f32, theme::SELECT));
+                painter.rect_stroke(chip, Rounding::same(3.0_f32), Stroke::new(1.5_f32, theme::SELECT));
             }
             if self.edits.marker_rename.as_ref().is_some_and(|e| e.id == m.id) {
                 rename_rect = Some(r);
             } else {
-                painter.text(
-                    pos2(r.left() + 4.0, r.center().y),
+                painter.with_clip_rect(chip.shrink2(vec2(2.0, 0.0)).intersect(painter.clip_rect())).text(
+                    pos2(chip.left() + 6.0, chip.center().y),
                     Align2::LEFT_CENTER,
                     &m.name,
                     FontId::proportional(11.0),
-                    Color32::WHITE,
+                    ink,
                 );
             }
             if ghost {
@@ -570,13 +596,10 @@ impl OndinaApp {
             scroll_beat: self.scroll_beat,
             px_per_beat: self.px_per_beat,
         };
-        painter.rect_filled(clane, Rounding::ZERO, theme::LANE);
-        painter.text(
-            pos2(full.left() + 8.0, clane.center().y),
-            Align2::LEFT_CENTER,
-            format!("Chords · {}", p.key.name()),
-            FontId::proportional(11.0),
-            theme::TEXT_DIM,
+        painter.rect_filled(clane, Rounding::ZERO, theme::GROUND);
+        painter.line_segment(
+            [pos2(timeline_x, clane.bottom() - 0.5), pos2(full.right(), clane.bottom() - 0.5)],
+            Stroke::new(1.0_f32, theme::HAIRLINE),
         );
         // Background first: chords registered after it sit on top and get clicks, drags and menus.
         let cresp = ui.interact(clane, ui.id().with("clane"), Sense::click());
@@ -601,17 +624,18 @@ impl OndinaApp {
                 _ => (c.beat, c.length, false),
             };
             let Some(r) = chord_span_rect(beat, len, cgeom) else { continue };
-            painter.rect_filled(r, Rounding::same(2.0_f32), Color32::from_rgb(60, 70, 60));
+            let chip = chip_rect(r);
+            painter.rect_filled(chip, Rounding::same(3.0_f32), theme::CHORD_CHIP);
             if ghost {
-                painter.rect_stroke(r, Rounding::same(2.0_f32), Stroke::new(1.5_f32, theme::SELECT));
+                painter.rect_stroke(chip, Rounding::same(3.0_f32), Stroke::new(1.5_f32, theme::SELECT));
             }
             if !self.edits.chord_edit.as_ref().is_some_and(|e| e.target == ChordTarget::Existing(c.id)) {
-                painter.text(
-                    pos2(r.left() + 4.0, r.center().y),
+                painter.with_clip_rect(chip.shrink2(vec2(2.0, 0.0)).intersect(painter.clip_rect())).text(
+                    pos2(chip.left() + 6.0, chip.center().y),
                     Align2::LEFT_CENTER,
                     &c.symbol,
                     FontId::proportional(11.0),
-                    Color32::from_rgb(200, 230, 190),
+                    theme::ICON,
                 );
             }
             if ghost {
@@ -701,7 +725,7 @@ impl OndinaApp {
                 ChordTarget::Existing(id) => ui.id().with(("cedit", id)),
                 ChordTarget::New { .. } => {
                     // the outline shows how long the new chord will be
-                    painter.rect_stroke(r, Rounding::same(2.0_f32), Stroke::new(1.0_f32, theme::TEXT_DIM));
+                    painter.rect_stroke(chip_rect(r), Rounding::same(3.0_f32), Stroke::new(1.0_f32, theme::TEXT_DIM));
                     ui.id().with(("cedit", "new"))
                 }
             };
@@ -758,17 +782,7 @@ impl OndinaApp {
             }
             let lane = Rect::from_min_max(pos2(timeline_x, y), pos2(full.right(), y + th));
             let sel = self.selected_track == Some(t.id);
-            tpainter.rect_filled(
-                lane,
-                Rounding::ZERO,
-                if sel {
-                    Color32::from_rgb(50, 54, 62)
-                } else if i % 2 == 0 {
-                    theme::LANE
-                } else {
-                    theme::LANE_ALT
-                },
-            );
+            tpainter.rect_filled(lane, Rounding::ZERO, lane_color(i, sel));
             if let Some(pp) = pointer {
                 if lane.contains(pp) {
                     hovered_track = Some((t.id, t.kind));
@@ -780,19 +794,22 @@ impl OndinaApp {
             while b < self.scroll_beat + visible_beats {
                 let x = self.beat_to_x(b, timeline_x);
                 let is_bar = (b / bpb).fract().abs() < 1e-6;
-                tpainter.line_segment(
-                    [pos2(x, y), pos2(x, y + th)],
-                    Stroke::new(1.0_f32, if is_bar { theme::GRID_BAR } else { theme::GRID }),
-                );
+                if x >= timeline_x {
+                    tpainter.line_segment(
+                        [pos2(x, y), pos2(x, y + th)],
+                        Stroke::new(1.0_f32, if is_bar { theme::GRID_BAR_LINE } else { theme::GRID_BEAT_LINE }),
+                    );
+                }
                 b += grid_step;
             }
             tpainter.line_segment(
-                [pos2(full.left(), y + th), pos2(full.right(), y + th)],
-                Stroke::new(1.0_f32, theme::BG),
+                [pos2(timeline_x, y + th - 0.5), pos2(full.right(), y + th - 0.5)],
+                Stroke::new(1.0_f32, theme::LANE_LINE),
             );
 
-            // lane interactions (empty area)
-            let lane_resp = ui.interact(lane, ui.id().with(("lane", t.id)), Sense::click());
+            // lane interactions (empty area), cut to the track area: a track scrolled half out of view must not take
+            // the clicks of the ruler and the lanes above it
+            let lane_resp = ui.interact(lane.intersect(track_area), ui.id().with(("lane", t.id)), Sense::click());
             if lane_resp.clicked() {
                 self.selected_track = Some(t.id);
                 self.selected_region = None;
@@ -891,7 +908,7 @@ impl OndinaApp {
                     }
                     ui.separator();
                 }
-                if ui.button("✨ Ask AI to write a part for this track").clicked() {
+                if self.ai_button(ui, "Ask AI to write a part for this track") {
                     self.selected_track = Some(tid);
                     ui.close_menu();
                     self.ask_ai(ondina_studio::prompts::WRITE_PART.into());
@@ -929,8 +946,8 @@ impl OndinaApp {
                     _ => {}
                 }
                 let rect = Rect::from_min_max(
-                    pos2(rx0, ry + 2.0),
-                    pos2(rx1.max(rx0 + 4.0), ry + th - 2.0),
+                    pos2(rx0, ry + REGION_INSET_Y),
+                    pos2(rx1.max(rx0 + 4.0), ry + th - REGION_INSET_Y),
                 );
                 let clip =
                     rect.intersect(Rect::from_min_max(pos2(timeline_x, tracks_top), full.max));
@@ -938,50 +955,27 @@ impl OndinaApp {
                 if renaming {
                     region_rename_rect = region_name_field(rect, region_area);
                 }
-                let base = theme::rgb(r.color.unwrap_or(t.color));
+                let base = if r.muted { theme::REGION_MUTED } else { theme::rgb(r.color.unwrap_or(t.color)) };
                 let selected = self.selected_region == Some(r.id);
-                let body = if r.muted {
-                    Color32::from_gray(70)
-                } else {
-                    theme::darker(base, 0.55)
-                };
-                tpainter.rect_filled(clip, Rounding::same(3.0_f32), body);
-                let header = Rect::from_min_max(clip.min, pos2(clip.right(), clip.top() + 13.0));
-                tpainter.rect_filled(
-                    header,
-                    Rounding::same(3.0_f32),
-                    if r.muted {
-                        Color32::from_gray(90)
-                    } else {
-                        base
-                    },
-                );
-                // the name field covers the name while it is being edited
-                if !renaming {
-                    tpainter.text(
-                        pos2(clip.left() + 4.0, header.center().y),
-                        Align2::LEFT_CENTER,
-                        &r.name,
-                        FontId::proportional(10.5),
-                        Color32::BLACK,
-                    );
-                }
+                let ppainter = tpainter.with_clip_rect(clip);
+                // corners are rounded only where the region really ends, not where the view cuts it
+                let round = region_rounding(rect, clip);
+                ppainter.rect_filled(clip, round, base.gamma_multiply(if r.muted { 0.22 } else { 0.33 }));
                 // loop separators
                 for k in 1..r.loop_count {
                     let lx = rx0 + (k as f64 * r.length) as f32 * self.px_per_beat;
                     if lx > clip.left() && lx < clip.right() {
-                        tpainter.line_segment(
+                        ppainter.line_segment(
                             [pos2(lx, rect.top()), pos2(lx, rect.bottom())],
-                            Stroke::new(1.0_f32, Color32::from_black_alpha(140)),
+                            Stroke::new(1.0_f32, Color32::from_black_alpha(110)),
                         );
                     }
                 }
                 // content preview
                 let content = Rect::from_min_max(
-                    pos2(rect.left(), rect.top() + 14.0),
-                    pos2(rect.right(), rect.bottom() - 2.0),
+                    pos2(rect.left(), rect.top() + REGION_HEAD_H + 2.0),
+                    pos2(rect.right(), rect.bottom() - 3.0),
                 );
-                let ppainter = tpainter.with_clip_rect(clip);
                 let fade_drag = match &self.drag {
                     Some(Drag::RegionFade { id, handle, cur, .. }) if *id == r.id => Some((*handle, *cur)),
                     _ => None,
@@ -1005,61 +999,49 @@ impl OndinaApp {
                         fade_out_px: fo as f32 * self.px_per_beat,
                     }
                 });
-                match &r.content {
-                    RegionContent::Midi(_) | RegionContent::Pattern(_) => {
-                        let notes: Vec<Note> = match &r.content {
-                            RegionContent::Midi(m) => m.notes.clone(),
-                            RegionContent::Pattern(pt) => pattern_to_notes(pt),
-                            _ => vec![],
-                        };
-                        if !notes.is_empty() {
-                            let lo = notes.iter().map(|n| n.pitch).min().unwrap() as f32;
-                            let hi = notes.iter().map(|n| n.pitch).max().unwrap() as f32;
-                            let span = (hi - lo).max(12.0);
-                            for kk in 0..r.loop_count.max(1) {
-                                let off = kk as f64 * r.length;
-                                for n in notes.iter().filter(|n| n.start < r.length) {
-                                    let nx0 = rx0 + ((n.start + off) as f32) * self.px_per_beat;
-                                    let nx1 = nx0
-                                        + (n.length.min(r.length - n.start) as f32
-                                            * self.px_per_beat)
-                                            .max(1.5);
-                                    let ny = content.bottom()
-                                        - ((n.pitch as f32 - lo) / span) * (content.height() - 3.0)
-                                        - 2.0;
-                                    ppainter.line_segment(
-                                        [pos2(nx0, ny), pos2(nx1, ny)],
-                                        Stroke::new(
-                                            2.0_f32,
-                                            theme::darker(base, 1.0).gamma_multiply(1.0),
-                                        ),
-                                    );
-                                }
+                if content.height() >= 2.0 {
+                    match &r.content {
+                        RegionContent::Midi(_) | RegionContent::Pattern(_) => {
+                            let notes: Cow<[Note]> = match &r.content {
+                                RegionContent::Midi(m) => Cow::Borrowed(&m.notes),
+                                RegionContent::Pattern(pt) => Cow::Owned(pattern_to_notes(pt)),
+                                RegionContent::Audio(_) => Cow::Owned(Vec::new()),
+                            };
+                            let geom = NoteGeom {
+                                x0: rx0,
+                                px_per_beat: self.px_per_beat,
+                                length: r.length,
+                                loops: r.loop_count.max(1),
+                                content,
+                            };
+                            if is_drum_region(r, t) {
+                                paint_drum_hits(&ppainter, &notes, geom);
+                            } else {
+                                paint_note_bars(&ppainter, &notes, geom);
                             }
                         }
-                    }
-                    RegionContent::Audio(a) => {
-                        if let (Some(peaks), Some(f)) =
-                            (self.waveforms.get(&a.file_id), p.audio_file(a.file_id))
-                        {
-                            let mid = content.center().y;
-                            let h = content.height() * 0.5;
-                            let start_sec = p.tempo.beat_to_sec(r.start);
-                            let mut x = clip.left().max(rect.left());
-                            while x < clip.right() {
-                                let beat = self.x_to_beat(x, timeline_x);
-                                let in_reg = (beat - r.start) % r.length.max(1e-6);
-                                let sec = p.tempo.beat_to_sec(r.start + in_reg) - start_sec
-                                    + a.offset_sec;
-                                let sec = if a.reverse { f.duration_sec - sec } else { sec };
-                                let idx = (sec * f.sample_rate as f64 / 256.0) as usize;
-                                if let Some((lo, hi)) = peaks.get(idx) {
-                                    ppainter.line_segment(
-                                        [pos2(x, mid - hi * h), pos2(x, mid - lo * h)],
-                                        Stroke::new(1.0_f32, base),
-                                    );
+                        RegionContent::Audio(a) => {
+                            if let (Some(peaks), Some(f)) =
+                                (self.waveforms.get(&a.file_id), p.audio_file(a.file_id))
+                            {
+                                let mid = content.center().y;
+                                let h = content.height() * 0.5;
+                                let start_sec = p.tempo.beat_to_sec(r.start);
+                                let mut columns = Vec::new();
+                                let mut x = clip.left().max(rect.left()).floor();
+                                while x < clip.right() {
+                                    let beat = self.x_to_beat(x, timeline_x);
+                                    let in_reg = (beat - r.start) % r.length.max(1e-6);
+                                    let sec = p.tempo.beat_to_sec(r.start + in_reg) - start_sec
+                                        + a.offset_sec;
+                                    let sec = if a.reverse { f.duration_sec - sec } else { sec };
+                                    let idx = (sec * f.sample_rate as f64 / 256.0) as usize;
+                                    if let Some((lo, hi)) = peaks.get(idx) {
+                                        columns.push((x, mid - hi * h, mid - lo * h));
+                                    }
+                                    x += 1.0;
                                 }
-                                x += 1.0;
+                                paint_waveform(&ppainter, &columns, theme::REGION_INK);
                             }
                         }
                     }
@@ -1067,18 +1049,28 @@ impl OndinaApp {
                 if let Some(g) = &fade_geom {
                     region_edit::paint_fades(&ppainter, g, fade_drag.map(|(h, _)| h));
                 }
-                tpainter.rect_stroke(
-                    clip,
-                    Rounding::same(3.0_f32),
-                    Stroke::new(
-                        if selected { 2.0 } else { 1.0_f32 },
-                        if selected {
-                            theme::SELECT
-                        } else {
-                            Color32::from_black_alpha(160)
-                        },
-                    ),
-                );
+                // the name strip last: it stays at the top of a region scrolled half out of view and covers the notes
+                // that scroll under it
+                let header = Rect::from_min_max(clip.min, pos2(clip.right(), (clip.top() + REGION_HEAD_H).min(clip.bottom())));
+                ppainter.rect_filled(header, Rounding { sw: 0.0, se: 0.0, ..round }, base);
+                // the name field covers the name while it is being edited
+                if !renaming {
+                    let name_clip = header.shrink2(vec2(3.0, 0.0)).intersect(clip);
+                    tpainter.with_clip_rect(name_clip).text(
+                        pos2(clip.left() + 6.0, header.center().y),
+                        Align2::LEFT_CENTER,
+                        &r.name,
+                        FontId::new(11.0, theme::semibold()),
+                        theme::ON_TRACK,
+                    );
+                }
+                if selected {
+                    // white border and a white ring outside it, readable on every track color
+                    tpainter.rect_stroke(clip.shrink(0.5), round, Stroke::new(1.0_f32, theme::SELECT));
+                    tpainter.rect_stroke(clip.expand(0.5), round, Stroke::new(1.0_f32, theme::SELECT));
+                } else {
+                    tpainter.rect_stroke(clip.shrink(0.5), round, Stroke::new(1.0_f32, base));
+                }
                 if ghost {
                     continue;
                 }
@@ -1226,12 +1218,12 @@ impl OndinaApp {
                         }
                     });
                     ui.separator();
-                    if ui.button("Split at playhead").clicked() {
+                    if ui.add(egui::Button::new("Split at playhead").shortcut_text("Ctrl+T")).clicked() {
                         let b = self.position();
                         self.cmd(Command::SplitRegion { region_id: rid, beat: b });
                         ui.close_menu();
                     }
-                    if ui.button("Duplicate").clicked() {
+                    if ui.add(egui::Button::new("Duplicate").shortcut_text("Ctrl+D")).clicked() {
                         self.cmd(Command::DuplicateRegion { region_id: rid, start: None, count: Some(1) });
                         ui.close_menu();
                     }
@@ -1252,12 +1244,12 @@ impl OndinaApp {
                         self.cmd(Command::ConvertPatternToMidi { region_id: rid });
                         ui.close_menu();
                     }
-                    if ui.button("Delete").clicked() {
+                    if ui.add(egui::Button::new("Delete").shortcut_text("Del")).clicked() {
                         self.cmd(Command::DeleteRegion { region_id: rid });
                         ui.close_menu();
                     }
                     ui.separator();
-                    if ui.button("✨ Ask AI to vary this region").clicked() {
+                    if self.ai_button(ui, "Ask AI to vary this region") {
                         self.selected_region = Some(rid);
                         ui.close_menu();
                         self.ask_ai(ondina_studio::prompts::VARY_REGION.into());
@@ -1573,50 +1565,15 @@ impl OndinaApp {
                     .max_rect(r)
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
-            child.menu_button("➕ Add track", |ui| {
-                if ui.button("Software Instrument").clicked() {
-                    self.add_track(TrackKind::Instrument, None);
-                    ui.close_menu();
-                }
-                if ui.button("Drums").clicked() {
-                    self.add_track(TrackKind::Instrument, Some("Pop Drum Kit"));
-                    ui.close_menu();
-                }
-                if ui.button("Audio").clicked() {
-                    self.add_track(TrackKind::Audio, None);
-                    ui.close_menu();
-                }
-                if ui.button("Aux Bus").clicked() {
-                    self.add_track(TrackKind::Bus, None);
-                    ui.close_menu();
-                }
-                ui.separator();
-                for patch in ondina_core::plugins::PATCHES.iter() {
-                    let kind = if patch.instrument.is_some() {
-                        TrackKind::Instrument
-                    } else {
-                        TrackKind::Audio
-                    };
-                    if ui
-                        .button(format!("{} · {}", patch.category, patch.name))
-                        .clicked()
-                    {
-                        self.add_track(kind, Some(patch.name));
-                        ui.close_menu();
-                    }
-                }
-            });
+            child.menu_button("+  Add track", |ui| self.add_track_menu(ui));
             if p.tracks.is_empty() {
-                let c = pos2(
-                    timeline_x + (full.right() - timeline_x) / 2.0,
-                    tracks_top + 120.0,
-                );
-                painter.text(
-                    c,
-                    Align2::CENTER_CENTER,
-                    "Empty project — add a track, or ask the AI assistant to compose something ✨",
-                    FontId::proportional(15.0),
-                    theme::TEXT_DIM,
+                let area = Rect::from_min_max(pos2(timeline_x, tracks_top), pos2(full.right(), (tracks_top + 260.0).min(full.bottom())));
+                crate::chrome::paint_empty_state(
+                    ui,
+                    area,
+                    Icon::Audio,
+                    "No tracks yet",
+                    "Use + Add track, drop audio or MIDI files here, or ask the assistant to compose something.",
                 );
             }
         }
@@ -1636,37 +1593,77 @@ impl OndinaApp {
         };
         self.file_drop_ui(ui, drop_geom, &p);
 
-        // playhead
+        // playhead: white, a soft glow around it and a small triangle head under the cycle strip
         let px = self.beat_to_x(pos, timeline_x);
         if px >= timeline_x && px <= full.right() {
-            painter.line_segment(
-                [pos2(px, top), pos2(px, full.bottom())],
-                Stroke::new(1.5_f32, theme::PLAYHEAD),
-            );
+            for (w, a) in [(5.0_f32, 7_u8), (3.0, 16)] {
+                painter.line_segment([pos2(px, top), pos2(px, full.bottom())], Stroke::new(w, Color32::from_white_alpha(a)));
+            }
+            painter.line_segment([pos2(px, top), pos2(px, full.bottom())], Stroke::new(1.0_f32, theme::PLAYHEAD));
             painter.add(egui::Shape::convex_polygon(
                 vec![
-                    pos2(px - 5.0, top + CYCLE_STRIP_H),
-                    pos2(px + 5.0, top + CYCLE_STRIP_H),
+                    pos2(px - 6.0, top + CYCLE_STRIP_H),
+                    pos2(px + 6.0, top + CYCLE_STRIP_H),
                     pos2(px, top + CYCLE_STRIP_H + 8.0),
                 ],
                 theme::PLAYHEAD,
                 Stroke::NONE,
             ));
         }
-        // header column background for ruler/lanes
-        painter.rect_filled(
-            Rect::from_min_max(full.min, pos2(timeline_x, top + RULER_H)),
-            Rounding::ZERO,
-            theme::PANEL,
-        );
+        // header column next to the ruler and the two lanes: track count with the + menu, then the lane names
+        let corner = Rect::from_min_max(full.min, pos2(timeline_x, tracks_top));
+        painter.rect_filled(corner, Rounding::ZERO, theme::HEADER_BG);
+        let label_x = full.left() + HEADER_COLOR_W + 8.0;
+        let ruler_mid = top + RULER_H / 2.0;
         painter.text(
-            pos2(full.left() + 8.0, top + RULER_H / 2.0),
+            pos2(label_x, ruler_mid),
             Align2::LEFT_CENTER,
-            format!("{} tracks", p.tracks.len()),
-            FontId::proportional(11.0),
-            theme::TEXT_DIM,
+            match p.tracks.len() {
+                1 => "1 track".to_string(),
+                n => format!("{n} tracks"),
+            },
+            FontId::proportional(theme::SIZE_BODY),
+            theme::TEXT_3,
         );
+        for (row_top, label, line) in [
+            (top + RULER_H, "Markers".to_string(), theme::LANE_LINE),
+            (top + RULER_H + LANE_H, format!("Chords · {}", p.key.name()), theme::HAIRLINE),
+        ] {
+            painter.line_segment(
+                [pos2(full.left(), row_top - 0.5), pos2(timeline_x, row_top - 0.5)],
+                Stroke::new(1.0_f32, theme::HAIRLINE),
+            );
+            painter.text(pos2(label_x, row_top + LANE_H / 2.0), Align2::LEFT_CENTER, label, FontId::proportional(11.0), theme::TEXT_3);
+            painter.line_segment(
+                [pos2(full.left(), row_top + LANE_H - 0.5), pos2(timeline_x, row_top + LANE_H - 0.5)],
+                Stroke::new(1.0_f32, line),
+            );
+        }
+        // the dark divider between the headers and the timeline
+        painter.line_segment(
+            [pos2(timeline_x - 0.5, top), pos2(timeline_x - 0.5, full.bottom())],
+            Stroke::new(1.0_f32, theme::SEPARATOR),
+        );
+        let plus = Rect::from_center_size(pos2(timeline_x - 8.0 - 11.0, ruler_mid), vec2(22.0, 20.0));
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(plus)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        child.spacing_mut().button_padding = vec2(6.0, 1.0);
+        child
+            .menu_button("+", |ui| self.add_track_menu(ui))
+            .response
+            .on_hover_text("Add a track");
         ui.allocate_rect(full, Sense::hover());
+    }
+
+    /// Selects a track from its header: a selected region on another track is dropped, so the Inspector's region row
+    /// always belongs to the selected track (see [`region_after_track_click`]).
+    pub(crate) fn select_track(&mut self, id: Id) {
+        let p = self.project();
+        self.selected_region = region_after_track_click(&p, self.selected_region, id);
+        self.selected_track = Some(id);
     }
 
     /// Draws one track header and handles its clicks, drag-to-reorder and double-click-to-rename.
@@ -1680,44 +1677,56 @@ impl OndinaApp {
         index: usize,
         selected: bool,
     ) -> Option<Rect> {
-        painter.rect_filled(
-            rect,
-            Rounding::ZERO,
-            if selected {
-                Color32::from_rgb(58, 62, 72)
-            } else {
-                theme::PANEL
-            },
-        );
-        painter.rect_filled(
-            Rect::from_min_size(rect.min, vec2(4.0, rect.height())),
-            Rounding::ZERO,
-            theme::rgb(t.color),
-        );
         // Background first: M/S/R, the volume slider and the rename field are registered after it and sit on top.
-        let resp = ui.interact(rect, ui.id().with(("hdr", t.id)), Sense::click_and_drag());
+        // Cut to the track area, like the lanes, so a header scrolled half out of view leaves the rows above it alone.
+        let visible = rect.intersect(painter.clip_rect());
+        let resp = ui.interact(visible, ui.id().with(("hdr", t.id)), Sense::click_and_drag());
+        let bg = if selected {
+            theme::SELECTED_BG
+        } else if resp.contains_pointer() && self.drag.is_none() {
+            theme::HEADER_HOVER
+        } else {
+            theme::HEADER_BG
+        };
+        painter.rect_filled(rect, Rounding::ZERO, bg);
+        let color = theme::rgb(t.color);
+        painter.rect_filled(
+            Rect::from_min_size(rect.min, vec2(HEADER_COLOR_W, rect.height())),
+            Rounding::ZERO,
+            if selected { color } else { theme::darker(color, 0.85) },
+        );
+        painter.line_segment(
+            [pos2(rect.left(), rect.bottom() - 0.5), pos2(rect.right(), rect.bottom() - 0.5)],
+            Stroke::new(1.0_f32, theme::HAIRLINE),
+        );
         if resp.clicked() {
-            self.selected_track = Some(t.id);
+            self.select_track(t.id);
         }
         // Only the left button reorders: egui turns a slow or moving right or middle press into a drag too.
         if resp.drag_started_by(egui::PointerButton::Primary) && self.drag.is_none() {
-            self.selected_track = Some(t.id);
+            self.select_track(t.id);
             self.drag = Some(Drag::MoveTrack { id: t.id, gap: index });
         }
-        // On short tracks the buttons sit at the right end of the name row, so the name stops before them.
-        let compact = rect.height() < HEADER_FULL_H;
-        let n_buttons = if t.kind == TrackKind::Bus { 2 } else { 3 };
-        let first_button_x = if compact {
-            rect.right() - 30.0 - n_buttons as f32 * 23.0
+        let rows = HeaderRows::new(rect.height());
+        let left = rect.left() + HEADER_COLOR_W + 8.0;
+        let right = rect.right() - HEADER_METER_W - 6.0;
+        let name_y = rect.top() + rows.name_center;
+        let buttons = header_buttons(t);
+        // On short tracks the buttons sit at the right end of the name row, so the name stops before them. Room for
+        // three buttons is always kept, so buttons and sliders line up on tracks with fewer (a bus has no R).
+        let buttons_w = 3.0 * (HEADER_BUTTON_W + HEADER_BUTTON_GAP) - HEADER_BUTTON_GAP;
+        let first_button_x = if rows.compact { right - buttons_w } else { left };
+        let kind_label = track_type_label(t);
+        let kind_w = if rows.compact {
+            0.0
         } else {
-            rect.left() + 10.0
+            painter.layout_no_wrap(kind_label.to_string(), FontId::proportional(11.0), theme::TEXT_3).size().x
         };
-        let name_right = if compact { first_button_x - 4.0 } else { rect.right() - 28.0 };
-        // the top row (icon and name) opens the rename; the rest of the header only selects
-        let name_row = Rect::from_min_max(
-            pos2(rect.left() + 6.0, rect.top()),
-            pos2(if compact { name_right } else { rect.right() - 26.0 }, rect.top() + 22.0),
-        );
+        // room for a two-digit track number before the name
+        let name_x = left + 20.0;
+        let name_right = if rows.compact { first_button_x - 6.0 } else { right - kind_w - 8.0 };
+        // the name row opens the rename; the rest of the header only selects
+        let name_row = Rect::from_min_max(pos2(rect.left(), name_y - 10.0), pos2(name_right, name_y + 10.0));
         if resp.double_clicked() && resp.interact_pointer_pos().is_some_and(|pp| name_row.contains(pp)) {
             self.edits.track_rename = Some(InPlaceRename {
                 id: t.id,
@@ -1725,42 +1734,32 @@ impl OndinaApp {
                 focus: true,
             });
         }
-        let icon = match t.kind {
-            TrackKind::Instrument => {
-                if t.instrument
-                    .as_ref()
-                    .map(|i| i.kind == "drum_synth")
-                    .unwrap_or(false)
-                {
-                    "🥁"
-                } else {
-                    "🎹"
-                }
-            }
-            TrackKind::Audio => "🎤",
-            TrackKind::Bus => "🔀",
-        };
         // decided after the double-click above, so the field opens on the same frame
         let renaming = self.edits.track_rename.as_ref().is_some_and(|e| e.id == t.id);
-        let name_pos = pos2(rect.left() + 10.0, rect.top() + 12.0);
         let mut field = None;
+        painter.text(
+            pos2(left, name_y),
+            Align2::LEFT_CENTER,
+            format!("{}", index + 1),
+            FontId::monospace(10.0),
+            theme::TEXT_DISABLED,
+        );
         if renaming {
-            let ir = painter.text(name_pos, Align2::LEFT_CENTER, icon, FontId::proportional(12.5), Color32::WHITE);
-            let r = Rect::from_min_max(
-                pos2(ir.right() + 4.0, rect.top() + 3.0),
-                pos2(name_right, rect.top() + 21.0),
-            );
+            let r = Rect::from_min_max(pos2(name_x - 3.0, name_y - 9.0), pos2(name_right, name_y + 9.0));
             // half-hidden under the lanes or the window edge: drop the edit rather than draw over them
             field = painter.clip_rect().contains_rect(r).then_some(r);
         } else {
-            let name_clip = Rect::from_min_max(rect.min, pos2(name_right, rect.bottom())).intersect(painter.clip_rect());
+            let name_clip = Rect::from_min_max(pos2(name_x, rect.top()), pos2(name_right, rect.bottom())).intersect(painter.clip_rect());
             painter.with_clip_rect(name_clip).text(
-                name_pos,
+                pos2(name_x, name_y),
                 Align2::LEFT_CENTER,
-                format!("{icon} {}", t.name),
-                FontId::proportional(12.5),
-                Color32::WHITE,
+                &t.name,
+                FontId::new(theme::SIZE_BODY, theme::semibold()),
+                if selected { theme::PLAYHEAD } else { theme::TEXT },
             );
+        }
+        if !rows.compact {
+            painter.text(pos2(right, name_y), Align2::RIGHT_CENTER, kind_label, FontId::proportional(11.0), theme::TEXT_3);
         }
         let tid = t.id;
         // computed before the menus, which borrow `self` mutably
@@ -1795,64 +1794,43 @@ impl OndinaApp {
                 ui.close_menu();
             }
         });
-        // buttons
-        let by = rect.top() + button_row_top(rect.height());
-        let mut x = first_button_x;
-        let mut button =
-            |ui: &mut egui::Ui, label: &str, on: bool, color: Color32, tip: &str| -> bool {
-                let r = Rect::from_min_size(pos2(x, by), vec2(20.0, HEADER_BUTTON_H));
-                x += 23.0;
-                let resp = ui
-                    .interact(r, ui.id().with((label, tid)), Sense::click())
-                    .on_hover_text(tip);
-                painter.rect_filled(
-                    r,
-                    Rounding::same(3.0_f32),
-                    if on { color } else { theme::LANE },
-                );
-                painter.text(
-                    r.center(),
-                    Align2::CENTER_CENTER,
-                    label,
-                    FontId::proportional(10.5),
-                    if on { Color32::BLACK } else { theme::TEXT_DIM },
-                );
-                resp.clicked()
+        // M / S / R
+        let by = rect.top() + rows.buttons_top;
+        for (k, kind) in buttons.iter().enumerate() {
+            let x = first_button_x + k as f32 * (HEADER_BUTTON_W + HEADER_BUTTON_GAP);
+            let r = Rect::from_min_size(pos2(x, by), vec2(HEADER_BUTTON_W, HEADER_BUTTON_H));
+            let (on, tip) = match kind {
+                widgets::StateKind::Mute => (t.channel.mute, "Mute"),
+                widgets::StateKind::Solo => (t.channel.solo, "Solo"),
+                widgets::StateKind::Rec => (t.record_armed, "Record arm"),
+                widgets::StateKind::Monitor => (false, "Input monitoring"),
             };
-        if button(ui, "M", t.channel.mute, theme::MUTE, "Mute") {
-            self.cmd(Command::SetMute {
-                track_id: tid,
-                mute: !t.channel.mute,
-            });
+            let b = ui.interact(r.intersect(visible), ui.id().with((kind.letter(), tid)), Sense::click()).on_hover_text(tip);
+            widgets::paint_state_button(painter, r, *kind, on, b.hovered());
+            if b.clicked() {
+                match kind {
+                    widgets::StateKind::Mute => self.cmd(Command::SetMute { track_id: tid, mute: !on }),
+                    widgets::StateKind::Solo => self.cmd(Command::SetSolo { track_id: tid, solo: !on }),
+                    widgets::StateKind::Rec => self.cmd(Command::SetRecordArm { track_id: tid, armed: !on }),
+                    widgets::StateKind::Monitor => {}
+                }
+            }
         }
-        if button(ui, "S", t.channel.solo, theme::SOLO, "Solo") {
-            self.cmd(Command::SetSolo {
-                track_id: tid,
-                solo: !t.channel.solo,
-            });
-        }
-        if t.kind != TrackKind::Bus && button(ui, "R", t.record_armed, theme::REC, "Record arm") {
-            self.cmd(Command::SetRecordArm {
-                track_id: tid,
-                armed: !t.record_armed,
-            });
-        }
-        // volume mini slider
-        let sr = Rect::from_min_max(
-            pos2(x + 4.0, by + 2.0),
-            pos2(rect.right() - 30.0, by + 14.0),
+        // the slim volume slider and its value; with the automation view on, a lane selector takes its place
+        let row = Rect::from_min_max(
+            pos2(first_button_x + buttons_w + 8.0, by),
+            pos2(right, by + HEADER_BUTTON_H),
         );
         let selector = auto_choices.as_ref().filter(|_| self.automation.on);
-        if let (Some((choices, current)), false, true) = (selector, compact, sr.width() > 20.0) {
+        if let (Some((choices, current)), false, true) = (selector, rows.compact, row.width() > 30.0) {
             // the view shows a lane: the slider's place picks which one (the volume stays in the mixer)
             let mut child = ui.new_child(
                 egui::UiBuilder::new()
-                    .max_rect(sr)
+                    .max_rect(row)
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             let short = choices.iter().find(|(s, _)| s.target == *current).map_or("Volume", |(s, _)| s.short.as_str());
-            child
-                .menu_button(format!("{short} ⏷"), |ui| {
+            widgets::dropdown_menu_button(&mut child, short, |ui| {
                     if let Some(target) = automation_lane_menu(ui, choices, current) {
                         self.automation.choose(tid, &target);
                         ui.close_menu();
@@ -1860,33 +1838,52 @@ impl OndinaApp {
                 })
                 .response
                 .on_hover_text("Automation lane shown over this track's regions");
-        } else if !compact && sr.width() > 20.0 {
-            let mut child = ui.new_child(
-                egui::UiBuilder::new()
-                    .max_rect(sr)
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-            );
-            let mut v = t.channel.volume_db;
-            child.spacing_mut().slider_width = sr.width();
-            if child
-                .add(egui::Slider::new(&mut v, -60.0..=6.0).show_value(false))
-                .on_hover_text(format!("{:.1} dB", v))
-                .changed()
-            {
-                self.cmd_merge(
-                    Command::SetVolume {
-                        track_id: tid,
-                        db: v,
-                    },
-                    format!("vol{tid}"),
-                );
+        } else if !rows.compact && row.width() > HEADER_VALUE_W + 24.0 {
+            let rail_x0 = row.left() + 6.0;
+            let rail_x1 = row.right() - HEADER_VALUE_W - 10.0;
+            let cy = row.center().y;
+            let hit = Rect::from_min_max(pos2(row.left(), row.top()), pos2(rail_x1 + 6.0, row.bottom()));
+            let db = t.channel.volume_db;
+            let sresp = ui
+                .interact(hit.intersect(visible), ui.id().with(("hvol", tid)), Sense::click_and_drag())
+                .on_hover_text(format!("Volume {} dB. Drag to change it, double-click for 0 dB.", db_text(db)));
+            let new_db = if sresp.double_clicked() {
+                Some(0.0)
+            } else if sresp.dragged() || sresp.clicked() {
+                sresp.interact_pointer_pos().map(|pp| {
+                    header_volume_db(((pp.x - rail_x0) / (rail_x1 - rail_x0).max(1.0)).clamp(0.0, 1.0))
+                })
+            } else {
+                None
+            };
+            if let Some(v) = new_db.filter(|v| (v - db).abs() > 1e-4) {
+                self.cmd_merge(Command::SetVolume { track_id: tid, db: v }, format!("vol{tid}"));
             }
+            let shown = new_db.unwrap_or(db);
+            let kx = rail_x0 + header_volume_unit(shown) * (rail_x1 - rail_x0);
+            let rail = Rect::from_min_max(pos2(rail_x0, cy - 2.0), pos2(rail_x1, cy + 2.0));
+            painter.rect_filled(rail, Rounding::same(2.0_f32), theme::BORDER);
+            painter.rect_filled(Rect::from_min_max(rail.min, pos2(kx, rail.bottom())), Rounding::same(2.0_f32), theme::SLIDER_FILL);
+            let hot = sresp.hovered() || sresp.dragged();
+            painter.circle(
+                pos2(kx, cy),
+                if hot { 6.5 } else { 6.0 },
+                if hot { theme::PLAYHEAD } else { theme::ICON },
+                Stroke::new(1.0_f32, theme::SEPARATOR),
+            );
+            painter.text(
+                pos2(row.right(), cy),
+                Align2::RIGHT_CENTER,
+                db_text(shown),
+                FontId::monospace(10.0),
+                theme::TEXT_2,
+            );
         }
-        // meter
+        // meter: a slim stereo pair in the right column, barely there at rest
         let m = self.meters.get(&tid).copied().unwrap_or([0.0; 2]);
         let mr = Rect::from_min_max(
-            pos2(rect.right() - 22.0, rect.top() + 6.0),
-            pos2(rect.right() - 8.0, rect.bottom() - 6.0),
+            pos2(rect.right() - HEADER_METER_W, rect.top() + 8.0),
+            pos2(rect.right() - 4.0, rect.bottom() - 8.0),
         );
         draw_meter(painter, mr, m);
         if matches!(&self.drag, Some(Drag::MoveTrack { id, .. }) if *id == t.id) {
@@ -1895,6 +1892,124 @@ impl OndinaApp {
             painter.rect_stroke(rect.shrink(1.0), Rounding::ZERO, Stroke::new(1.5_f32, theme::SELECT));
         }
         field
+    }
+
+    /// The entries of the add-track menus (the + in the header column and the button below the last track).
+    fn add_track_menu(&mut self, ui: &mut egui::Ui) {
+        if ui.button("Software Instrument").clicked() {
+            self.add_track(TrackKind::Instrument, None);
+            ui.close_menu();
+        }
+        if ui.button("Drums").clicked() {
+            self.add_track(TrackKind::Instrument, Some("Pop Drum Kit"));
+            ui.close_menu();
+        }
+        if ui.button("Audio").clicked() {
+            self.add_track(TrackKind::Audio, None);
+            ui.close_menu();
+        }
+        if ui.button("Aux Bus").clicked() {
+            self.add_track(TrackKind::Bus, None);
+            ui.close_menu();
+        }
+        ui.separator();
+        for patch in ondina_core::plugins::PATCHES.iter() {
+            let kind = if patch.instrument.is_some() {
+                TrackKind::Instrument
+            } else {
+                TrackKind::Audio
+            };
+            if ui
+                .button(format!("{} · {}", patch.category, patch.name))
+                .clicked()
+            {
+                self.add_track(kind, Some(patch.name));
+                ui.close_menu();
+            }
+        }
+    }
+}
+
+/// The region selection after a click on the header of `track`: kept when the region is on that track, dropped when
+/// it is on another one. Clicking a region already selects its track, and clicking an empty lane drops the region,
+/// so the region selection always belongs to the selected track and the Inspector never shows a region of a track
+/// that is not the one selected. A click on the region's own header keeps it, to mute or rename the track while
+/// editing the region.
+pub(crate) fn region_after_track_click(project: &Project, region: Option<Id>, track: Id) -> Option<Id> {
+    region.filter(|r| project.region_track_id(*r) == Some(track))
+}
+
+/// Where the rows of a track header `height` points tall sit, measured from its top.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct HeaderRows {
+    /// One row: name and buttons side by side, no slider.
+    compact: bool,
+    /// Vertical center of the name row.
+    name_center: f32,
+    /// Top of the M/S/R buttons.
+    buttons_top: f32,
+}
+
+impl HeaderRows {
+    fn new(height: f32) -> Self {
+        if height < HEADER_FULL_H {
+            let top = button_row_top(height);
+            HeaderRows { compact: true, name_center: top + HEADER_BUTTON_H / 2.0, buttons_top: top }
+        } else {
+            let block_top = button_row_top(height) - HEADER_NAME_H - HEADER_ROW_GAP;
+            HeaderRows { compact: false, name_center: block_top + HEADER_NAME_H / 2.0, buttons_top: button_row_top(height) }
+        }
+    }
+}
+
+/// The state buttons of a track header, left to right. A bus records nothing, so it has no R; there is no input
+/// monitoring switch in the model yet, so no I.
+fn header_buttons(t: &Track) -> Vec<widgets::StateKind> {
+    let mut v = vec![widgets::StateKind::Mute, widgets::StateKind::Solo];
+    if t.kind != TrackKind::Bus {
+        v.push(widgets::StateKind::Rec);
+    }
+    v
+}
+
+/// The short type label at the right of a track header's name row.
+fn track_type_label(t: &Track) -> &'static str {
+    match t.kind {
+        TrackKind::Audio => "Audio",
+        TrackKind::Bus => "Bus",
+        TrackKind::Instrument => match t.instrument.as_ref().map(|i| i.kind.as_str()) {
+            Some("drum_synth") => "Drums",
+            Some("analog_synth") => "Synth",
+            Some("fm_synth") => "FM",
+            Some("sampler") => "Sampler",
+            Some("organ") => "Organ",
+            Some("pluck_synth") => "Pluck",
+            _ => "Inst",
+        },
+    }
+}
+
+/// Position of a level on the header volume slider, 0 at the left end and 1 at +6 dB, on the mixer fader's scale.
+fn header_volume_unit(db: f32) -> f32 {
+    1.0 - widgets::db_to_fader(db.max(HEADER_VOLUME_MIN_DB))
+}
+
+/// Inverse of [`header_volume_unit`]; the left end sends the lowest level the model keeps instead of silence.
+fn header_volume_db(unit: f32) -> f32 {
+    widgets::fader_to_db(1.0 - unit.clamp(0.0, 1.0)).max(HEADER_VOLUME_MIN_DB)
+}
+
+/// A level as the track header writes it: one decimal near 0 dB, whole dB from -10 down, a real minus sign, and
+/// "−∞" at the bottom of the scale.
+fn db_text(db: f32) -> String {
+    if db <= HEADER_VOLUME_MIN_DB + 0.05 {
+        return "\u{2212}\u{221E}".into();
+    }
+    let s = if db.abs() >= 9.95 { format!("{:.0}", db.abs()) } else { format!("{:.1}", db.abs()) };
+    if db < -0.05 {
+        format!("\u{2212}{s}")
+    } else {
+        s
     }
 }
 
@@ -1920,12 +2035,27 @@ enum RegionZone {
     FadeOut,
 }
 
-/// Distance of the M/S/R buttons from the top of a track header `height` points tall.
+/// Distance of the M/S/R buttons from the top of a track header `height` points tall: centered on short tracks,
+/// under the name row on taller ones, the two rows centered together.
 fn button_row_top(height: f32) -> f32 {
     if height < HEADER_FULL_H {
-        3.0
+        ((height - HEADER_BUTTON_H) / 2.0).max(2.0)
     } else {
-        26.0
+        let block = HEADER_NAME_H + HEADER_ROW_GAP + HEADER_BUTTON_H;
+        ((height - block) / 2.0).max(2.0) + HEADER_NAME_H + HEADER_ROW_GAP
+    }
+}
+
+/// Every how many bars the ruler writes a number when a bar is `bar_px` pixels wide, so the numbers never touch.
+fn bar_label_every(bar_px: f32) -> i64 {
+    if bar_px < 18.0 {
+        8
+    } else if bar_px < 36.0 {
+        4
+    } else if bar_px < 60.0 {
+        2
+    } else {
+        1
     }
 }
 
@@ -1951,6 +2081,156 @@ fn region_press_zone(p: Pos2, rect: Rect, handles: Option<[Rect; 2]>) -> RegionZ
         Some(FadeHandle::Out) => RegionZone::FadeOut,
         None => region_hit_zone(p.x, rect.left(), rect.right()),
     }
+}
+
+/// The chip drawn for a marker or chord whose grab area is `r`: two points shorter at the top and bottom, so the
+/// chips float in the lane while the whole lane height stays easy to grab.
+fn chip_rect(r: Rect) -> Rect {
+    r.shrink2(vec2(0.0, 2.0))
+}
+
+/// (fill, text) of the `index`-th marker chip: the marker tints take turns, so neighbouring sections stand apart.
+fn marker_chip_colors(index: usize) -> (Color32, Color32) {
+    theme::MARKER_CHIPS[index % theme::MARKER_CHIPS.len()]
+}
+
+/// Background of the lane of the `index`-th track: rows alternate subtly, the selected track's lane is lighter.
+fn lane_color(index: usize, selected: bool) -> Color32 {
+    if selected {
+        theme::LANE_SELECTED
+    } else if index % 2 == 0 {
+        theme::LANE_EVEN
+    } else {
+        theme::LANE_ODD
+    }
+}
+
+/// Where the notes of a region are drawn: its left edge, the zoom, one repetition's length, the repetitions and the
+/// content area under the name strip.
+#[derive(Debug, Clone, Copy)]
+struct NoteGeom {
+    x0: f32,
+    px_per_beat: f32,
+    length: f64,
+    loops: u32,
+    content: Rect,
+}
+
+impl NoteGeom {
+    /// Screen x span of `n` in repetition `k`; notes past the end of the region are cut there.
+    fn span(&self, n: &Note, k: u32) -> (f32, f32) {
+        let off = k as f64 * self.length;
+        let x0 = self.x0 + ((n.start + off) as f32) * self.px_per_beat;
+        let w = (n.length.min(self.length - n.start) as f32 * self.px_per_beat).max(2.0);
+        (x0, x0 + w)
+    }
+}
+
+/// MIDI notes as small bars, the lowest pitch at the bottom of the content area.
+fn paint_note_bars(painter: &egui::Painter, notes: &[Note], g: NoteGeom) {
+    let (Some(lo), Some(hi)) = (notes.iter().map(|n| n.pitch).min(), notes.iter().map(|n| n.pitch).max()) else {
+        return;
+    };
+    let span = (hi - lo).max(12) as f32;
+    let bar_h = (g.content.height() / (span + 1.0)).clamp(2.0, 4.0);
+    for k in 0..g.loops {
+        for n in notes.iter().filter(|n| n.start < g.length) {
+            let (x0, x1) = g.span(n, k);
+            let y = g.content.bottom() - ((n.pitch - lo) as f32 / span) * (g.content.height() - bar_h) - bar_h;
+            let r = Rect::from_min_max(pos2(x0, y), pos2((x1 - 1.0).max(x0 + 2.0), y + bar_h));
+            painter.rect_filled(r, Rounding::same(1.0_f32), theme::REGION_INK);
+        }
+    }
+}
+
+/// Drum hits as short marks on one row per kind of drum (cymbals and hats on top, kick at the bottom), so a beat
+/// reads as a pattern instead of a band of dashes. Louder hits are brighter.
+fn paint_drum_hits(painter: &egui::Painter, notes: &[Note], g: NoteGeom) {
+    let rows = drum_rows(notes.iter().map(|n| n.pitch));
+    if rows.is_empty() {
+        return;
+    }
+    let row_h = g.content.height() / rows.len() as f32;
+    let hit_h = (row_h * 0.7).clamp(1.5, 14.0);
+    let hit_w = (g.px_per_beat * 0.25 * 0.6).clamp(2.0, 5.0);
+    for k in 0..g.loops {
+        for n in notes.iter().filter(|n| n.start < g.length) {
+            let Some(row) = drum_row_index(&rows, n.pitch) else { continue };
+            let (x0, _) = g.span(n, k);
+            let cy = g.content.top() + (row as f32 + 0.5) * row_h;
+            let r = Rect::from_center_size(pos2(x0 + hit_w / 2.0, cy), vec2(hit_w, hit_h));
+            let a = 0.45 + 0.55 * (n.velocity as f32 / 127.0);
+            painter.rect_filled(r, Rounding::same(1.0_f32), theme::REGION_INK.gamma_multiply(a));
+        }
+    }
+}
+
+/// A filled waveform from one `(x, top, bottom)` column per pixel.
+fn paint_waveform(painter: &egui::Painter, columns: &[(f32, f32, f32)], color: Color32) {
+    if columns.is_empty() {
+        return;
+    }
+    let mut mesh = egui::Mesh::default();
+    for (i, &(x, top, bottom)) in columns.iter().enumerate() {
+        // at least a hairline where the audio is silent
+        let (top, bottom) = if bottom - top < 1.0 { ((top + bottom) / 2.0 - 0.5, (top + bottom) / 2.0 + 0.5) } else { (top, bottom) };
+        mesh.colored_vertex(pos2(x, top), color);
+        mesh.colored_vertex(pos2(x + 1.0, bottom), color);
+        mesh.colored_vertex(pos2(x + 1.0, top), color);
+        mesh.colored_vertex(pos2(x, bottom), color);
+        let b = (i * 4) as u32;
+        mesh.add_triangle(b, b + 2, b + 1);
+        mesh.add_triangle(b, b + 1, b + 3);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+/// Corner rounding of a region drawn in `rect` and cut to `clip`: square where the view cuts it.
+fn region_rounding(rect: Rect, clip: Rect) -> Rounding {
+    let r = theme::R_SM;
+    let left = if clip.left() > rect.left() + 0.5 { 0.0 } else { r };
+    let right = if clip.right() < rect.right() - 0.5 { 0.0 } else { r };
+    let top = if clip.top() > rect.top() + 0.5 { 0.0 } else { 1.0 };
+    let bottom = if clip.bottom() < rect.bottom() - 0.5 { 0.0 } else { 1.0 };
+    Rounding { nw: left * top, ne: right * top, sw: left * bottom, se: right * bottom }
+}
+
+/// Kind of drum a General MIDI drum note belongs to, as a row from the top: 0 cymbals and hats, 1 snares, claps
+/// and rims, 2 toms and other percussion, 3 kicks. Pitches outside the drum map count as percussion.
+fn drum_kind(pitch: u8) -> u8 {
+    match pitch {
+        35 | 36 => 3,
+        37..=40 => 1,
+        42 | 44 | 46 | 49 | 51 | 52 | 53 | 55 | 57 | 59 => 0,
+        _ => 2,
+    }
+}
+
+/// The rows a drum region shows, top to bottom: only the kinds of drum it plays, so a kick-and-hat beat uses two
+/// rows and each row stays tall.
+fn drum_rows(pitches: impl IntoIterator<Item = u8>) -> Vec<u8> {
+    let mut kinds: Vec<u8> = pitches.into_iter().map(drum_kind).collect();
+    kinds.sort_unstable();
+    kinds.dedup();
+    kinds
+}
+
+/// Row of `pitch` among `rows` (from [`drum_rows`]).
+fn drum_row_index(rows: &[u8], pitch: u8) -> Option<usize> {
+    rows.iter().position(|k| *k == drum_kind(pitch))
+}
+
+/// Whether a region's notes are drawn as drum hits: step-sequencer patterns, and MIDI on a drum-kit track.
+fn is_drum_region(r: &Region, t: &Track) -> bool {
+    match &r.content {
+        RegionContent::Pattern(_) => true,
+        RegionContent::Midi(_) => is_drum_track(t),
+        RegionContent::Audio(_) => false,
+    }
+}
+
+fn is_drum_track(t: &Track) -> bool {
+    t.instrument.as_ref().is_some_and(|i| i.kind == "drum_synth")
 }
 
 /// Shortest section a marker can be resized to, in beats.
@@ -2252,34 +2532,26 @@ pub(crate) fn rename_field(
     }
 }
 
+/// A stereo meter from two linear peak levels: two slim bars on the mixer fader's scale with the meter gradient. At
+/// rest only the faint bar tracks show.
 pub fn draw_meter(painter: &egui::Painter, r: Rect, m: [f32; 2]) {
-    painter.rect_filled(r, Rounding::same(2.0_f32), Color32::from_rgb(20, 22, 26));
-    let w = (r.width() - 1.0) / 2.0;
-    for c in 0..2 {
-        let db = ondina_dsp::util::gain_to_db(m[c]).max(-60.0);
-        let frac = ((db + 60.0) / 66.0).clamp(0.0, 1.0);
-        let col = if db > -0.5 {
-            theme::REC
-        } else if db > -9.0 {
-            Color32::from_rgb(230, 200, 60)
-        } else {
-            Color32::from_rgb(80, 200, 110)
-        };
+    let w = ((r.width() - 1.0) / 2.0).max(1.0);
+    for (c, level) in m.iter().enumerate() {
         let x = r.left() + c as f32 * (w + 1.0);
-        let top = r.bottom() - frac * r.height();
-        painter.rect_filled(
-            Rect::from_min_max(pos2(x, top), pos2(x + w, r.bottom())),
-            Rounding::ZERO,
-            col,
-        );
+        let bar = Rect::from_min_max(pos2(x, r.top()), pos2(x + w, r.bottom()));
+        painter.rect_filled(bar, Rounding::same(1.0_f32), theme::RAISED);
+        let db = ondina_dsp::util::gain_to_db(*level);
+        widgets::paint_meter_fill(painter, bar, widgets::meter_fill(db));
     }
-    let _ = Pos2::ZERO;
 }
 
 #[cfg(test)]
 mod tests {
     use crate::step_paint::RowRename;
     use super::{
+        bar_label_every, db_text, drum_kind, drum_row_index, drum_rows, header_buttons, header_volume_db,
+        header_volume_unit, is_drum_region, lane_color, region_after_track_click, region_rounding, track_type_label,
+        HeaderRows, HEADER_NAME_H, HEADER_VOLUME_MIN_DB, REGION_HEAD_H, REGION_INSET_Y,
         button_row_top, chord_commit, chord_field_rect, chord_span_rect, cycle_gesture_key, track_rename_command, cycle_hit_zone, cycle_toggle, dragged_marker_beat,
         edge_scroll_speed, moved_cycle, new_chord_span, next_cycle_gesture, region_edge_width, region_hit_zone,
         region_press_zone, rename_commit, resized_chord_length, resized_cycle, resized_marker_length, ruler_click_action,
@@ -2639,8 +2911,8 @@ mod tests {
         for h in [TRACK_H_MIN, 40.0, HEADER_FULL_H - 0.5, HEADER_FULL_H, 58.0, TRACK_H_MAX] {
             assert!(button_row_top(h) + HEADER_BUTTON_H <= h - 2.0, "height {h}");
         }
-        // the default height keeps the full layout
-        assert_eq!(button_row_top(58.0), 26.0);
+        // the default height keeps the full layout: name row and buttons centered together
+        assert_eq!(button_row_top(58.0), 31.0);
         const { assert!(TRACK_H_MIN < HEADER_FULL_H) };
     }
 
@@ -2745,4 +3017,146 @@ mod tests {
         run(&mut s, "undo", json!({}));
         assert_eq!(cycle(&s), (true, 8.0, 16.0));
     }
+
+    #[test]
+    fn header_rows_never_overlap_and_stay_inside_the_header() {
+        for h in [TRACK_H_MIN, 40.0, HEADER_FULL_H - 0.5, HEADER_FULL_H, 58.0, 72.0, TRACK_H_MAX] {
+            let r = HeaderRows::new(h);
+            assert_eq!(r.compact, h < HEADER_FULL_H, "height {h}");
+            assert!(r.buttons_top >= 2.0 && r.buttons_top + HEADER_BUTTON_H <= h - 2.0, "height {h}: {r:?}");
+            if r.compact {
+                // one row: the name is centered on the buttons
+                assert!((r.name_center - (r.buttons_top + HEADER_BUTTON_H / 2.0)).abs() < 1e-3, "height {h}");
+            } else {
+                assert!(r.name_center + HEADER_NAME_H / 2.0 <= r.buttons_top, "height {h}: {r:?}");
+                assert!(r.name_center - HEADER_NAME_H / 2.0 >= 2.0, "height {h}: {r:?}");
+                // centered: the space above the name row equals the space below the buttons
+                let above = r.name_center - HEADER_NAME_H / 2.0;
+                let below = h - r.buttons_top - HEADER_BUTTON_H;
+                assert!((above - below).abs() < 1e-3, "height {h}: {r:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn region_name_strip_ends_where_the_automation_overlay_begins() {
+        // presses below the name strip go to the automation overlay when the view is on
+        assert_eq!(REGION_INSET_Y + REGION_HEAD_H, crate::automation_lane::TOP_BAND_PX);
+    }
+
+    #[test]
+    fn header_volume_follows_the_fader_scale_and_round_trips() {
+        assert_eq!(header_volume_unit(6.0), 1.0);
+        assert_eq!(header_volume_unit(12.0), 1.0);
+        assert_eq!(header_volume_unit(f32::NEG_INFINITY), header_volume_unit(HEADER_VOLUME_MIN_DB));
+        assert!(header_volume_unit(HEADER_VOLUME_MIN_DB) < 0.01);
+        for db in [6.0, 0.0, -4.0, -6.0, -12.0, -18.0, -30.0, -48.0, -60.0] {
+            let back = header_volume_db(header_volume_unit(db));
+            assert!((back - db).abs() < 0.05, "{db} came back as {back}");
+        }
+        // the left end sends a level the model keeps, never silence (-inf is not valid JSON)
+        assert_eq!(header_volume_db(0.0), HEADER_VOLUME_MIN_DB);
+        assert!(header_volume_db(-1.0).is_finite());
+        assert_eq!(header_volume_db(2.0), 6.0);
+        // louder is further right
+        assert!(header_volume_unit(-6.0) < header_volume_unit(-4.0));
+    }
+
+    #[test]
+    fn header_volume_text_matches_the_design() {
+        assert_eq!(db_text(-4.0), "\u{2212}4.0");
+        assert_eq!(db_text(-18.0), "\u{2212}18");
+        assert_eq!(db_text(-9.96), "\u{2212}10");
+        assert_eq!(db_text(0.0), "0.0");
+        assert_eq!(db_text(-0.04), "0.0");
+        assert_eq!(db_text(3.5), "3.5");
+        assert_eq!(db_text(HEADER_VOLUME_MIN_DB), "\u{2212}\u{221E}");
+    }
+
+    #[test]
+    fn drum_notes_get_one_row_per_kind_of_drum() {
+        // cymbals and hats on top, then snares and claps, toms and percussion, kick at the bottom
+        assert_eq!([drum_kind(42), drum_kind(46), drum_kind(49)], [0, 0, 0]);
+        assert_eq!([drum_kind(38), drum_kind(39), drum_kind(40)], [1, 1, 1]);
+        assert_eq!([drum_kind(45), drum_kind(50), drum_kind(56)], [2, 2, 2]);
+        assert_eq!([drum_kind(35), drum_kind(36)], [3, 3]);
+        // outside the drum map: percussion
+        assert_eq!([drum_kind(20), drum_kind(100)], [2, 2]);
+        // a kick, snare and hat beat uses three rows, top to bottom
+        let beat = [36, 42, 38, 42, 36, 42, 38, 46];
+        let rows = drum_rows(beat);
+        assert_eq!(rows, [0, 1, 3]);
+        assert_eq!(drum_row_index(&rows, 42), Some(0));
+        assert_eq!(drum_row_index(&rows, 46), Some(0));
+        assert_eq!(drum_row_index(&rows, 38), Some(1));
+        assert_eq!(drum_row_index(&rows, 36), Some(2));
+        assert_eq!(drum_row_index(&rows, 45), None);
+        // kick and hats only: two rows, each twice as tall
+        assert_eq!(drum_rows([36, 42]).len(), 2);
+        assert!(drum_rows([]).is_empty());
+    }
+
+    #[test]
+    fn patterns_and_drum_kit_midi_draw_as_hits() {
+        let mut s = Session::new(false);
+        let drums = run(&mut s, "add_track", json!({"kind": "instrument", "name": "Drums", "patch": "Pop Drum Kit"}))["track_id"].as_u64().unwrap();
+        let keys = run(&mut s, "add_track", json!({"kind": "instrument", "name": "Keys"}))["track_id"].as_u64().unwrap();
+        let bus = run(&mut s, "add_track", json!({"kind": "bus", "name": "Verb"}))["track_id"].as_u64().unwrap();
+        run(&mut s, "create_midi_region", json!({"track_id": drums, "start": 0.0, "length": 4.0}));
+        run(&mut s, "create_midi_region", json!({"track_id": keys, "start": 0.0, "length": 4.0}));
+        run(&mut s, "create_pattern_region", json!({"track_id": keys, "start": 4.0}));
+        let p = &s.project;
+        let t = |id: u64| p.track(id).unwrap();
+        assert!(is_drum_region(&t(drums).regions[0], t(drums)));
+        assert!(!is_drum_region(&t(keys).regions[0], t(keys)));
+        assert!(is_drum_region(&t(keys).regions[1], t(keys)), "a pattern always draws as hits");
+        assert_eq!(track_type_label(t(drums)), "Drums");
+        assert_eq!(track_type_label(t(bus)), "Bus");
+        assert!(!track_type_label(t(keys)).is_empty());
+        // a bus has no record arm
+        assert_eq!(header_buttons(t(bus)).len(), 2);
+        assert_eq!(header_buttons(t(keys)).len(), 3);
+    }
+
+    #[test]
+    fn clicking_a_header_drops_a_region_selected_on_another_track() {
+        let mut s = Session::new(false);
+        let a = run(&mut s, "add_track", json!({"kind": "instrument", "name": "Bass"}))["track_id"].as_u64().unwrap();
+        let b = run(&mut s, "add_track", json!({"kind": "instrument", "name": "Keys"}))["track_id"].as_u64().unwrap();
+        let r = run(&mut s, "create_midi_region", json!({"track_id": a, "start": 0.0, "length": 4.0}))["region_id"].as_u64().unwrap();
+        // another track's header: the region row would describe a track that is not selected
+        assert_eq!(region_after_track_click(&s.project, Some(r), b), None);
+        // the region's own header keeps it
+        assert_eq!(region_after_track_click(&s.project, Some(r), a), Some(r));
+        assert_eq!(region_after_track_click(&s.project, None, a), None);
+        // a region that is gone is dropped too
+        assert_eq!(region_after_track_click(&s.project, Some(9999), a), None);
+    }
+
+    #[test]
+    fn ruler_numbers_thin_out_when_bars_are_narrow() {
+        assert_eq!(bar_label_every(100.0), 1);
+        assert_eq!(bar_label_every(40.0), 2);
+        assert_eq!(bar_label_every(20.0), 4);
+        assert_eq!(bar_label_every(8.0), 8);
+    }
+
+    #[test]
+    fn lanes_alternate_and_the_selected_lane_stands_out() {
+        assert_ne!(lane_color(0, false), lane_color(1, false));
+        assert_eq!(lane_color(0, false), lane_color(2, false));
+        assert_ne!(lane_color(0, true), lane_color(0, false));
+        assert_ne!(lane_color(1, true), lane_color(1, false));
+    }
+
+    #[test]
+    fn regions_cut_by_the_view_have_square_corners_there() {
+        let rect = Rect::from_min_max(pos2(100.0, 50.0), pos2(300.0, 100.0));
+        let whole = region_rounding(rect, rect);
+        assert!(whole.nw > 0.0 && whole.ne > 0.0 && whole.sw > 0.0 && whole.se > 0.0);
+        let cut_left = region_rounding(rect, Rect::from_min_max(pos2(224.0, 50.0), rect.max));
+        assert_eq!((cut_left.nw, cut_left.sw), (0.0, 0.0));
+        assert!(cut_left.ne > 0.0 && cut_left.se > 0.0);
+    }
+
 }

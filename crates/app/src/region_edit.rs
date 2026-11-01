@@ -8,21 +8,21 @@ use ondina_core::model::{Id, Region, RegionContent};
 use crate::arrange::rename_commit;
 use crate::theme;
 
-/// Region colors offered by the arrange menu and the inspector: the ten track colors first, so a region can
-/// match another track, then two quieter ones. All light enough for the black name in the region header.
+/// Region colors offered by the arrange menu and the inspector: the twelve track colors, in the same order, so a
+/// region can match any track. All light enough for the dark name in the region header.
 pub const REGION_COLORS: [(&str, [u8; 3]); 12] = [
-    ("Blue", [86, 156, 214]),
-    ("Green", [106, 190, 120]),
-    ("Amber", [230, 170, 70]),
-    ("Red", [214, 92, 92]),
-    ("Purple", [170, 120, 220]),
-    ("Teal", [80, 190, 190]),
-    ("Pink", [220, 120, 170]),
-    ("Olive", [180, 180, 90]),
-    ("Indigo", [120, 140, 230]),
-    ("Orange", [230, 130, 80]),
-    ("Sand", [200, 170, 130]),
-    ("Grey", [150, 155, 165]),
+    ("Blue", [0x4A, 0x90, 0xD9]),
+    ("Green", [0x4C, 0xAF, 0x7D]),
+    ("Amber", [0xD9, 0xA4, 0x41]),
+    ("Coral", [0xE0, 0x70, 0x5F]),
+    ("Purple", [0x9A, 0x7B, 0xD9]),
+    ("Teal", [0x3F, 0xB0, 0xA8]),
+    ("Pink", [0xD4, 0x6B, 0xA3]),
+    ("Copper", [0xC9, 0x8B, 0x5A]),
+    ("Olive", [0x7F, 0xA6, 0x50]),
+    ("Indigo", [0x5F, 0x7F, 0xD9]),
+    ("Grey", [0xB8, 0xB8, 0xB8]),
+    ("Violet", [0x8C, 0x6B, 0xD9]),
 ];
 
 /// Height of the in-place name field over a region, and its minimum width (the same as `rename_field`'s).
@@ -333,6 +333,7 @@ mod tests {
 
     #[test]
     fn palette_has_twelve_distinct_readable_colors() {
+        assert_eq!(REGION_COLORS.len(), TRACK_COLORS.len());
         for (i, c) in TRACK_COLORS.iter().enumerate() {
             assert_eq!(REGION_COLORS[i].1, *c, "color {i}");
         }
@@ -392,7 +393,7 @@ mod tests {
         assert_eq!(state(&s), ("Verse 1".to_string(), None));
 
         s.execute(color_command(rid, None, ColorChoice::Color(amber)).unwrap(), Source::Gui).unwrap();
-        assert_eq!(state(&s), ("Verse 1".to_string(), Some([230, 170, 70])));
+        assert_eq!(state(&s), ("Verse 1".to_string(), Some([0xD9, 0xA4, 0x41])));
         assert!(color_command(rid, Some(amber), ColorChoice::Color(amber)).is_none());
 
         s.execute(color_command(rid, Some(amber), ColorChoice::Track).unwrap(), Source::Gui).unwrap();

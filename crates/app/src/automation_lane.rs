@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use eframe::egui::{self, pos2, Align2, Color32, FontId, Key, Modifiers, Pos2, Rect, Sense, Shape, Stroke};
+use eframe::egui::{self, pos2, vec2, Color32, FontId, Key, Modifiers, Pos2, Rect, Sense, Shape, Stroke};
 use ondina_core::command::Command;
 use ondina_core::model::{AutomationLane, AutomationPoint, Id, Project, Track, MASTER_ID};
 
@@ -415,6 +415,10 @@ pub struct LaneLook<'a> {
 /// Paints the veil over `rect`, the curve (or a dashed line at the lane's static value when it has no points), a
 /// dot per point and the lane's name at the bottom left. `band` is the value band, `beat_x` the arrangement's
 /// mapping and `x_beat` its inverse.
+/// Veil over the lane while the automation view is on, and the chip behind the lane name.
+const VEIL: Color32 = Color32::from_black_alpha(80);
+const LABEL_CHIP: Color32 = Color32::from_black_alpha(150);
+
 pub fn paint_lane(
     painter: &egui::Painter,
     rect: Rect,
@@ -424,7 +428,12 @@ pub fn paint_lane(
     x_beat: &dyn Fn(f32) -> f64,
 ) {
     let painter = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
-    painter.rect_filled(rect, 0.0, Color32::from_black_alpha(70));
+    painter.rect_filled(rect, 0.0, VEIL);
+    // a hairline at the top of the band marks where the overlay starts, under the region names
+    painter.line_segment(
+        [pos2(rect.left(), rect.top() + 0.5), pos2(rect.right(), rect.top() + 0.5)],
+        Stroke::new(1.0_f32, theme::ACCENT_BORDER.gamma_multiply(0.6)),
+    );
     let spec = look.spec;
     let y = |v: f32| y_from_value(spec, v, band.0, band.1);
     let color = if look.enabled { theme::ACCENT } else { theme::ACCENT.gamma_multiply(0.4) };
@@ -432,7 +441,7 @@ pub fn paint_lane(
     if look.points.is_empty() {
         let yy = y(spec.static_value);
         let line = [pos2(rect.left(), yy), pos2(rect.right(), yy)];
-        painter.extend(Shape::dashed_line(&line, Stroke::new(1.0_f32, theme::TEXT_DIM), 4.0, 3.0));
+        painter.extend(Shape::dashed_line(&line, Stroke::new(1.0_f32, theme::TEXT_3), 4.0, 3.0));
         label = format!("{label} {}", value_label(spec, spec.static_value));
     } else {
         let vertices: Vec<Pos2> = curve(look.points, x_beat(rect.left()), x_beat(rect.right()))
@@ -446,16 +455,23 @@ pub fn paint_lane(
                 continue;
             }
             if look.highlight == Some(i) {
-                painter.circle(c, 4.5, color, Stroke::new(1.0_f32, theme::SELECT));
+                painter.circle(c, 4.5, theme::ACCENT_HOVER, Stroke::new(1.0_f32, theme::SELECT));
             } else {
-                painter.circle_filled(c, 3.0, color);
+                // a dark outline keeps the dots readable over the regions
+                painter.circle(c, 3.0, color, Stroke::new(1.0_f32, theme::SEPARATOR));
             }
         }
         if !look.enabled {
             label.push_str(" (off)");
         }
     }
-    painter.text(pos2(rect.left() + 4.0, rect.bottom() - 2.0), Align2::LEFT_BOTTOM, label, FontId::proportional(10.0), theme::TEXT_DIM);
+    let galley = painter.layout_no_wrap(label, FontId::new(theme::SIZE_LABEL, theme::semibold()), theme::TEXT_2);
+    let chip = Rect::from_min_size(
+        pos2(rect.left() + 4.0, rect.bottom() - 3.0 - galley.size().y - 2.0),
+        galley.size() + vec2(8.0, 2.0),
+    );
+    painter.rect_filled(chip, theme::R_SM, LABEL_CHIP);
+    painter.galley(chip.min + vec2(4.0, 1.0), galley, theme::TEXT_2);
 }
 
 impl OndinaApp {

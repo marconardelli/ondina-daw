@@ -1,5 +1,5 @@
-//! GUI for the extended features: Live Loops grid, Score view, surround panner, video window,
-//! VST3 browser, Flex/Stem audio tools, comping, MIDI Transform and Environment routing.
+//! GUI for the extended features: Clip Grid, Score view, surround panner, video window,
+//! VST3 browser, Time Warp, Pitch Edit and Stem audio tools, comping, MIDI Transform and Environment routing.
 
 use std::sync::mpsc::Receiver;
 
@@ -11,7 +11,10 @@ use eframe::egui::{
 use serde_json::Value;
 
 use crate::app::OndinaApp;
+use crate::chrome;
+use crate::dialog;
 use crate::theme;
+use crate::widgets::{self, Icon};
 
 #[derive(Default)]
 pub struct ExtraState {
@@ -66,18 +69,41 @@ fn parse_name(n: &str) -> Option<u8> {
     ondina_core::theory::parse_note(n)
 }
 
+/// Space between the score's sheet and the edges of the editor.
+const SCORE_MARGIN: f32 = 12.0;
+
+/// Song bar number of a region's first measure: the score counts measures from the region start, the labels follow
+/// the song like the piano roll's ruler (the bar the measure starts in).
+fn score_first_bar(region_start: f64, beats_per_bar: f64) -> usize {
+    if beats_per_bar <= 0.0 {
+        return 1;
+    }
+    (region_start / beats_per_bar).floor().max(0.0) as usize + 1
+}
+
+/// What the Clip Grid says when there is nothing to launch: no track to hold cells, or no scene row yet.
+pub fn clip_grid_empty(tracks: usize, scenes: usize) -> Option<(&'static str, &'static str)> {
+    if tracks == 0 {
+        Some(("No tracks for the Clip Grid", "Add an instrument or audio track: each track gets a column of cells."))
+    } else if scenes == 0 {
+        Some(("No scenes yet", "Press + Scene to add a row of cells, then click a cell to fill it."))
+    } else {
+        None
+    }
+}
+
 /// Diatonic step number (C4 = 28).
 fn diatonic(p: u8) -> i32 {
     (p as i32 / 12) * 7 + LETTER[(p % 12) as usize]
 }
 
 impl OndinaApp {
-    // ============================================================== Live Loops
+    // ============================================================== Clip Grid
     pub fn live_ui(&mut self, ui: &mut egui::Ui) {
         let p = self.project();
         let ls = self.shared.live_state.lock().clone();
         ui.horizontal(|ui| {
-            ui.label(RichText::new("🔲 Live Loops").strong());
+            ui.label(RichText::new("Clip Grid").font(crate::theme::title_font()));
             ui.separator();
             ui.label("Quantize");
             let q = p.live.quantize;
@@ -88,27 +114,35 @@ impl OndinaApp {
                     }
                 }
             });
-            if ui.button("➕ Scene").clicked() {
+            if widgets::icon_button(ui, Icon::Plus, "Scene", None).on_hover_text("Add a scene (a row of cells launched together)").clicked() {
                 self.cmd(Command::AddScene { name: None });
             }
-            if ui.button("⏹ Stop all cells").clicked() {
+            if widgets::icon_button(ui, Icon::Stop, "Stop all cells", None).clicked() {
                 self.cmd(Command::StopLiveCells { track_id: None });
             }
-            if ui.button("⏺ Commit performance to timeline").on_hover_text("Write what the grid played into regular regions").clicked() {
+            if widgets::icon_button(ui, Icon::Record, "Commit performance to timeline", Some(theme::REC)).on_hover_text("Write what the grid played into regular regions").clicked() {
                 if let Some(v) = self.exec(Command::CommitLivePerformance {}) {
                     self.status = format!("Committed {} regions", v["created_regions"].as_array().map(|a| a.len()).unwrap_or(0));
                 }
             }
-            if ui.button(RichText::new("✨ AI: fill the grid").color(theme::AI)).clicked() {
+            if self.ai_button(ui, "AI: fill the grid") {
                 self.ask_ai(ondina_studio::prompts::FILL_GRID.into());
             }
         });
         ui.separator();
+        let grid_tracks = p.tracks.iter().filter(|t| t.kind != TrackKind::Bus).count();
+        if let Some((title, hint)) = clip_grid_empty(grid_tracks, p.live.scenes.len()) {
+            chrome::empty_state(ui, Icon::ClipGrid, title, hint);
+            return;
+        }
         egui::ScrollArea::both().show(ui, |ui| {
             egui::Grid::new("livegrid").spacing(vec2(4.0, 4.0)).show(ui, |ui| {
                 ui.label("");
                 for (si, name) in p.live.scenes.iter().enumerate() {
-                    let resp = ui.add_sized(vec2(110.0, 22.0), egui::Button::new(RichText::new(format!("▶ {name}")).small()));
+                    let text = widgets::leading_icon_text(ui, RichText::new(name.as_str()).size(theme::SIZE_NUMBER));
+                    let resp = ui.add_sized(vec2(110.0, 22.0), egui::Button::new(text));
+                    widgets::paint_leading_icon(ui, &resp, Icon::Play, theme::PLAY);
+                    let resp = resp.on_hover_text("Launch this scene");
                     if resp.clicked() {
                         self.cmd(Command::LaunchScene { scene: si });
                     }
@@ -123,7 +157,7 @@ impl OndinaApp {
                 for t in p.tracks.iter().filter(|t| t.kind != TrackKind::Bus) {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(crate::mixer::short(&t.name, 12)).color(theme::rgb(t.color)));
-                        if ui.small_button("⏹").on_hover_text("Stop this track's cell").clicked() {
+                        if widgets::icon_only_button(ui, Icon::Stop, 18.0, theme::TEXT_2).on_hover_text("Stop this track's cell").clicked() {
                             self.cmd(Command::StopLiveCells { track_id: Some(t.id) });
                         }
                     });
@@ -135,11 +169,11 @@ impl OndinaApp {
                                 let playing = ls.playing.iter().any(|x| x.1 == c.id);
                                 let queued = ls.queued.iter().any(|x| x.2 == Some(c.id));
                                 let base = theme::rgb(t.color);
-                                ui.painter().rect_filled(rect, Rounding::same(5.0_f32), if playing { base } else { theme::darker(base, 0.45) });
+                                ui.painter().rect_filled(rect, Rounding::same(theme::R_MD), if playing { base } else { theme::darker(base, 0.45) });
                                 if queued {
                                     let blink = (ui.input(|i| i.time) * 4.0) as i64 % 2 == 0;
                                     if blink {
-                                        ui.painter().rect_stroke(rect, Rounding::same(5.0_f32), Stroke::new(2.0_f32, Color32::WHITE));
+                                        ui.painter().rect_stroke(rect, Rounding::same(theme::R_MD), Stroke::new(2.0_f32, Color32::WHITE));
                                     }
                                 }
                                 if playing {
@@ -164,7 +198,7 @@ impl OndinaApp {
                                 });
                             }
                             None => {
-                                ui.painter().rect_stroke(rect, Rounding::same(5.0_f32), Stroke::new(1.0_f32, theme::GRID));
+                                ui.painter().rect_stroke(rect, Rounding::same(theme::R_MD), Stroke::new(1.0_f32, theme::GRID));
                                 ui.painter().text(rect.center(), Align2::CENTER_CENTER, "+", FontId::proportional(16.0), theme::TEXT_DIM);
                                 let tid = t.id;
                                 let tkind = t.kind;
@@ -205,8 +239,7 @@ impl OndinaApp {
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(format!(
-                    "𝄞 Score — {}   {}   {}",
-                    region.name,
+                    "{}   {}",
                     score["time_signature"].as_str().unwrap_or(""),
                     score["key"].as_str().unwrap_or("")
                 ))
@@ -248,16 +281,21 @@ impl OndinaApp {
         let per_beat = 64.0f32;
         let bpb = self.view.project.time_signature.beats_per_bar() as f32;
         let measure_w = per_beat * bpb + 14.0;
-        let per_row = ((ui.available_width() - 60.0) / measure_w).floor().max(1.0) as usize;
+        let per_row = ((ui.available_width() - 60.0 - 2.0 * SCORE_MARGIN) / measure_w).floor().max(1.0) as usize;
+        let first_bar = score_first_bar(region.start, f64::from(bpb));
         let rows = measures.len().div_ceil(per_row).max(1);
         let row_h = staff_gap * 4.0 + 90.0;
         egui::ScrollArea::vertical().show(ui, |ui| {
-            let (rect, _) = ui.allocate_exact_size(
-                vec2(ui.available_width(), rows as f32 * row_h + 20.0),
+            let (outer, _) = ui.allocate_exact_size(
+                vec2(ui.available_width(), rows as f32 * row_h + 20.0 + 2.0 * SCORE_MARGIN),
                 Sense::hover(),
             );
-            let painter = ui.painter_at(rect);
-            painter.rect_filled(rect, Rounding::ZERO, Color32::from_rgb(245, 243, 236));
+            // a sheet of paper on the dark ground, with a margin and a soft shadow
+            let painter = ui.painter_at(outer);
+            painter.rect_filled(outer, Rounding::ZERO, theme::GROUND);
+            let rect = outer.shrink(SCORE_MARGIN);
+            painter.rect_filled(rect.translate(vec2(0.0, 3.0)).expand(1.0), Rounding::same(theme::R_LG), Color32::from_black_alpha(90));
+            painter.rect_filled(rect, Rounding::same(theme::R_SM), Color32::from_rgb(245, 243, 236));
             let ink = Color32::from_rgb(25, 25, 30);
             // bottom line pitch: E4 (treble) or G2 (bass)
             let bottom = if bass { diatonic(43) } else { diatonic(64) };
@@ -293,7 +331,7 @@ impl OndinaApp {
                     painter.text(
                         pos2(mx + 2.0, line_y(4) - 12.0),
                         Align2::LEFT_BOTTOM,
-                        format!("{}", idx + 1),
+                        format!("{}", first_bar + idx),
                         FontId::proportional(9.0),
                         Color32::GRAY,
                     );
@@ -472,7 +510,7 @@ impl OndinaApp {
                 let r = if el > 0.0 { size * 0.25 } else { size * 0.45 };
                 let a = az.to_radians();
                 let pos = c + vec2(a.sin() * r, -a.cos() * r);
-                painter.circle_filled(pos, 4.0, if el > 0.0 { Color32::from_rgb(120, 140, 230) } else { theme::TEXT_DIM });
+                painter.circle_filled(pos, 4.0, if el > 0.0 { theme::ACCENT } else { theme::TEXT_DIM });
                 painter.text(pos + vec2(0.0, -9.0), Align2::CENTER_BOTTOM, name, FontId::proportional(8.5), theme::TEXT_DIM);
             }
             let radius = size * 0.45 * (1.0 - sp.elevation / 90.0 * 0.45);
@@ -576,7 +614,7 @@ impl OndinaApp {
                     for f in self.settings.vst3_folders.clone() {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(&f).small());
-                            if ui.small_button("✕").on_hover_text("Remove this folder").clicked() {
+                            if widgets::icon_only_button(ui, Icon::Close, 16.0, theme::TEXT_3).on_hover_text("Remove this folder").clicked() {
                                 remove = Some(f.clone());
                             }
                         });
@@ -593,7 +631,7 @@ impl OndinaApp {
                 for pl in self.extra.vst_list.clone() {
                     ui.horizontal(|ui| {
                         let inst = pl["instrument"].as_bool().unwrap_or(false);
-                        ui.label(if inst { "🎹" } else { "🎛" });
+                        widgets::icon(ui, if inst { Icon::Piano } else { Icon::Effect }, 14.0, theme::TEXT_2);
                         ui.label(format!(
                             "{} · {}",
                             pl["name"].as_str().unwrap_or(""),
@@ -601,7 +639,7 @@ impl OndinaApp {
                         ));
                         let path = pl["path"].as_str().unwrap_or("").to_string();
                         if inst {
-                            if ui.small_button("➕ track").clicked() {
+                            if widgets::icon_button(ui, Icon::Plus, "Track", None).on_hover_text("New instrument track with this plug-in").clicked() {
                                 if let Some(v) = self.exec(Command::AddTrack {
                                     kind: TrackKind::Instrument,
                                     name: pl["name"].as_str().map(|s| s.to_string()),
@@ -622,7 +660,7 @@ impl OndinaApp {
                                 }
                             }
                         } else if ui
-                            .small_button("➕ insert")
+                            .add(egui::Button::new("Insert"))
                             .on_hover_text("Insert on the selected track (or master)")
                             .clicked()
                         {
@@ -639,11 +677,11 @@ impl OndinaApp {
             });
     }
 
-    // ============================================================== audio tools (Flex / Stems)
+    // ============================================================== audio tools (Time Warp, Pitch Edit, Stems)
     pub fn audio_tools(&mut self, ui: &mut egui::Ui, region: &Region) {
         let rid = region.id;
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("Flex").strong());
+            ui.label(RichText::new("Time Warp").strong());
             ui.add(
                 egui::DragValue::new(&mut self.extra.stretch)
                     .range(0.25..=4.0)
@@ -657,6 +695,7 @@ impl OndinaApp {
                     target_length: None,
                 });
             }
+            ui.label(RichText::new("Pitch Edit").strong());
             ui.add(
                 egui::DragValue::new(&mut self.extra.semis)
                     .range(-24.0..=24.0)
@@ -686,7 +725,7 @@ impl OndinaApp {
                     strength: Some(1.0),
                 });
             }
-            if ui.button("→ MIDI").clicked() {
+            if ui.button("To MIDI").on_hover_text("Pitch Edit to MIDI: transcribe a monophonic part into a MIDI region").clicked() {
                 self.exec(Command::AudioToMidi {
                     region_id: rid,
                     track_id: None,
@@ -707,7 +746,7 @@ impl OndinaApp {
                     target_db: Some(-1.0),
                 });
             }
-            if ui.button("✂ Stem Splitter").clicked() {
+            if widgets::icon_button(ui, Icon::Scissors, "Stem Splitter", None).clicked() {
                 if let Some(v) = self.exec(Command::SplitStems {
                     region_id: rid,
                     engine: None,
@@ -735,7 +774,7 @@ impl OndinaApp {
         if self.extra.show_video {
             let mut open = true;
             let p = self.project();
-            egui::Window::new("🎬 Movie")
+            dialog::window("Movie")
                 .open(&mut open)
                 .default_size([360.0, 240.0])
                 .show(ctx, |ui| {
@@ -845,7 +884,7 @@ impl OndinaApp {
         // ---- MIDI transform
         if self.extra.show_transform {
             let mut open = true;
-            egui::Window::new("MIDI Transform")
+            dialog::window("MIDI Transform")
                 .open(&mut open)
                 .show(ctx, |ui| {
                     let Some(rid) = self.selected_region else {
@@ -932,7 +971,7 @@ impl OndinaApp {
         if self.extra.show_routes {
             let mut open = true;
             let p = self.project();
-            egui::Window::new("MIDI Environment (input routing)").open(&mut open).show(ctx, |ui| {
+            dialog::window("MIDI Environment").open(&mut open).show(ctx, |ui| {
                 ui.label(RichText::new("Keyboard splits and layers: each route sends a note range of the MIDI input to a track.").small().color(theme::TEXT_DIM));
                 let mut routes = p.midi_routes.clone();
                 let mut changed = false;
@@ -941,7 +980,7 @@ impl OndinaApp {
                     ui.horizontal(|ui| {
                         let tname = p.track(r.track_id).map(|t| t.name.clone()).unwrap_or("?".into());
                         ui.label(format!("{}: notes {}–{}  transpose {:+}  → {}", r.name, r.note_min.unwrap_or(0), r.note_max.unwrap_or(127), r.transpose, tname));
-                        if ui.small_button("×").clicked() {
+                        if widgets::icon_only_button(ui, Icon::Close, 16.0, theme::TEXT_3).on_hover_text("Remove this route").clicked() {
                             remove = Some(i);
                         }
                     });
@@ -1027,4 +1066,18 @@ fn grab_frame(path: &str, t: f64) -> Option<egui::ColorImage> {
     let (w, h) = (320usize, 180usize);
     let px = ondina_studio::session_ext::movie_frame_rgb(path, t, w, h).ok()?;
     Some(egui::ColorImage::from_rgb([w, h], &px))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn score_bars_are_numbered_from_the_song() {
+        assert_eq!(score_first_bar(0.0, 4.0), 1);
+        assert_eq!(score_first_bar(16.0, 4.0), 5);
+        assert_eq!(score_first_bar(18.0, 4.0), 5, "a region starting mid-bar: the bar it starts in");
+        assert_eq!(score_first_bar(9.0, 3.0), 4, "3/4");
+        assert_eq!(score_first_bar(8.0, 0.0), 1);
+    }
 }

@@ -1,5 +1,5 @@
 //! Session handlers for the extended command set that need audio data, the engine, files
-//! or external tools: Flex Time/Pitch, Stem Splitter, Live Loops transport, surround bounce,
+//! or external tools: Time Warp/Pitch Edit, Stem Splitter, Clip Grid transport, surround bounce,
 //! movies, VST3 hosting, live MIDI and settings.
 
 use std::collections::{HashMap, HashSet};
@@ -799,7 +799,7 @@ impl Session {
             log.push(ondina_engine::LiveLogEntry { track_id: t, cell_id: c, start: s, end: now.max(s) });
         }
         if log.is_empty() {
-            return Err("nothing has been played in Live Loops yet".into());
+            return Err("nothing has been played in the Clip Grid yet".into());
         }
         let mut created = vec![];
         for e in log {

@@ -33,7 +33,7 @@ pub enum EngineMsg {
     LiveStop(Option<Id>),
 }
 
-/// Snapshot of the Live Loops engine state.
+/// Snapshot of the Clip Grid engine state.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct LiveState {
     /// (track_id, cell_id, start_beat)

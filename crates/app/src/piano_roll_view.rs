@@ -1,8 +1,30 @@
-//! View geometry of the piano roll: wheel scrolling, pointer-anchored zoom, framing a region's notes and
-//! the playhead inside looped regions. Pure functions so they can be tested without a window.
+//! View geometry of the piano roll: wheel scrolling, pointer-anchored zoom, framing a region's notes, the
+//! playhead inside looped regions, and how the keyboard, rows, grid lines and lanes are laid out and shaded.
+//! Pure functions so they can be tested without a window.
 
-use eframe::egui::{Event, MouseWheelUnit};
+use eframe::egui::{pos2, Color32, Event, MouseWheelUnit, Rect};
 use ondina_core::model::{Id, Note};
+use ondina_core::theory::note_name;
+
+use crate::theme;
+
+/// Width of the keyboard on the left of the grid (and of the lane labels under it).
+pub const KEYS_W: f32 = 64.0;
+/// How much shorter than a white key a black key is drawn.
+pub const BLACK_KEY_INSET: f32 = 22.0;
+/// Height of the bar ruler over the grid.
+pub const RULER_H: f32 = 18.0;
+/// Height of the velocity lane.
+pub const VEL_H: f32 = 44.0;
+/// Row height the piano roll opens with: about fifteen rows or more in the default bottom panel.
+pub const DEFAULT_KEY_H: f32 = 12.0;
+/// Keyboard colors: white and black keys, the line between white keys, the C labels.
+pub const KEY_WHITE: Color32 = Color32::from_rgb(0xE8, 0xEA, 0xED);
+pub const KEY_BLACK: Color32 = Color32::from_rgb(0x24, 0x27, 0x2C);
+pub const KEY_LINE: Color32 = Color32::from_rgb(0xB9, 0xBE, 0xC6);
+pub const KEY_LABEL: Color32 = Color32::from_rgb(0x4A, 0x50, 0x59);
+/// Below this row height the keys are too short for their C labels.
+const KEY_LABEL_MIN_H: f32 = 8.0;
 
 /// Highest and lowest pitch the top row can show (the range the piano roll always allowed).
 const TOP_PITCH_MIN: i32 = 20;
@@ -113,27 +135,183 @@ pub fn initial_view(notes: &[Note], rows: i32) -> (i32, f64) {
     (top.clamp(TOP_PITCH_MIN, TOP_PITCH_MAX), first.floor().max(0.0))
 }
 
+/// Key height that shows `span` pitch rows (and a row of margin) in a grid `grid_h` tall: the current height when
+/// they already fit, otherwise smaller, but never under the smallest key height.
+pub fn framing_key_height(span: i32, grid_h: f32, key_h: f32) -> f32 {
+    let need = (span.max(1) + 1) as f32;
+    if grid_h <= 0.0 || need * key_h <= grid_h {
+        return key_h;
+    }
+    (grid_h / need).clamp(KEY_H_MIN, key_h)
+}
+
 /// Remembers which region the piano roll last framed, so a region is framed when it is first shown
-/// and not again on every frame or when the same region is selected again.
+/// and not again on every frame or when the same region is selected again. While the person has not
+/// scrolled or zoomed it yet, a change of the grid's height (the panel settling on its size) frames it
+/// again, so the notes are never left cut off by a first frame of another size.
 #[derive(Debug, Default)]
 pub struct ViewFraming {
     framed: Option<Id>,
+    height: f32,
+    touched: bool,
 }
 
 impl ViewFraming {
-    /// True the first time `region` is shown since the last different region or `reset`.
-    pub fn take(&mut self, region: Id) -> bool {
-        if self.framed == Some(region) {
-            return false;
+    /// True the first time `region` is shown since the last different region or `reset`, and when the same,
+    /// untouched region is shown in a grid `grid_h` tall of another height.
+    pub fn take_at(&mut self, region: Id, grid_h: f32) -> bool {
+        let fresh = self.framed != Some(region);
+        let resized = !fresh && !self.touched && (grid_h - self.height).abs() > 0.5;
+        if fresh {
+            self.touched = false;
         }
         self.framed = Some(region);
-        true
+        self.height = grid_h;
+        fresh || resized
+    }
+
+    /// The person scrolled or zoomed the view: keep it as it is from now on.
+    pub fn touch(&mut self) {
+        self.touched = true;
     }
 
     /// Frame again the next time a region is shown (double-click on a region, new or opened project).
     pub fn reset(&mut self) {
         self.framed = None;
+        self.touched = false;
     }
+}
+
+/// Whether `pitch` is a black key.
+pub fn is_black(pitch: i32) -> bool {
+    matches!(pitch.rem_euclid(12), 1 | 3 | 6 | 8 | 10)
+}
+
+/// The label on a key: the C of every octave ("C3", "C4", "C5"...), when the rows are tall enough to read it.
+pub fn key_label(pitch: i32, key_h: f32) -> Option<String> {
+    (pitch.rem_euclid(12) == 0 && (0..=127).contains(&pitch) && key_h >= KEY_LABEL_MIN_H).then(|| note_name(pitch as u8))
+}
+
+/// Fill of a pitch row: white keys lighter than black ones, and the pitches of the project key a step lighter
+/// than the others, so the scale reads at a glance.
+pub fn row_fill(pitch: i32, in_key: bool) -> Color32 {
+    match (is_black(pitch), in_key) {
+        (false, true) => Color32::from_rgb(0x1B, 0x1E, 0x22),
+        (false, false) => Color32::from_rgb(0x17, 0x19, 0x1C),
+        (true, true) => Color32::from_rgb(0x16, 0x18, 0x1B),
+        (true, false) => Color32::from_rgb(0x12, 0x14, 0x17),
+    }
+}
+
+/// The line under a pitch row: stronger under each C, where an octave starts.
+pub fn row_line(pitch: i32) -> Color32 {
+    if pitch.rem_euclid(12) == 0 {
+        Color32::from_rgb(0x2C, 0x30, 0x36)
+    } else {
+        theme::LANE_LINE
+    }
+}
+
+/// Fill and border of a note: the track color with a darker border; selected, lighter with a white border.
+pub fn note_colors(track: Color32, selected: bool) -> (Color32, Color32) {
+    if selected {
+        (track.lerp_to_gamma(Color32::WHITE, 0.55), Color32::WHITE)
+    } else {
+        (track, theme::darker(track, 0.62))
+    }
+}
+
+/// Stem and head of a note's velocity: the track color with a lighter head; selected, both close to white.
+pub fn velocity_colors(track: Color32, selected: bool) -> (Color32, Color32) {
+    if selected {
+        (track.lerp_to_gamma(Color32::WHITE, 0.6), Color32::WHITE)
+    } else {
+        (track, track.lerp_to_gamma(Color32::WHITE, 0.45))
+    }
+}
+
+/// A vertical line of the note grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridLine {
+    Bar,
+    Beat,
+    Division,
+}
+
+impl GridLine {
+    /// Color of the line (all are one point wide; the bars stand out by brightness).
+    pub fn color(self) -> Color32 {
+        match self {
+            GridLine::Bar => Color32::from_rgb(0x34, 0x39, 0x41),
+            GridLine::Beat => Color32::from_rgb(0x24, 0x28, 0x2E),
+            GridLine::Division => Color32::from_rgb(0x1C, 0x1F, 0x23),
+        }
+    }
+}
+
+/// Beats between two grid lines at a zoom: sixteenths when zoomed in, eighths in between, beats when zoomed
+/// out, and only bars when even beats would crowd.
+pub fn grid_step(px_per_beat: f32, beats_per_bar: f64) -> f64 {
+    if px_per_beat > 160.0 {
+        0.25
+    } else if px_per_beat > 50.0 {
+        0.5
+    } else if px_per_beat >= 8.0 {
+        1.0
+    } else {
+        beats_per_bar.max(1.0)
+    }
+}
+
+/// What kind of line sits at `beat` (beats from the region start, with the region starting `offset` beats into
+/// the song, so the bar lines follow the song's bars).
+pub fn grid_line(beat: f64, offset: f64, beats_per_bar: f64) -> GridLine {
+    let song = beat + offset;
+    let on = |x: f64, unit: f64| unit > 0.0 && ((x / unit) - (x / unit).round()).abs() < 1e-6;
+    if on(song, beats_per_bar) {
+        GridLine::Bar
+    } else if on(song, 1.0) {
+        GridLine::Beat
+    } else {
+        GridLine::Division
+    }
+}
+
+/// Where the piano roll's parts go inside the editor area: keyboard and lane labels on the left, the ruler on
+/// top, then the note grid, the velocity lane and the controller lane (`cc_h` tall, header included).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PianoRollLayout {
+    pub ruler: Rect,
+    pub grid: Rect,
+    pub keys: Rect,
+    pub vel: Rect,
+    pub vel_label: Rect,
+    pub cc: Rect,
+    pub cc_label: Rect,
+}
+
+pub fn piano_roll_layout(full: Rect, cc_h: f32) -> PianoRollLayout {
+    let (l, k, r) = (full.left(), full.left() + KEYS_W, full.right());
+    let grid_top = full.top() + RULER_H;
+    let cc_top = (full.bottom() - cc_h).max(grid_top);
+    let vel_top = (cc_top - VEL_H).max(grid_top);
+    PianoRollLayout {
+        ruler: Rect::from_min_max(pos2(k, full.top()), pos2(r, grid_top)),
+        grid: Rect::from_min_max(pos2(k, grid_top), pos2(r, vel_top)),
+        keys: Rect::from_min_max(pos2(l, grid_top), pos2(k, vel_top)),
+        vel: Rect::from_min_max(pos2(k, vel_top), pos2(r, cc_top)),
+        vel_label: Rect::from_min_max(pos2(l, vel_top), pos2(k, cc_top)),
+        cc: Rect::from_min_max(pos2(k, cc_top), full.max),
+        cc_label: Rect::from_min_max(pos2(l, cc_top), pos2(k, full.bottom())),
+    }
+}
+
+/// Whole pitch rows that fit a grid `grid_h` tall.
+pub fn visible_rows(grid_h: f32, key_h: f32) -> i32 {
+    if key_h <= 0.0 {
+        return 0;
+    }
+    (grid_h / key_h).floor() as i32
 }
 
 /// Position of the playhead inside one iteration of a looped region. `rel` is the playhead minus the
@@ -325,6 +503,39 @@ mod tests {
     }
 
     #[test]
+    fn framing_shrinks_the_keys_until_the_whole_range_shows() {
+        // two octaves in a small panel: the keys get smaller so every note shows
+        let kh = framing_key_height(25, 180.0, DEFAULT_KEY_H);
+        assert!(kh < DEFAULT_KEY_H);
+        assert!(visible_rows(180.0, kh) >= 25, "{kh}");
+        let notes: Vec<Note> = (0..25).map(|i| n(36 + i as u8, i as f64)).collect();
+        let (top, _) = initial_view(&notes, visible_rows(180.0, kh));
+        assert!(top >= 60 && top - visible_rows(180.0, kh) < 36, "top {top}");
+        // a range that fits keeps the key height; a huge one stops at the smallest keys
+        assert_eq!(framing_key_height(10, 400.0, DEFAULT_KEY_H), DEFAULT_KEY_H);
+        assert_eq!(framing_key_height(100, 120.0, DEFAULT_KEY_H), KEY_H_MIN);
+        assert_eq!(framing_key_height(10, 0.0, DEFAULT_KEY_H), DEFAULT_KEY_H);
+    }
+
+    #[test]
+    fn framing_follows_the_panel_settling_until_the_view_is_touched() {
+        let mut f = ViewFraming::default();
+        assert!(f.take_at(5, 300.0));
+        assert!(!f.take_at(5, 300.0));
+        // the panel got its real size a frame later: frame again
+        assert!(f.take_at(5, 180.0));
+        assert!(!f.take_at(5, 180.0));
+        // once scrolled, a resize keeps the person's view
+        f.touch();
+        assert!(!f.take_at(5, 240.0));
+        // another region starts untouched
+        assert!(f.take_at(6, 240.0));
+        assert!(f.take_at(6, 200.0));
+        f.reset();
+        assert!(f.take_at(6, 200.0));
+    }
+
+    #[test]
     fn framing_stays_in_range() {
         assert_eq!(initial_view(&[n(127, 0.0)], 40).0, 127);
         assert_eq!(initial_view(&[n(0, 0.0)], 10).0, 20);
@@ -333,13 +544,13 @@ mod tests {
     #[test]
     fn framing_happens_once_per_region() {
         let mut f = ViewFraming::default();
-        assert!(f.take(5));
-        assert!(!f.take(5));
-        assert!(f.take(6));
-        assert!(f.take(5));
-        assert!(!f.take(5));
+        assert!(f.take_at(5, 100.0));
+        assert!(!f.take_at(5, 100.0));
+        assert!(f.take_at(6, 100.0));
+        assert!(f.take_at(5, 100.0));
+        assert!(!f.take_at(5, 100.0));
         f.reset();
-        assert!(f.take(5));
+        assert!(f.take_at(5, 100.0));
     }
 
     #[test]
@@ -366,6 +577,115 @@ mod tests {
         assert_eq!(playing_pattern_step(3.99, 4.0, 1, 0.25), Some(15));
         assert_eq!(playing_pattern_step(5.0, 4.0, 1, 0.25), None);
         assert_eq!(playing_pattern_step(1.0, 4.0, 4, 0.0), None);
+    }
+
+    #[test]
+    fn keys_are_black_and_white_like_a_piano() {
+        let blacks: Vec<i32> = (60..72).filter(|p| is_black(*p)).collect();
+        assert_eq!(blacks, [61, 63, 66, 68, 70]);
+        assert!(!is_black(0) && is_black(-11), "works below zero");
+    }
+
+    #[test]
+    fn every_octave_gets_its_c_label() {
+        let labels: Vec<String> = (36..=84).filter_map(|p| key_label(p, DEFAULT_KEY_H)).collect();
+        assert_eq!(labels, ["C2", "C3", "C4", "C5", "C6"]);
+        assert_eq!(key_label(61, DEFAULT_KEY_H), None);
+        assert_eq!(key_label(60, 6.0), None, "rows too short to read a label");
+        assert_eq!(key_label(132, DEFAULT_KEY_H), None, "outside MIDI");
+    }
+
+    fn lum(c: Color32) -> u32 {
+        u32::from(c.r()) + u32::from(c.g()) + u32::from(c.b())
+    }
+
+    #[test]
+    fn white_rows_are_lighter_than_black_rows() {
+        for in_key in [false, true] {
+            assert!(lum(row_fill(60, in_key)) > lum(row_fill(61, in_key)), "in key {in_key}");
+        }
+        assert!(lum(row_fill(62, true)) > lum(row_fill(62, false)), "the scale is lighter");
+        assert!(lum(row_fill(61, true)) > lum(row_fill(61, false)), "the scale is lighter");
+        assert!(lum(row_line(60)) > lum(row_line(62)), "a stronger line at each C");
+    }
+
+    #[test]
+    fn selected_notes_are_lighter_with_a_white_border() {
+        let track = Color32::from_rgb(0xE0, 0x70, 0x5F);
+        let (fill, border) = note_colors(track, false);
+        assert_eq!(fill, track);
+        assert!(lum(border) < lum(fill), "a darker border");
+        let (sfill, sborder) = note_colors(track, true);
+        assert!(lum(sfill) > lum(fill));
+        assert_eq!(sborder, Color32::WHITE);
+        let (stem, head) = velocity_colors(track, false);
+        assert_eq!(stem, track);
+        assert!(lum(head) > lum(stem), "a lighter head");
+        assert_eq!(velocity_colors(track, true).1, Color32::WHITE);
+        assert!(lum(KEY_WHITE) > lum(KEY_LINE) && lum(KEY_LINE) > lum(KEY_BLACK), "keys read as a piano");
+    }
+
+    #[test]
+    fn grid_lines_follow_bars_beats_and_divisions() {
+        assert_eq!(grid_line(0.0, 0.0, 4.0), GridLine::Bar);
+        assert_eq!(grid_line(1.0, 0.0, 4.0), GridLine::Beat);
+        assert_eq!(grid_line(0.5, 0.0, 4.0), GridLine::Division);
+        assert_eq!(grid_line(8.0, 0.0, 4.0), GridLine::Bar);
+        // a region starting on beat 2 of the song: its beat 2 is the song's bar line
+        assert_eq!(grid_line(2.0, 2.0, 4.0), GridLine::Bar);
+        assert_eq!(grid_line(0.0, 2.0, 4.0), GridLine::Beat);
+        assert_eq!(grid_line(3.0, 0.0, 3.0), GridLine::Bar, "3/4");
+        assert!(lum(GridLine::Bar.color()) > lum(GridLine::Beat.color()));
+        assert!(lum(GridLine::Beat.color()) > lum(GridLine::Division.color()));
+    }
+
+    #[test]
+    fn grid_step_thins_out_when_zooming_out() {
+        assert_eq!(grid_step(200.0, 4.0), 0.25);
+        assert_eq!(grid_step(80.0, 4.0), 0.5);
+        assert_eq!(grid_step(20.0, 4.0), 1.0);
+        assert_eq!(grid_step(5.0, 4.0), 4.0);
+        assert_eq!(grid_step(5.0, 0.0), 1.0);
+    }
+
+    #[test]
+    fn layout_stacks_ruler_grid_velocity_and_controller_lane() {
+        let full = Rect::from_min_size(pos2(10.0, 20.0), vec2(800.0, 300.0));
+        let l = piano_roll_layout(full, 80.0);
+        assert_eq!(l.ruler.height(), RULER_H);
+        assert_eq!(l.grid.top(), l.ruler.bottom());
+        assert_eq!(l.vel.top(), l.grid.bottom());
+        assert_eq!(l.vel.height(), VEL_H);
+        assert_eq!(l.cc.top(), l.vel.bottom());
+        assert_eq!(l.cc.bottom(), full.bottom());
+        assert_eq!(l.cc.height(), 80.0);
+        assert_eq!(l.keys.width(), KEYS_W);
+        assert_eq!(l.keys.y_range(), l.grid.y_range());
+        assert_eq!(l.grid.left(), full.left() + KEYS_W);
+        assert_eq!(l.cc_label.y_range(), l.cc.y_range());
+        assert_eq!(l.vel_label.y_range(), l.vel.y_range());
+        // too short for everything: the grid shrinks to nothing, never upside down
+        let tiny = piano_roll_layout(Rect::from_min_size(full.min, vec2(800.0, 60.0)), 80.0);
+        assert!(tiny.grid.height() >= 0.0 && tiny.vel.height() >= 0.0);
+    }
+
+    #[test]
+    fn default_bottom_panel_shows_fifteen_rows_or_more() {
+        use crate::cc_lane;
+        use crate::panel_layout::default_bottom;
+        // a 1000 px tall window leaves about 810 px between the control bar and the status bar; the editor's
+        // header (32) and its margins (8) come off the panel
+        let panel = default_bottom(810.0);
+        let full = Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, panel - 32.0 - 8.0));
+        let rows = |open: bool| {
+            let cc_h = cc_lane::lane_height(open, full.height(), RULER_H + VEL_H);
+            visible_rows(piano_roll_layout(full, cc_h).grid.height(), DEFAULT_KEY_H)
+        };
+        // the controller lane starts closed: fifteen rows or more; opened, still a dozen
+        assert!(!cc_lane::CcLaneState::default().open);
+        assert!(rows(false) >= 15, "{} rows", rows(false));
+        assert!(rows(true) >= 12, "{} rows with the controller lane open", rows(true));
+        assert_eq!(visible_rows(100.0, 0.0), 0);
     }
 
     #[test]
