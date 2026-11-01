@@ -699,15 +699,12 @@ impl OndinaApp {
     }
 
     fn open_path_now(&mut self, path: String) {
-        if self
-            .exec(Command::OpenProject { path: path.clone() })
-            .is_some()
-        {
+        if let Some(v) = self.exec(Command::OpenProject { path: path.clone() }) {
             self.settings.add_recent(&path);
             self.settings.save();
             self.waveforms.clear();
             self.pr_framing.reset();
-            self.status = format!("Opened {path}");
+            self.status = doc_guard::open_status(&path, &v);
         }
     }
 
