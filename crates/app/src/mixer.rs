@@ -27,13 +27,14 @@ const SLOT_H: f32 = widgets::SLOT_HEIGHT;
 const ROW_GAP: f32 = 4.0;
 /// Space between two sections of a strip.
 const GAP: f32 = 6.0;
-/// Effect slots a track strip shows before its effects scroll.
+/// Effect slots a track strip shows before its effects scroll (fewer on a short panel, see [`Fit`]).
 pub const FX_ROWS: usize = 3;
 /// Effect slots the Master shows before its effects scroll.
 pub const MASTER_FX_ROWS: usize = 4;
 /// Send slots a strip shows before its sends scroll.
 pub const SEND_ROWS: usize = 2;
-/// The fader never gets shorter than this; a shorter panel scrolls.
+/// The fader never gets shorter than this; a panel too short for it even with the strips at their most compact
+/// scrolls.
 pub const MIN_FADER_H: f32 = 90.0;
 /// Pan knob diameter.
 const KNOB_D: f32 = 34.0;
@@ -100,14 +101,75 @@ pub enum Part {
     Foot,
 }
 
+/// How many rows the effect and send areas of a strip show, and whether the Master shows its loudness box. A
+/// short panel takes rows away before the fader gets shorter than [`MIN_FADER_H`], so pan, fader, meter, value
+/// boxes and buttons always stay in view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fit {
+    pub master: bool,
+    pub fx_rows: usize,
+    pub send_rows: usize,
+    /// The Master's loudness box (the header shows the same loudness, so it goes first).
+    pub loudness: bool,
+}
+
+impl Fit {
+    /// Every row: what a strip shows when there is room.
+    pub fn full(master: bool) -> Self {
+        Fit::steps(master)[0]
+    }
+
+    /// The most compact strip: one effect row and one send row.
+    pub fn compact(master: bool) -> Self {
+        *Fit::steps(master).last().unwrap()
+    }
+
+    /// From the full strip to the most compact, one step at a time: a track strip drops an effect row, then a send
+    /// row, then another effect row; the Master drops its loudness box, then effect rows down to one.
+    pub fn steps(master: bool) -> Vec<Fit> {
+        if master {
+            let mut v = vec![Fit { master, fx_rows: MASTER_FX_ROWS, send_rows: 0, loudness: true }];
+            v.extend((1..=MASTER_FX_ROWS).rev().map(|fx_rows| Fit { master, fx_rows, send_rows: 0, loudness: false }));
+            v
+        } else {
+            [(FX_ROWS, SEND_ROWS), (2, SEND_ROWS), (2, 1), (1, 1)]
+                .into_iter()
+                .map(|(fx_rows, send_rows)| Fit { master, fx_rows, send_rows, loudness: false })
+                .collect()
+        }
+    }
+
+    /// The fullest strip that fits `height` with the fader at its minimum or more; the most compact one when none
+    /// does (the strips scroll then).
+    pub fn for_height(master: bool, height: f32) -> Self {
+        let steps = Fit::steps(master);
+        steps.iter().copied().find(|f| f.min_height() <= height).unwrap_or(*steps.last().unwrap())
+    }
+
+    /// The strip's parts, top to bottom.
+    pub fn parts(self) -> Vec<Part> {
+        if self.master {
+            MASTER_PARTS.iter().copied().filter(|p| self.loudness || *p != Part::Loudness).collect()
+        } else {
+            CHANNEL_PARTS.to_vec()
+        }
+    }
+
+    /// The smallest height that fits every part with the fader at [`MIN_FADER_H`].
+    pub fn min_height(self) -> f32 {
+        strip_min_height(&self.parts(), self)
+    }
+}
+
 impl Part {
-    /// Fixed height of the part, None for the fader that takes the height the others leave.
-    pub fn height(self, master: bool) -> Option<f32> {
+    /// Fixed height of the part in a strip laid out as `fit`, None for the fader that takes the height the others
+    /// leave.
+    pub fn height(self, fit: Fit) -> Option<f32> {
         Some(match self {
             Part::Head => 22.0,
             Part::Input => LABEL_H + SLOT_H,
-            Part::Effects => LABEL_H + rows_h(if master { MASTER_FX_ROWS } else { FX_ROWS }),
-            Part::Sends => LABEL_H + rows_h(SEND_ROWS),
+            Part::Effects => LABEL_H + rows_h(fit.fx_rows),
+            Part::Sends => LABEL_H + rows_h(fit.send_rows),
             Part::Output => SLOT_H,
             Part::Loudness => LABEL_H + loudness_box_h(),
             Part::Pan => KNOB_D + theme::SIZE_NUMBER + 4.0,
@@ -149,17 +211,41 @@ fn gap_before(parts: &[Part], i: usize) -> f32 {
     }
 }
 
-/// The smallest height that fits every part with the fader at [`MIN_FADER_H`].
-pub fn strip_min_height(parts: &[Part], master: bool) -> f32 {
+/// The smallest height that fits `parts` laid out as `fit` with the fader at [`MIN_FADER_H`].
+pub fn strip_min_height(parts: &[Part], fit: Fit) -> f32 {
     (0..parts.len())
-        .map(|i| gap_before(parts, i) + parts[i].height(master).unwrap_or(MIN_FADER_H))
+        .map(|i| gap_before(parts, i) + parts[i].height(fit).unwrap_or(MIN_FADER_H))
         .sum()
 }
 
-/// Top and bottom of every part of a strip starting at `top`, `height` tall (at least [`strip_min_height`]): the
-/// fixed parts keep their height whatever the strip holds, the fader takes the rest.
-pub fn strip_rows(parts: &[Part], master: bool, top: f32, height: f32) -> Vec<(Part, f32, f32)> {
-    let min = strip_min_height(parts, master);
+/// Height the Mixer panel needs to show the track strips laid out as `track` and the Master as `master` without
+/// scrolling: the header, the margin above the strips, the tallest strip and the horizontal scroll bar (`bar`
+/// tall) under the track strips.
+pub fn panel_height(track: Fit, master: Fit, bar: f32) -> f32 {
+    HEADER_H + theme::SP_4 + (track.min_height() + bar).max(master.min_height())
+}
+
+/// Height of the horizontal scroll bar under the track strips.
+pub fn strips_bar() -> f32 {
+    egui::style::ScrollStyle::solid().allocated_width()
+}
+
+/// The Mixer panel's height with every row of every strip.
+pub fn full_panel_height() -> f32 {
+    panel_height(Fit::full(false), Fit::full(true), strips_bar())
+}
+
+/// The Mixer panel's height with the strips at their most compact: under it the strips scroll.
+pub fn compact_panel_height() -> f32 {
+    panel_height(Fit::compact(false), Fit::compact(true), strips_bar())
+}
+
+/// Top and bottom of every part of a strip laid out as `fit`, starting at `top`, `height` tall (at least its
+/// [`Fit::min_height`]): the fixed parts keep their height whatever the strip holds, the fader takes the rest.
+pub fn strip_rows(fit: Fit, top: f32, height: f32) -> Vec<(Part, f32, f32)> {
+    let parts = fit.parts();
+    let parts = &parts[..];
+    let min = strip_min_height(parts, fit);
     let fader = MIN_FADER_H + (height - min).max(0.0);
     let mut y = top;
     parts
@@ -167,7 +253,7 @@ pub fn strip_rows(parts: &[Part], master: bool, top: f32, height: f32) -> Vec<(P
         .enumerate()
         .map(|(i, part)| {
             y += gap_before(parts, i);
-            let h = part.height(master).unwrap_or(fader);
+            let h = part.height(fit).unwrap_or(fader);
             let row = (*part, y, y + h);
             y += h;
             row
@@ -175,9 +261,9 @@ pub fn strip_rows(parts: &[Part], master: bool, top: f32, height: f32) -> Vec<(P
         .collect()
 }
 
-/// Whether `n` effects plus the "+ Add" slot overflow the effect area (it scrolls then).
-pub fn effects_scroll(n: usize, master: bool) -> bool {
-    n + 1 > if master { MASTER_FX_ROWS } else { FX_ROWS }
+/// Whether `n` effects (or sends) plus the "+ Add" slot overflow an area of `rows` rows (it scrolls then).
+pub fn effects_scroll(n: usize, rows: usize) -> bool {
+    n + 1 > rows
 }
 
 /// Empty dashed placeholders under `used` slots so the area always shows `rows` of them.
@@ -382,6 +468,8 @@ fn paint_placeholders(ui: &mut egui::Ui, n: usize) {
 
 impl OndinaApp {
     pub fn mixer_ui(&mut self, ui: &mut egui::Ui) {
+        // the strips start right under the header, as `panel_height` counts them
+        ui.spacing_mut().item_spacing.y = 0.0;
         let p = self.project();
         let filter_id = egui::Id::new("mixer-filter");
         let mut fi: usize = ui.data(|d| d.get_temp(filter_id)).unwrap_or(0);
@@ -397,7 +485,8 @@ impl OndinaApp {
         ui.painter().rect_filled(master_rect, Rounding::ZERO, theme::LANE_BG);
         ui.painter().vline(master_rect.left() + 0.5, master_rect.y_range(), Stroke::new(1.0_f32, theme::BORDER));
 
-        // tracks: same-size strips that scroll sideways (and down when the panel is too short)
+        // tracks: same-size strips that scroll sideways; a short panel takes effect and send rows away before the
+        // fader shrinks, and only a panel too short for the most compact strip scrolls down
         let inner = Rect::from_min_max(tracks_rect.min + vec2(theme::SP_4, theme::SP_4), tracks_rect.max - vec2(theme::SP_4, 0.0));
         let mut tui = ui.new_child(
             egui::UiBuilder::new()
@@ -409,7 +498,9 @@ impl OndinaApp {
         tui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
         let bar = tui.spacing().scroll.allocated_width();
         let shown_n = p.tracks.iter().filter(|t| filter.shows(t.kind)).count();
-        let strip_h = strips_height(inner.height(), inner.width(), shown_n, bar).max(strip_min_height(&CHANNEL_PARTS, false));
+        let room = strips_height(inner.height(), inner.width(), shown_n, bar);
+        let fit = Fit::for_height(false, room);
+        let strip_h = room.max(fit.min_height());
         let shown: Vec<(usize, &Track)> = p.tracks.iter().enumerate().filter(|(_, t)| filter.shows(t.kind)).collect();
         if shown.is_empty() {
             tui.label(RichText::new(filter.empty_text()).color(theme::TEXT_3));
@@ -418,7 +509,7 @@ impl OndinaApp {
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     for (i, t) in shown {
-                        self.channel_strip(ui, &p, Some((i + 1, t)), t.id, &t.channel, strip_h);
+                        self.channel_strip(ui, &p, Some((i + 1, t)), t.id, &t.channel, fit, strip_h);
                     }
                 });
             });
@@ -432,9 +523,10 @@ impl OndinaApp {
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
         mui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-        let master_h = master_rect.height().max(strip_min_height(&MASTER_PARTS, true) + theme::SP_4);
+        let master_fit = Fit::for_height(true, master_rect.height() - theme::SP_4);
+        let master_h = master_rect.height().max(master_fit.min_height() + theme::SP_4);
         egui::ScrollArea::vertical().id_salt("mixer-master-scroll").auto_shrink([false, false]).show(&mut mui, |ui| {
-            self.channel_strip(ui, &p, None, MASTER_ID, &p.master, master_h);
+            self.channel_strip(ui, &p, None, MASTER_ID, &p.master, master_fit, master_h);
         });
     }
 
@@ -499,11 +591,12 @@ impl OndinaApp {
         }
     }
 
-    /// One strip, `height` tall: a track's (with its 1-based number) or the Master's when `track` is None.
-    fn channel_strip(&mut self, ui: &mut egui::Ui, p: &Project, track: Option<(usize, &Track)>, id: Id, ch: &Channel, height: f32) {
+    /// One strip laid out as `fit`, `height` tall: a track's (with its 1-based number) or the Master's when `track`
+    /// is None.
+    #[allow(clippy::too_many_arguments)]
+    fn channel_strip(&mut self, ui: &mut egui::Ui, p: &Project, track: Option<(usize, &Track)>, id: Id, ch: &Channel, fit: Fit, height: f32) {
         let master = track.is_none();
         let w = if master { MASTER_W - 1.0 } else { STRIP_W };
-        let parts: &[Part] = if master { &MASTER_PARTS } else { &CHANNEL_PARTS };
         let (rect, bg) = ui.allocate_exact_size(vec2(w, height), Sense::click());
         if bg.clicked() && !master {
             self.select_track(id);
@@ -521,7 +614,7 @@ impl OndinaApp {
         let color = track.map(|(_, t)| theme::rgb(t.color)).unwrap_or(theme::TEXT);
         let pad = if master { theme::SP_4 } else { theme::SP_3 };
         let top = rect.top() + if master { theme::SP_4 } else { 0.0 };
-        let rows = strip_rows(parts, master, top, height - (top - rect.top()));
+        let rows = strip_rows(fit, top, height - (top - rect.top()));
         for (part, y0, y1) in rows {
             let full = Rect::from_x_y_ranges(rect.x_range(), y0..=y1);
             let r = full.shrink2(vec2(pad, 0.0));
@@ -576,15 +669,17 @@ impl OndinaApp {
                 Part::Effects => {
                     let n = ch.inserts.len();
                     // when the effects overflow their rows the label counts them: the rest is a scroll away
+                    let rows = fit.fx_rows;
                     let label =
-                        if effects_scroll(n, master) { format!("EFFECTS \u{00B7} {n}") } else { "EFFECTS".into() };
+                        if effects_scroll(n, rows) { format!("EFFECTS \u{00B7} {n}") } else { "EFFECTS".into() };
                     paint_label(ui, r, &label);
                     ui.add_space(LABEL_H);
-                    let rows = if master { MASTER_FX_ROWS } else { FX_ROWS };
                     ui.spacing_mut().scroll = inner_scroll();
                     egui::ScrollArea::vertical()
                         .id_salt(("mixer-fx", id))
                         .max_height(rows_h(rows))
+                        // exactly the rows (egui keeps a scrolling area 64 px tall), so it never spills on the next part
+                        .min_scrolled_height(rows_h(rows))
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
                             ui.spacing_mut().item_spacing.y = ROW_GAP;
@@ -595,13 +690,19 @@ impl OndinaApp {
                         });
                 }
                 Part::Sends => {
-                    paint_label(ui, r, "SENDS");
+                    let rows = fit.send_rows;
+                    let n = ch.sends.len();
+                    // like the effects, the label counts the sends when some are a scroll away
+                    let label = if effects_scroll(n, rows) { format!("SENDS \u{00B7} {n}") } else { "SENDS".into() };
+                    paint_label(ui, r, &label);
                     ui.add_space(LABEL_H);
                     let buses = Self::buses_for(p, id);
                     ui.spacing_mut().scroll = inner_scroll();
                     egui::ScrollArea::vertical()
                         .id_salt(("mixer-sends", id))
-                        .max_height(rows_h(SEND_ROWS))
+                        .max_height(rows_h(rows))
+                        // exactly the rows (egui keeps a scrolling area 64 px tall), so it never spills on the next part
+                        .min_scrolled_height(rows_h(rows))
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
                             ui.spacing_mut().item_spacing.y = ROW_GAP;
@@ -611,7 +712,7 @@ impl OndinaApp {
                             chrome::add_slot_menu_sized(ui, "+ Send", SLOT_H, |ui| self.add_send_items(ui, id, &buses))
                                 .response
                                 .on_hover_text("Send to a bus, or create a reverb or delay bus");
-                            paint_placeholders(ui, placeholders(ch.sends.len() + 1, SEND_ROWS));
+                            paint_placeholders(ui, placeholders(n + 1, rows));
                         });
                 }
                 Part::Output => {
@@ -959,11 +1060,12 @@ mod tests {
 
     #[test]
     fn strips_keep_one_height_and_the_fader_takes_the_rest() {
-        for (parts, master) in [(&CHANNEL_PARTS[..], false), (&MASTER_PARTS[..], true)] {
-            let min = strip_min_height(parts, master);
+        for fit in Fit::steps(false).into_iter().chain(Fit::steps(true)) {
+            let master = fit.master;
+            let min = fit.min_height();
             for h in [min, min + 37.5, 900.0] {
-                let rows = strip_rows(parts, master, 10.0, h);
-                assert_eq!(rows.len(), parts.len());
+                let rows = strip_rows(fit, 10.0, h);
+                assert_eq!(rows.len(), fit.parts().len());
                 assert!((rows.last().unwrap().2 - (10.0 + h)).abs() < 1e-3, "{master} {h}");
                 // parts in order, never overlapping
                 for w in rows.windows(2) {
@@ -976,7 +1078,7 @@ mod tests {
                 assert_eq!(rows.last().unwrap().0, Part::Foot);
             }
             // a panel shorter than the minimum keeps the fader at its minimum (the mixer scrolls)
-            let rows = strip_rows(parts, master, 0.0, 50.0);
+            let rows = strip_rows(fit, 0.0, 50.0);
             let fader = rows.iter().find(|r| r.0 == Part::Fader).unwrap();
             assert_eq!(fader.2 - fader.1, MIN_FADER_H);
         }
@@ -987,14 +1089,89 @@ mod tests {
         assert_eq!(rows_h(1), SLOT_H);
         assert_eq!(rows_h(3), 3.0 * SLOT_H + 2.0 * ROW_GAP);
         assert_eq!(rows_h(0), 0.0);
-        assert!(!effects_scroll(2, false));
-        assert!(effects_scroll(3, false));
-        assert!(!effects_scroll(3, true));
+        assert!(!effects_scroll(2, FX_ROWS));
+        assert!(effects_scroll(3, FX_ROWS));
+        assert!(!effects_scroll(3, MASTER_FX_ROWS));
+        assert!(effects_scroll(1, 1));
         assert_eq!(placeholders(1, 3), 2);
         assert_eq!(placeholders(5, 3), 0);
         // the effect area is the same height whatever the strip holds
-        assert_eq!(Part::Effects.height(false), Some(LABEL_H + rows_h(FX_ROWS)));
-        assert_eq!(Part::Effects.height(true), Some(LABEL_H + rows_h(MASTER_FX_ROWS)));
+        assert_eq!(Part::Effects.height(Fit::full(false)), Some(LABEL_H + rows_h(FX_ROWS)));
+        assert_eq!(Part::Effects.height(Fit::full(true)), Some(LABEL_H + rows_h(MASTER_FX_ROWS)));
+        assert_eq!(Part::Sends.height(Fit::full(false)), Some(LABEL_H + rows_h(SEND_ROWS)));
+    }
+
+    #[test]
+    fn a_short_strip_drops_effect_and_send_rows_in_order() {
+        let rows = |f: Fit| (f.fx_rows, f.send_rows);
+        assert_eq!(Fit::steps(false).into_iter().map(rows).collect::<Vec<_>>(), vec![(3, 2), (2, 2), (2, 1), (1, 1)]);
+        // every step is shorter than the one before it
+        for master in [false, true] {
+            let steps = Fit::steps(master);
+            for w in steps.windows(2) {
+                assert!(w[1].min_height() < w[0].min_height(), "{master}: {:?} -> {:?}", w[0], w[1]);
+            }
+            assert_eq!(steps[0], Fit::full(master));
+            assert_eq!(*steps.last().unwrap(), Fit::compact(master));
+        }
+        // each available height gets the fullest step that fits
+        let full = Fit::full(false).min_height();
+        assert_eq!(Fit::for_height(false, 2000.0), Fit::full(false));
+        assert_eq!(Fit::for_height(false, full), Fit::full(false));
+        assert_eq!(rows(Fit::for_height(false, full - 1.0)), (2, 2));
+        assert_eq!(rows(Fit::for_height(false, full - SLOT_H - ROW_GAP)), (2, 2));
+        assert_eq!(rows(Fit::for_height(false, full - SLOT_H - ROW_GAP - 1.0)), (2, 1));
+        assert_eq!(rows(Fit::for_height(false, full - 2.0 * (SLOT_H + ROW_GAP))), (2, 1));
+        assert_eq!(rows(Fit::for_height(false, full - 2.0 * (SLOT_H + ROW_GAP) - 1.0)), (1, 1));
+        // under the most compact strip nothing more goes: the strips scroll
+        assert_eq!(Fit::for_height(false, 100.0), Fit::compact(false));
+        assert_eq!(Fit::compact(false).min_height(), full - 3.0 * (SLOT_H + ROW_GAP));
+    }
+
+    #[test]
+    fn the_master_drops_its_loudness_box_before_any_effect_row() {
+        let full = Fit::full(true);
+        assert!(full.loudness && full.parts().contains(&Part::Loudness));
+        let next = Fit::for_height(true, full.min_height() - 1.0);
+        assert_eq!((next.loudness, next.fx_rows), (false, MASTER_FX_ROWS));
+        assert!(!next.parts().contains(&Part::Loudness));
+        assert_eq!(full.min_height() - next.min_height(), GAP + Part::Loudness.height(full).unwrap());
+        let compact = Fit::compact(true);
+        assert_eq!((compact.loudness, compact.fx_rows), (false, 1));
+        assert_eq!(Fit::for_height(true, 0.0), compact);
+    }
+
+    #[test]
+    fn the_fader_keeps_its_minimum_at_every_height_down_to_the_compact_strip() {
+        // a panel anywhere between the compact and the full height shows the fader at MIN_FADER_H or more, and the
+        // whole strip in the height it has (no scrolling)
+        for master in [false, true] {
+            let lo = Fit::compact(master).min_height();
+            let hi = Fit::full(master).min_height() + 40.0;
+            let mut h = lo;
+            while h <= hi {
+                let fit = Fit::for_height(master, h);
+                assert!(fit.min_height() <= h + 1e-3, "{master} at {h}: {fit:?} needs {}", fit.min_height());
+                let rows = strip_rows(fit, 0.0, h);
+                let fader = rows.iter().find(|r| r.0 == Part::Fader).unwrap();
+                assert!(fader.2 - fader.1 >= MIN_FADER_H - 1e-3);
+                assert!(rows.last().unwrap().2 <= h + 1e-3);
+                for part in [Part::Pan, Part::Values, Part::Buttons, Part::Foot] {
+                    assert!(rows.iter().any(|r| r.0 == part), "{master}: {part:?} missing");
+                }
+                h += 3.5;
+            }
+        }
+    }
+
+    #[test]
+    fn the_panel_heights_count_the_header_the_margin_and_the_scroll_bar() {
+        let bar = 10.0;
+        let h = panel_height(Fit::full(false), Fit::full(true), bar);
+        assert_eq!(h, HEADER_H + theme::SP_4 + (Fit::full(false).min_height() + bar).max(Fit::full(true).min_height()));
+        assert!(compact_panel_height() < full_panel_height());
+        // the most compact mixer fits the area under the control bar of a 1000 px tall window with room to spare
+        assert!(compact_panel_height() < 480.0, "{}", compact_panel_height());
     }
 
     #[test]
