@@ -1,5 +1,5 @@
-//! Piano-roll editing from the computer keyboard: the app's note clipboard, pasting at the playhead and moving the
-//! selected notes by grid steps or semitones. Pure functions, so the GUI only wires keys to them.
+//! Piano-roll editing from the computer keyboard: the app's note clipboard, pasting at the playhead, moving the
+//! selected notes by grid steps or semitones and changing their length. Pure functions, so the GUI only wires keys to them.
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -87,11 +87,10 @@ pub fn paste(existing: &[Note], added: &[Note]) -> NoteEdit {
     session_order(notes, &marked)
 }
 
-/// The region with the selected notes moved by `d_beat` and `d_pitch`, limited so no note starts before 0 and every
-/// pitch stays in 0..127 (a chord keeps its shape). `None` when there is nothing to move.
-pub fn nudge(notes: &[Note], selected: &HashSet<usize>, d_beat: f64, d_pitch: i32) -> Option<NoteEdit> {
-    let marked: Vec<bool> = (0..notes.len()).map(|i| selected.contains(&i)).collect();
-    let picked: Vec<&Note> = notes.iter().zip(&marked).filter(|(_, &m)| m).map(|(n, _)| n).collect();
+/// How far the selected notes can move as a block: no note before 0 and every pitch in 0..127, so a chord keeps its
+/// shape. `None` without a valid selected note.
+pub fn limit_move(notes: &[Note], selected: &HashSet<usize>, d_beat: f64, d_pitch: i32) -> Option<(f64, i32)> {
+    let picked: Vec<&Note> = notes.iter().enumerate().filter(|(i, _)| selected.contains(i)).map(|(_, n)| n).collect();
     if picked.is_empty() {
         return None;
     }
@@ -99,7 +98,14 @@ pub fn nudge(notes: &[Note], selected: &HashSet<usize>, d_beat: f64, d_pitch: i3
     let min_pitch = picked.iter().map(|n| i32::from(n.pitch)).min().unwrap_or(0);
     let max_pitch = picked.iter().map(|n| i32::from(n.pitch)).max().unwrap_or(127);
     let d_beat = if d_beat < 0.0 { d_beat.max(-min_start) } else { d_beat };
-    let d_pitch = d_pitch.clamp(-min_pitch, 127 - max_pitch);
+    Some((d_beat, d_pitch.clamp(-min_pitch, 127 - max_pitch)))
+}
+
+/// The region with the selected notes moved by `d_beat` and `d_pitch`, limited so no note starts before 0 and every
+/// pitch stays in 0..127 (a chord keeps its shape). `None` when there is nothing to move.
+pub fn nudge(notes: &[Note], selected: &HashSet<usize>, d_beat: f64, d_pitch: i32) -> Option<NoteEdit> {
+    let marked: Vec<bool> = (0..notes.len()).map(|i| selected.contains(&i)).collect();
+    let (d_beat, d_pitch) = limit_move(notes, selected, d_beat, d_pitch)?;
     if d_beat.abs() < 1e-9 && d_pitch == 0 {
         return None;
     }
@@ -115,6 +121,29 @@ pub fn nudge(notes: &[Note], selected: &HashSet<usize>, d_beat: f64, d_pitch: i3
         })
         .collect();
     Some(session_order(moved, &marked))
+}
+
+/// The region with the selected notes `steps` grid steps longer (shorter when negative), never shorter than one step:
+/// a note already shorter than a step keeps its length. `None` when no length changes.
+pub fn resize(notes: &[Note], selected: &HashSet<usize>, steps: i32, step: f64) -> Option<NoteEdit> {
+    let marked: Vec<bool> = (0..notes.len()).map(|i| selected.contains(&i)).collect();
+    let mut changed = false;
+    let resized = notes
+        .iter()
+        .zip(&marked)
+        .map(|(n, &m)| {
+            if !m {
+                return *n;
+            }
+            let mut length = n.length + f64::from(steps) * step;
+            if steps < 0 {
+                length = length.max(step.min(n.length));
+            }
+            changed |= (length - n.length).abs() >= 1e-9;
+            Note { length, ..*n }
+        })
+        .collect();
+    changed.then(|| session_order(resized, &marked))
 }
 
 /// Every index of a region with `len` notes.
@@ -140,6 +169,15 @@ pub fn arrow_nudge(key: Key, shift: bool) -> Option<Nudge> {
         Key::ArrowRight => Some(Nudge { steps: 1, semitones: 0 }),
         Key::ArrowUp => Some(Nudge { steps: 0, semitones: octave }),
         Key::ArrowDown => Some(Nudge { steps: 0, semitones: -octave }),
+        _ => None,
+    }
+}
+
+/// The length change of Alt+←/→, in grid steps.
+pub fn arrow_length(key: Key) -> Option<i32> {
+    match key {
+        Key::ArrowLeft => Some(-1),
+        Key::ArrowRight => Some(1),
         _ => None,
     }
 }
@@ -323,6 +361,62 @@ mod tests {
     }
 
     #[test]
+    fn limit_move_keeps_the_block_inside_the_region_and_the_midi_range() {
+        let notes = [n(60, 0.5, 0.5), n(64, 1.0, 0.5)];
+        assert_eq!(limit_move(&notes, &set(&[0, 1]), -2.0, 0), Some((-0.5, 0)));
+        let high = [n(120, 0.0, 1.0), n(125, 0.0, 1.0)];
+        assert_eq!(limit_move(&high, &set(&[0, 1]), 0.0, 12), Some((0.0, 2)));
+        assert_eq!(limit_move(&notes, &set(&[]), 1.0, 1), None);
+        assert_eq!(limit_move(&notes, &set(&[5, 9]), 1.0, 1), None);
+        assert_eq!(limit_move(&notes, &set(&[0, 1]), 0.25, -3), Some((0.25, -3)));
+    }
+
+    #[test]
+    fn alt_arrows_map_to_length_steps() {
+        assert_eq!(arrow_length(Key::ArrowLeft), Some(-1));
+        assert_eq!(arrow_length(Key::ArrowRight), Some(1));
+        assert_eq!(arrow_length(Key::ArrowUp), None);
+        assert_eq!(arrow_length(Key::ArrowDown), None);
+        assert_eq!(arrow_length(Key::A), None);
+    }
+
+    fn lengths(e: &NoteEdit) -> Vec<f64> {
+        e.notes.iter().map(|x| x.length).collect()
+    }
+
+    #[test]
+    fn resize_lengthens_by_the_snap_step() {
+        let notes = [n(60, 0.0, 0.5), n(64, 1.0, 0.5)];
+        let all = set(&[0, 1]);
+        let e = resize(&notes, &all, 1, nudge_step(0.25)).unwrap();
+        assert_eq!(lengths(&e), vec![0.75, 0.75]);
+        assert_eq!(e.selected, all);
+        assert_eq!(lengths(&resize(&notes, &all, 1, nudge_step(1.0)).unwrap()), vec![1.5, 1.5]);
+        assert_eq!(lengths(&resize(&notes, &all, 1, nudge_step(0.0)).unwrap()), vec![0.75, 0.75]);
+    }
+
+    #[test]
+    fn resize_never_goes_below_one_step() {
+        let notes = [n(60, 0.0, 0.25), n(62, 1.0, 0.3), n(64, 2.0, 1.0)];
+        let e = resize(&notes, &set(&[0, 1, 2]), -1, 0.25).unwrap();
+        assert_eq!(lengths(&e), vec![0.25, 0.25, 0.75]);
+        let short = [n(60, 0.0, 0.25), n(62, 1.0, 0.1)];
+        assert_eq!(resize(&short, &set(&[0, 1]), -1, 0.25), None);
+    }
+
+    #[test]
+    fn resize_leaves_unselected_notes_alone() {
+        let notes = [n(60, 0.0, 0.5), n(62, 1.0, 0.5), n(64, 2.0, 0.5)];
+        let e = resize(&notes, &set(&[1]), 1, 0.25).unwrap();
+        assert_eq!(e.notes[0], notes[0]);
+        assert_eq!(e.notes[2], notes[2]);
+        assert_eq!(e.notes[1], n(62, 1.0, 0.75));
+        assert_eq!(e.selected, set(&[1]));
+        assert_eq!(resize(&notes, &set(&[]), 1, 0.25), None);
+        assert_eq!(resize(&notes, &set(&[4, 8]), 1, 0.25), None);
+    }
+
+    #[test]
     fn select_all_lists_every_index() {
         assert!(select_all(0).is_empty());
         assert_eq!(select_all(3), set(&[0, 1, 2]));
@@ -456,5 +550,18 @@ mod tests {
         s.execute(Command::AddNotes { region_id: rid, notes: added }, Source::Gui).unwrap();
         assert_eq!(notes_of(&s.project, rid), edit.notes);
         assert_eq!(edit.selected, set(&[1]));
+    }
+
+    #[test]
+    fn resize_matches_what_the_session_stores_and_undoes_in_one_step() {
+        let notes = [n(60, 0.0, 0.5), n(62, 0.5, 0.3), n(64, 1.0, 0.5)];
+        let (mut s, _, rid) = session_with(0.0, &notes);
+        let before = notes_of(&s.project, rid);
+        let edit = resize(&before, &set(&[0, 1]), -1, 0.25).unwrap();
+        s.execute(Command::ReplaceNotes { region_id: rid, notes: edit.notes.clone() }, Source::Gui).unwrap();
+        assert_eq!(notes_of(&s.project, rid), edit.notes);
+        assert_eq!(edit.selected, set(&[0, 1]));
+        run(&mut s, "undo", json!({}), Source::Gui);
+        assert_eq!(notes_of(&s.project, rid), before);
     }
 }

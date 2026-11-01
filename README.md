@@ -60,7 +60,7 @@ Every row is available both in the GUI and as MCP tools (full list in [`MCP_TOOL
 | Audio and MIDI recording | WASAPI inputs, MIDI ports, Musical Typing | `record` `set_record_arm` `connect_midi_input` `send_live_midi` |
 | Comping | cycle recording creates one take per pass; comp by segments | `list_takes` `comp_takes` |
 | Arrangement | drag/copy/resize/split/join/loop regions, fades, chord track (type chords or roman numerals in place, drag to move and resize), section markers, region rename and color | `move_region` `split_region` `copy_section` `set_chord_progression` `update_chord` |
-| Piano roll and step sequencer | note editing, box selection, copy / cut / paste and arrow-key moves, quantize / humanize / snap to key on the selection, velocity lane, controller lane (sustain, mod wheel, expression, volume, pan, pitch bend) | `add_notes` `quantize_notes` `replace_cc` `set_pattern_row` |
+| Piano roll and step sequencer | note editing, box selection, copy / cut / paste and arrow-key moves, Alt+drag copies, Alt+←/→ change the length, quantize / humanize / snap to key on the selection, velocity lane, controller lane (sustain, mod wheel, expression, volume, pan, pitch bend) | `add_notes` `quantize_notes` `replace_cc` `set_pattern_row` |
 | MIDI transform and routing | conditional transforms; split/layer of MIDI input | `transform_notes` `set_midi_routes` |
 | Session players | drums (13 styles), bass, chords, arpeggios, melodies | `generate_drums` `generate_bass` `generate_chords` … |
 | Time and pitch | WSOLA time-stretch, pitch shift, varispeed, key-aware pitch correction, audio→MIDI (YIN) | `time_stretch_region` `pitch_shift_region` `varispeed_region` `pitch_correct_region` `audio_to_midi` |
@@ -130,12 +130,13 @@ extension: Ondina opens both.
   track header) cancels it: everything goes back to where it was.
 - **Piano roll**: click on empty space to add a note (length from the toolbar); click a note to select it,
   Ctrl/Shift+click to add to the selection; drag on empty space to box-select (stacked notes included); drag a note
-  to move it, drag its right edge to resize; Esc during a drag (notes, note edges, box selection, velocities, a
+  to move it (the moved notes stay selected), Alt+drag to copy it (the copies become the selection, one undo step),
+  drag its right edge to resize; Esc during a drag (notes, note edges, box selection, velocities, a
   controller stroke) cancels it; Delete/Backspace removes the selection; Ctrl+C/Ctrl+X/Ctrl+V copy, cut
   and paste the selected notes (pasted at the playhead when it is inside the region, otherwise at their original
   position; the copied notes also go to the system clipboard as JSON); Ctrl+A selects every note; ←/→ move the
-  selection by the snap step (1/16 with snap off), ↑/↓ by a semitone, Shift+↑/↓ by an octave; double-click or
-  right-click deletes a single note; drag in the velocity lane to set velocities; below it the controller lane shows one controller of the region (pick it in the selector on the left, which also shows how many events each one has): the sustain pedal as bars where it is down, the others as a stepped line; drag to draw one event per snap step (1/32 with snap off), right-drag to erase, click to set or erase a single step; the curve after the stroke goes back to what it was, each stroke is one undo step and the CC button closes the lane (the built-in instruments respond only to sustain, on the Analog Synth and FM Synth; VST3 instruments get every controller); the selection stays on the same notes after Undo/Redo and assistant or MCP edits; the view opens on the region's notes (double-click the region to frame them again), the wheel scrolls pitch at the same speed both ways, Shift+wheel scrolls time, Ctrl+wheel zooms time around the pointer, Ctrl+Shift+wheel zooms pitch, and the playhead follows the repeats of a looped region.
+  selection by the snap step (1/16 with snap off), ↑/↓ by a semitone, Shift+↑/↓ by an octave; Alt+←/→ shorten or lengthen the selection by the snap step (never below one step); double-click or
+  right-click deletes a single note; drag in the velocity lane to set velocities: every note the stroke crosses gets the value along the stroke, and a stroke that changes nothing leaves no undo step; below it the controller lane shows one controller of the region (pick it in the selector on the left, which also shows how many events each one has): the sustain pedal as bars where it is down, the others as a stepped line; drag to draw one event per snap step (1/32 with snap off), right-drag to erase, click to set or erase a single step; the curve after the stroke goes back to what it was, each stroke is one undo step and the CC button closes the lane (the built-in instruments respond only to sustain, on the Analog Synth and FM Synth; VST3 instruments get every controller); the selection stays on the same notes after Undo/Redo and assistant or MCP edits; the view opens on the region's notes (double-click the region to frame them again), the wheel scrolls pitch at the same speed both ways, Shift+wheel scrolls time, Ctrl+wheel zooms time around the pointer, Ctrl+Shift+wheel zooms pitch, and the playhead follows the repeats of a looped region.
 - **Score**: switch the editor to 𝄞 Score to see the selected region as notation, export MusicXML, assign lyrics.
 - **Mixer and inspector**: volume, pan, sends, inserts, plug-in parameters and native VST3 windows; the inspector's
   Region section renames and recolors the selected region and sets its loop count and velocity offset.
@@ -162,6 +163,7 @@ extension: Ondina opens both.
 | ← / → | move selected notes by the snap step | ↑ / ↓ (Shift: octave) | transpose selected notes |
 | `,` / `.` | playhead to previous / next bar | Shift+, / Shift+. | playhead to previous / next marker |
 | Ctrl+T | split selected region at playhead | Esc (while dragging) | cancel the drag |
+| Alt+← / → | shorten / lengthen selected notes | Alt+drag (piano roll) | copy the dragged notes |
 
 Musical Typing: `A W S E D F T G Y H U J K` play notes, `Z` / `X` change octave.
 

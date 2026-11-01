@@ -67,6 +67,7 @@ mod tests {
     use crate::app::Drag;
     use crate::arrange::{cycle_gesture_key, CycleZone};
     use crate::cc_lane::CcStroke;
+    use crate::note_drag::VelocityStroke;
     use crate::region_edit::FadeHandle;
     use eframe::egui::{Event, Key, Modifiers};
     use ondina_core::command::Command;
@@ -114,7 +115,7 @@ mod tests {
             Drag::MoveTrack { id: 2, gap: 0 },
             Drag::Notes { region: 3, orig: notes(), indices: vec![0, 1], grab_beat: 0.5, grab_pitch: 60, d_beat: 1.0, d_pitch: 2 },
             Drag::NoteResize { region: 3, orig: notes(), indices: vec![1], grab_beat: 1.5, d_len: 0.5 },
-            Drag::Velocity { region: 3, notes: notes() },
+            Drag::Velocity { region: 3, stroke: VelocityStroke::new(notes()) },
             Drag::Marquee { region: 3, b0: 0.0, p0: 60.0, b1: 2.0, p1: 66.0, additive: true },
             Drag::CcStroke { region: 3, stroke },
         ];
