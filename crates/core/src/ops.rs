@@ -491,8 +491,15 @@ fn put_generated_region(project: &mut Project, track_id: Id, start: f64, bars: u
     Ok(id)
 }
 
+/// A seed drawn when the caller gives none stays below 1,000,000: short enough to read in the status bar, and exact
+/// in any JSON client (JavaScript numbers lose integers above 2^53), so the seed a generator returns repeats the part.
 fn seed_or_random(seed: Option<u64>) -> u64 {
-    seed.unwrap_or_else(rand::random)
+    seed.unwrap_or_else(|| rand::random::<u64>() % 1_000_000)
+}
+
+/// What every generator answers: the new region, and the seed, start and bars that rebuild the same part.
+fn generated(region_id: Id, seed: u64, start: f64, bars: u32) -> Value {
+    json!({"region_id": region_id, "seed": seed, "start": start, "bars": bars})
 }
 
 /// Shift a region list for section operations.
@@ -1579,36 +1586,46 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
         // generators
         GenerateDrums { track_id, start, bars, style, intensity, fill, seed } => {
             let bpb = project.time_signature.beats_per_bar();
-            let notes = generate::drums(*style, (*bars).clamp(1, 512), bpb, intensity.unwrap_or(0.5).clamp(0.0, 1.0), fill.unwrap_or(true), seed_or_random(*seed));
-            let id = put_generated_region(project, *track_id, *start, (*bars).max(1), &format!("Drums ({style:?})"), notes)?;
-            ok(json!({"region_id": id}))
+            let seed = seed_or_random(*seed);
+            let notes = generate::drums(*style, (*bars).clamp(1, 512), bpb, intensity.unwrap_or(0.5).clamp(0.0, 1.0), fill.unwrap_or(true), seed);
+            let bars = (*bars).max(1);
+            let id = put_generated_region(project, *track_id, *start, bars, &format!("Drums ({style:?})"), notes)?;
+            ok(generated(id, seed, *start, bars))
         }
         GenerateBass { track_id, start, bars, style, chords, beats_per_chord, octave, seed } => {
             let tc = resolve_chords(project, *start, *bars, chords, *beats_per_chord)?;
             let ts = project.time_signature;
-            let notes = generate::bass(&tc, *style, octave.unwrap_or(1), ts, seed_or_random(*seed));
-            let id = put_generated_region(project, *track_id, *start, (*bars).max(1), &format!("Bass ({style:?})"), notes)?;
-            ok(json!({"region_id": id}))
+            let seed = seed_or_random(*seed);
+            let notes = generate::bass(&tc, *style, octave.unwrap_or(1), ts, seed);
+            let bars = (*bars).max(1);
+            let id = put_generated_region(project, *track_id, *start, bars, &format!("Bass ({style:?})"), notes)?;
+            ok(generated(id, seed, *start, bars))
         }
         GenerateChords { track_id, start, bars, style, chords, beats_per_chord, center_pitch, seed } => {
             let tc = resolve_chords(project, *start, *bars, chords, *beats_per_chord)?;
             let ts = project.time_signature;
-            let notes = generate::comp(&tc, *style, center_pitch.unwrap_or(62), ts, seed_or_random(*seed));
-            let id = put_generated_region(project, *track_id, *start, (*bars).max(1), &format!("Chords ({style:?})"), notes)?;
-            ok(json!({"region_id": id}))
+            let seed = seed_or_random(*seed);
+            let notes = generate::comp(&tc, *style, center_pitch.unwrap_or(62), ts, seed);
+            let bars = (*bars).max(1);
+            let id = put_generated_region(project, *track_id, *start, bars, &format!("Chords ({style:?})"), notes)?;
+            ok(generated(id, seed, *start, bars))
         }
         GenerateArpeggio { track_id, start, bars, mode, rate, octaves, chords, beats_per_chord, center_pitch, seed } => {
             let tc = resolve_chords(project, *start, *bars, chords, *beats_per_chord)?;
-            let notes = generate::arpeggio(&tc, *mode, rate.unwrap_or(0.25), octaves.unwrap_or(2), center_pitch.unwrap_or(60), 0.8, seed_or_random(*seed));
-            let id = put_generated_region(project, *track_id, *start, (*bars).max(1), "Arpeggio", notes)?;
-            ok(json!({"region_id": id}))
+            let seed = seed_or_random(*seed);
+            let notes = generate::arpeggio(&tc, *mode, rate.unwrap_or(0.25), octaves.unwrap_or(2), center_pitch.unwrap_or(60), 0.8, seed);
+            let bars = (*bars).max(1);
+            let id = put_generated_region(project, *track_id, *start, bars, "Arpeggio", notes)?;
+            ok(generated(id, seed, *start, bars))
         }
         GenerateMelody { track_id, start, bars, density, octave, chords, beats_per_chord, seed } => {
             let tc = resolve_chords(project, *start, *bars, chords, *beats_per_chord)?;
             let ts = project.time_signature;
-            let notes = generate::melody(&tc, project.key, density.unwrap_or(0.5), octave.unwrap_or(4), ts, seed_or_random(*seed));
-            let id = put_generated_region(project, *track_id, *start, (*bars).max(1), "Melody", notes)?;
-            ok(json!({"region_id": id}))
+            let seed = seed_or_random(*seed);
+            let notes = generate::melody(&tc, project.key, density.unwrap_or(0.5), octave.unwrap_or(4), ts, seed);
+            let bars = (*bars).max(1);
+            let id = put_generated_region(project, *track_id, *start, bars, "Melody", notes)?;
+            ok(generated(id, seed, *start, bars))
         }
 
         // chord track
@@ -2020,6 +2037,56 @@ mod tests {
         run(&mut p, Command::AddSend { track_id: bid, bus_id, level_db: None, pre_fader: None });
         run(&mut p, Command::AddAutomationPoint { track_id: bid, target: "send:0".into(), beat: 0.0, value: -20.0 });
         assert!(apply(&mut p, &Command::AddAutomationPoint { track_id: bid, target: "send:5".into(), beat: 0.0, value: 0.0 }).is_err());
+    }
+
+    /// A project with one instrument track over C Am F G, for the generator tests.
+    fn generator_project() -> (Project, Id) {
+        let mut p = Project::new("t");
+        let t = run(&mut p, Command::AddTrack { kind: TrackKind::Instrument, name: None, patch: None, instrument: None, preset: None, index: None });
+        let chords = ["C", "Am", "F", "G"].iter().map(|c| c.to_string()).collect();
+        run(&mut p, Command::SetChordProgression { start: 0.0, chords, beats_per_chord: None, replace: None });
+        (p, t["track_id"].as_u64().unwrap())
+    }
+
+    /// The five generators, by name, for one track, start, length and seed.
+    fn generator_commands(track_id: Id, start: f64, bars: u32, seed: Option<u64>) -> Vec<(&'static str, Command)> {
+        use crate::generate::{ArpMode, BassStyle, CompStyle};
+        vec![
+            ("drums", Command::GenerateDrums { track_id, start, bars, style: DrumStyle::Pop, intensity: None, fill: None, seed }),
+            ("bass", Command::GenerateBass { track_id, start, bars, style: BassStyle::Walking, chords: None, beats_per_chord: None, octave: None, seed }),
+            ("chords", Command::GenerateChords { track_id, start, bars, style: CompStyle::Pop, chords: None, beats_per_chord: None, center_pitch: None, seed }),
+            ("arpeggio", Command::GenerateArpeggio { track_id, start, bars, mode: ArpMode::UpDown, rate: None, octaves: None, chords: None, beats_per_chord: None, center_pitch: None, seed }),
+            ("melody", Command::GenerateMelody { track_id, start, bars, density: None, octave: None, chords: None, beats_per_chord: None, seed }),
+        ]
+    }
+
+    #[test]
+    fn generators_return_the_seed_start_and_bars() {
+        let (mut p, tid) = generator_project();
+        for (name, c) in generator_commands(tid, 8.0, 2, Some(7)) {
+            let r = run(&mut p, c);
+            assert!(r["region_id"].as_u64().is_some(), "{name}: {r}");
+            assert_eq!(r["seed"], json!(7), "{name}: {r}");
+            assert_eq!(r["start"], json!(8.0), "{name}: {r}");
+            assert_eq!(r["bars"], json!(2), "{name}: {r}");
+        }
+    }
+
+    #[test]
+    fn a_returned_seed_repeats_the_same_notes() {
+        let (mut p, tid) = generator_project();
+        let first = generator_commands(tid, 0.0, 4, None);
+        for (name, c) in first {
+            let r = run(&mut p, c);
+            let seed = r["seed"].as_u64().unwrap_or_else(|| panic!("{name}: no seed in {r}"));
+            assert!(seed < 1_000_000, "{name}: drawn seed {seed}");
+            let again = generator_commands(tid, 0.0, 4, Some(seed)).into_iter().find(|(n, _)| *n == name).unwrap().1;
+            let r2 = run(&mut p, again);
+            let a = notes_of(&p, r["region_id"].as_u64().unwrap());
+            let b = notes_of(&p, r2["region_id"].as_u64().unwrap());
+            assert!(!a.is_empty(), "{name}: no notes");
+            assert_eq!(a, b, "{name}: the same seed gives other notes");
+        }
     }
 
     fn n(pitch: u8, start: f64) -> Note {

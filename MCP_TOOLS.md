@@ -448,27 +448,27 @@ Convert a pattern region into a regular MIDI region.
 Parameters: `region_id`
 
 ### `generate_drums`
-Session drummer: generate a drum groove as a MIDI region on a (drum) instrument track. Returns region id.
+Session drummer: generate a drum groove as a MIDI region on a (drum) instrument track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
 
 Parameters: `bars, fill, intensity, seed, start, style, track_id`
 
 ### `generate_bass`
-Session bassist: generate a bass line following `chords` (one symbol per `beats_per_chord`, default one bar) or the chord track.
+Session bassist: generate a bass line following `chords` (one symbol per `beats_per_chord`, default one bar) or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
 
 Parameters: `bars, beats_per_chord, chords, octave, seed, start, style, track_id`
 
 ### `generate_chords`
-Session keyboard player: generate chord comping following `chords` or the chord track.
+Session keyboard player: generate chord comping following `chords` or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
 
 Parameters: `bars, beats_per_chord, center_pitch, chords, seed, start, style, track_id`
 
 ### `generate_arpeggio`
-Generate an arpeggio following `chords` or the chord track. rate in beats (0.25 = 1/16).
+Generate an arpeggio following `chords` or the chord track. rate in beats (0.25 = 1/16). Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
 
 Parameters: `bars, beats_per_chord, center_pitch, chords, mode, octaves, rate, seed, start, track_id`
 
 ### `generate_melody`
-Generate a melody in the project key over `chords` or the chord track. density 0..1.
+Generate a melody in the project key over `chords` or the chord track. density 0..1. Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
 
 Parameters: `bars, beats_per_chord, chords, density, octave, seed, start, track_id`
 
