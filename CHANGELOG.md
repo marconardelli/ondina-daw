@@ -7,6 +7,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-01
+
+### Added
+
+- Piano roll: the new Harmony menu adds a second voice to the selected notes (or to the whole region when nothing is
+  selected): a 3rd, 5th or 6th above, a 3rd or 6th below, or an octave above or below. Thirds, fifths and sixths
+  follow the project key, so the harmony stays in key (in C major the 3rd above C is E, above B it is D); octaves
+  are always 12 semitones.
+- The harmony notes start and end with the originals, play a little softer (85% velocity), never double a note that
+  is already there and become the new selection, so you can move them with the arrow keys or delete them. One
+  Ctrl+Z removes the whole harmony.
+- The AI assistant (including the offline model) and MCP clients can add a harmony voice too, for example "add a
+  third above the selected notes".
+- Automation in the arrange window: press A (or View > Show Automation) to see each track's automation drawn over
+  its regions. Choose the lane (Volume, Pan, a send or a plug-in parameter it already uses) from the selector in the
+  track header or from the header's right-click menu, Automation lane.
+- Click below a region's name bar to add a point (snapped to the grid, hold Alt to place it freely), drag a point to
+  move it while a box shows its value, and double-click or right-click a point to delete it. Esc during a drag puts
+  the point back, and every edit is a single undo step.
+- An empty lane shows the channel's current value as a dashed line. Regions can still be selected, moved, resized
+  and faded from their name bar while automation is shown, and what the assistant writes appears in the same lanes
+  and can be fixed with the mouse.
+
 ## [0.14.0] - 2026-11-01
 
 ### Added
@@ -421,7 +444,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/marconardelli/ondina-daw/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/marconardelli/ondina-daw/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/marconardelli/ondina-daw/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/marconardelli/ondina-daw/compare/v0.11.0...v0.12.0
