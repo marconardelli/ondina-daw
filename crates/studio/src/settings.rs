@@ -25,11 +25,13 @@ pub struct Settings {
     /// from these and the standard VST3 folders; they are never set through a tool.
     #[serde(default)]
     pub vst3_folders: Vec<String>,
+    /// Minutes between recovery copies of unsaved work (0 turns autosave off).
+    pub autosave_minutes: u32,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { api_key: None, model: crate::ai::DEFAULT_MODEL.into(), effort: "medium".into(), mcp_enabled: true, mcp_port: 3917, audio_output: None, recent_projects: vec![], ui_scale: 1.0, provider: "auto".into(), local_url: "http://127.0.0.1:8080/v1".into(), local_model: "local".into(), vst3_folders: vec![] }
+        Settings { api_key: None, model: crate::ai::DEFAULT_MODEL.into(), effort: "medium".into(), mcp_enabled: true, mcp_port: 3917, audio_output: None, recent_projects: vec![], ui_scale: 1.0, provider: "auto".into(), local_url: "http://127.0.0.1:8080/v1".into(), local_model: "local".into(), vst3_folders: vec![], autosave_minutes: 3 }
     }
 }
 
@@ -37,6 +39,11 @@ impl Settings {
     pub fn path() -> PathBuf {
         let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
         base.join("OndinaDAW").join("settings.json")
+    }
+
+    /// Folder of the recovery copies written by autosave (next to settings.json).
+    pub fn autosave_dir() -> PathBuf {
+        Self::path().parent().map(|d| d.join("Autosave")).unwrap_or_else(|| std::env::temp_dir().join("OndinaDAW").join("Autosave"))
     }
 
     pub fn load() -> Settings {
@@ -115,6 +122,25 @@ mod tests {
         s.vst3_folders.push("C:\\Plugins".into());
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.vst3_folders, vec!["C:\\Plugins".to_string()]);
+    }
+
+    #[test]
+    fn settings_without_autosave_minutes_default_to_three() {
+        let s: Settings = serde_json::from_str(r#"{"model":"x"}"#).unwrap();
+        assert_eq!(s.autosave_minutes, 3);
+        let off: Settings = serde_json::from_str(r#"{"autosave_minutes":0}"#).unwrap();
+        assert_eq!(off.autosave_minutes, 0);
+        let mut s = s;
+        s.autosave_minutes = 7;
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.autosave_minutes, 7);
+    }
+
+    #[test]
+    fn autosave_dir_is_next_to_the_settings_file() {
+        let dir = Settings::autosave_dir();
+        assert_eq!(dir.parent(), Settings::path().parent());
+        assert_eq!(dir.file_name().unwrap(), "Autosave");
     }
 
     #[test]

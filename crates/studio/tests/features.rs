@@ -2111,3 +2111,24 @@ fn paste_region_tool_takes_a_region_object() {
     assert!(region["properties"].get("content").is_some(), "{region}");
     assert!(!region.to_string().contains("$ref"), "{region}");
 }
+
+#[test]
+fn recovered_copy_opens_as_unsaved_work_without_a_path() {
+    let mut s = Session::new(false);
+    ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}));
+    ok(&mut s, "set_project_name", json!({"name": "Night Drive"}));
+    let copy = tmp("recovered_copy.ondina");
+    std::fs::write(&copy, ondina_core::save_project_string(&s.project).unwrap()).unwrap();
+    let before = std::fs::read_to_string(&copy).unwrap();
+
+    let mut r = Session::new(false);
+    r.open_recovered(&copy).unwrap();
+    assert_eq!(r.project.name, "Night Drive");
+    assert_eq!(r.project.tracks.len(), 1);
+    assert_eq!(r.path, None, "the next save must ask where to write");
+    assert!(r.dirty, "recovered work is unsaved work");
+    assert_eq!(r.can_undo(), None);
+    let err = r.execute(Command::SaveProject { path: None }, Source::Gui).unwrap_err();
+    assert!(err.contains("never been saved"), "{err}");
+    assert_eq!(std::fs::read_to_string(&copy).unwrap(), before, "the copy is never written over");
+}

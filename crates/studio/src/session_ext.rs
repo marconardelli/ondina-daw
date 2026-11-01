@@ -301,6 +301,15 @@ pub(crate) fn strip_untrusted_vst3(project: &mut Project, untrusted: &HashSet<St
 }
 
 impl Session {
+    /// Opens an autosave copy as unsaved work: the project comes back through OpenProject, but without a file
+    /// path, so the next save asks where to write instead of writing over the copy.
+    pub fn open_recovered(&mut self, copy: &Path) -> Result<Value, String> {
+        let v = self.execute(Command::OpenProject { path: copy.display().to_string() }, Source::Gui)?;
+        self.path = None;
+        self.dirty = true;
+        Ok(v)
+    }
+
     /// Returns `Some(result)` when the command is handled here.
     pub(crate) fn dispatch_ext(&mut self, cmd: &Command, source: Source) -> Option<Result<Value, String>> {
         use Command::*;
