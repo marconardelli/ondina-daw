@@ -1,11 +1,15 @@
-//! The step sequencer's mouse gestures: painting steps with a drag, the row fill menu and the drum sounds of
-//! "+ Row". Pure functions, so the editor only wires the mouse to them.
+//! The step sequencer's mouse gestures and row menu: painting steps with a drag, the row fills, mute, rename, the
+//! drum sounds of "+ Row" and "Sound". Pure functions, so the editor only wires the mouse to them.
 
 use std::collections::BTreeSet;
 
-use eframe::egui::{Pos2, Rect};
+use eframe::egui::{Color32, Pos2, Rect};
 use ondina_core::command::Command;
 use ondina_core::model::{Id, PatternRow};
+use ondina_core::theory::note_name;
+
+use crate::arrange::rename_commit;
+use crate::theme;
 
 /// Velocity of a step turned on with a click or a paint stroke.
 pub const PAINT_VELOCITY: u8 = 100;
@@ -35,13 +39,27 @@ pub struct StepStroke {
     value: u8,
     touched: BTreeSet<(usize, usize)>,
     last: (usize, usize),
+    /// Rows of the pattern when the stroke began, if known.
+    rows: Option<usize>,
 }
 
 impl StepStroke {
     /// Starts at (`row`, `step`), whose stored velocity is `current`.
     pub fn begin(row: usize, step: usize, current: u8) -> Self {
         let value = if current > 0 { 0 } else { PAINT_VELOCITY };
-        StepStroke { value, touched: BTreeSet::from([(row, step)]), last: (row, step) }
+        StepStroke { value, touched: BTreeSet::from([(row, step)]), last: (row, step), rows: None }
+    }
+
+    /// Remembers how many rows the pattern had when the stroke began.
+    pub fn on_rows(mut self, rows: usize) -> Self {
+        self.rows = Some(rows);
+        self
+    }
+
+    /// Whether the stroke still addresses the rows it began on. A row removed meanwhile (from MCP or the
+    /// assistant) shifts the indices, so the editor drops the stroke instead of painting the wrong row.
+    pub fn fits(&self, rows: usize) -> bool {
+        self.rows.is_none_or(|n| n == rows)
     }
 
     /// The velocity the stroke writes (0 or PAINT_VELOCITY).
@@ -148,6 +166,97 @@ impl RowFill {
     /// The row that string gives (0 or 90, the velocity of 'o'), to skip a fill that changes nothing.
     pub fn velocities(self, steps: usize, step_length: f64) -> Vec<u8> {
         (0..steps).map(|i| if self.on(i, step_length) { NORMAL } else { 0 }).collect()
+    }
+}
+
+/// The row menu's mute entry text.
+pub fn mute_label(muted: bool) -> &'static str {
+    if muted {
+        "Unmute"
+    } else {
+        "Mute"
+    }
+}
+
+/// Mutes `current` (row `row` of the pattern `region_id`) if it plays, unmutes it if it is muted.
+pub fn mute_command(region_id: Id, row: usize, current: &PatternRow) -> Command {
+    Command::UpdatePatternRow { region_id, row, name: None, pitch: None, muted: Some(!current.muted) }
+}
+
+/// Menu text of a drum sound, in "+ Row" and in the row menu's Sound list.
+pub fn sound_label(name: &str, pitch: u8) -> String {
+    format!("{name}  ·  {pitch} {}", note_name(pitch))
+}
+
+/// The row menu's Sound entry: one UpdatePatternRow that sets the sound's name and pitch together (mute and steps
+/// stay), or None when the row already has both.
+pub fn sound_command(region_id: Id, row: usize, current: &PatternRow, sound: (&str, u8)) -> Option<Command> {
+    let (name, pitch) = sound;
+    (current.name != name || current.pitch != pitch).then(|| Command::UpdatePatternRow {
+        region_id,
+        row,
+        name: Some(name.to_string()),
+        pitch: Some(pitch),
+        muted: None,
+    })
+}
+
+/// A pattern row's name being edited in place over its name button.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowRename {
+    pub region: Id,
+    pub row: usize,
+    /// Rows of the pattern when the field opened: if the count changes the index may name another row, so the
+    /// field closes.
+    pub rows: usize,
+    pub text: String,
+    /// Give the text field focus and select its text on the next frame it is shown.
+    pub focus: bool,
+}
+
+impl RowRename {
+    /// Opens the field on row `row` of `rows` (the pattern of `region`), filled with the row's name; None when the
+    /// row does not exist.
+    pub fn open(region: Id, row: usize, rows: &[PatternRow]) -> Option<Self> {
+        let r = rows.get(row)?;
+        Some(RowRename { region, row, rows: rows.len(), text: r.name.clone(), focus: true })
+    }
+
+    /// Whether the field still belongs to `rows`, the pattern of `region` as shown now.
+    pub fn fits(&self, region: Id, rows: &[PatternRow]) -> bool {
+        self.region == region && self.rows == rows.len() && self.row < rows.len()
+    }
+
+    /// What Enter (or a click elsewhere) sends: the trimmed name, or None when it is empty or unchanged or the
+    /// field no longer fits the pattern.
+    pub fn command(&self, region: Id, rows: &[PatternRow]) -> Option<Command> {
+        if !self.fits(region, rows) {
+            return None;
+        }
+        rename_commit(&rows[self.row].name, &self.text).map(|name| Command::UpdatePatternRow {
+            region_id: region,
+            row: self.row,
+            name: Some(name),
+            pitch: None,
+            muted: None,
+        })
+    }
+}
+
+/// Colour of a step cell holding velocity `v` (0 = off) at `step`. A muted row's on cells are drawn darker, so the
+/// row still shows its steps but reads as silent.
+pub fn cell_color(v: u8, step: usize, muted: bool) -> Color32 {
+    if v > 0 {
+        let c = theme::velocity_color(theme::ACCENT, v);
+        if muted {
+            theme::darker(c, 0.4)
+        } else {
+            c
+        }
+    } else if (step / 4).is_multiple_of(2) {
+        theme::LANE
+    } else {
+        theme::LANE_ALT
     }
 }
 
@@ -411,5 +520,102 @@ mod tests {
         assert_eq!(last.steps.len(), 16);
         run(&mut s, "undo", json!({}));
         assert_eq!(rows_of(&s, rid).len(), 8);
+    }
+
+    #[test]
+    fn a_stroke_is_dropped_when_the_rows_change() {
+        assert!(StepStroke::begin(0, 0, 0).fits(3), "a stroke without a row count fits any pattern");
+        let st = StepStroke::begin(0, 0, 0).on_rows(8);
+        assert!(st.fits(8));
+        assert!(!st.fits(7));
+        assert!(!st.fits(9));
+    }
+
+    #[test]
+    fn mute_entry_toggles_and_names_itself() {
+        assert_eq!(mute_label(false), "Mute");
+        assert_eq!(mute_label(true), "Unmute");
+        let clap = row("Clap", 39, vec![0; 16]);
+        assert_eq!(
+            serde_json::to_value(mute_command(7, 2, &clap)).unwrap(),
+            json!({"command": "update_pattern_row", "region_id": 7, "row": 2, "name": null, "pitch": null, "muted": true})
+        );
+        let muted = PatternRow { muted: true, ..clap };
+        assert_eq!(serde_json::to_value(mute_command(7, 2, &muted)).unwrap()["muted"], false);
+
+        let (mut s, rid) = drum_session();
+        let c = mute_command(rid, 2, &rows_of(&s, rid)[2]);
+        s.execute(c, Source::Gui).unwrap();
+        assert!(rows_of(&s, rid)[2].muted);
+        let c = mute_command(rid, 2, &rows_of(&s, rid)[2]);
+        s.execute(c, Source::Gui).unwrap();
+        assert!(!rows_of(&s, rid)[2].muted);
+    }
+
+    #[test]
+    fn sound_entry_sends_one_update_with_name_and_pitch() {
+        let clap = row("Clap", 39, vec![0; 16]);
+        let c = sound_command(7, 2, &clap, ("Snare", 38)).expect("a different sound sends a command");
+        assert_eq!(
+            serde_json::to_value(c).unwrap(),
+            json!({"command": "update_pattern_row", "region_id": 7, "row": 2, "name": "Snare", "pitch": 38, "muted": null})
+        );
+        assert!(sound_command(7, 2, &clap, ("Clap", 39)).is_none());
+        assert!(sound_command(7, 2, &row("My Clap", 39, vec![0; 16]), ("Clap", 39)).is_some(), "the name goes back to the GM one");
+
+        let ride = DRUM_SOUNDS.into_iter().find(|(name, _)| *name == "Ride").unwrap();
+        let (mut s, rid) = drum_session();
+        run(&mut s, "set_pattern_step", json!({"region_id": rid, "row": 2, "step": 4, "velocity": 100}));
+        run(&mut s, "update_pattern_row", json!({"region_id": rid, "row": 2, "muted": true}));
+        let before = rows_of(&s, rid)[2].clone();
+        let c = sound_command(rid, 2, &before, ride).unwrap();
+        s.execute(c, Source::Gui).unwrap();
+        let after = rows_of(&s, rid)[2].clone();
+        assert_eq!((after.name.as_str(), after.pitch), ("Ride", 51));
+        assert_eq!(after.steps, before.steps);
+        assert!(after.muted);
+        assert_eq!(s.can_undo(), Some("update_pattern_row"));
+        run(&mut s, "undo", json!({}));
+        let undone = rows_of(&s, rid)[2].clone();
+        assert_eq!((undone.name.as_str(), undone.pitch, undone.muted), ("Clap", 39, true));
+
+        assert_eq!(sound_label("Ride", 51), format!("Ride  ·  51 {}", note_name(51)));
+    }
+
+    #[test]
+    fn row_rename_sends_the_trimmed_name_only_when_it_changed() {
+        let rows = ondina_core::ops::default_drum_rows(16);
+        let mut ren = RowRename::open(7, 1, &rows).expect("row 1 exists");
+        assert_eq!(ren.text, "Snare");
+        assert!(ren.focus);
+        assert_eq!(ren.rows, 8);
+        assert!(RowRename::open(7, 8, &rows).is_none());
+
+        ren.text = "  Rim ".into();
+        assert_eq!(
+            serde_json::to_value(ren.command(7, &rows).unwrap()).unwrap(),
+            json!({"command": "update_pattern_row", "region_id": 7, "row": 1, "name": "Rim", "pitch": null, "muted": null})
+        );
+        assert!(ren.command(8, &rows).is_none(), "another region");
+        assert!(!ren.fits(7, &rows[..7]));
+        assert!(ren.command(7, &rows[..7]).is_none(), "a row was removed meanwhile");
+        for text in ["Snare", "   "] {
+            ren.text = text.into();
+            assert!(ren.command(7, &rows).is_none(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn muted_rows_are_drawn_darker() {
+        for v in [45, 90, 127] {
+            let (m, n) = (cell_color(v, 0, true), cell_color(v, 0, false));
+            assert!(m.r() <= n.r() && m.g() <= n.g() && m.b() <= n.b(), "velocity {v}");
+            assert!(m.r() < n.r(), "velocity {v}");
+        }
+        for s in 0..8 {
+            assert_eq!(cell_color(0, s, true), cell_color(0, s, false));
+        }
+        assert_eq!(cell_color(0, 0, false), theme::LANE);
+        assert_eq!(cell_color(0, 4, false), theme::LANE_ALT);
     }
 }
