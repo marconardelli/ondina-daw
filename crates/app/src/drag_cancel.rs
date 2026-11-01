@@ -30,7 +30,8 @@ pub fn cancel_command(drag: &Drag) -> Option<(Command, String)> {
         | Drag::Velocity { .. }
         | Drag::Marquee { .. }
         | Drag::CcStroke { .. }
-        | Drag::AutoPoint { .. } => None,
+        | Drag::AutoPoint { .. }
+        | Drag::StepPaint { .. } => None,
     }
 }
 
@@ -71,9 +72,10 @@ mod tests {
     use crate::cc_lane::CcStroke;
     use crate::note_drag::VelocityStroke;
     use crate::region_edit::FadeHandle;
+    use crate::step_paint::StepStroke;
     use eframe::egui::{Event, Key, Modifiers};
     use ondina_core::command::Command;
-    use ondina_core::model::{AutomationPoint, Cycle, Note, TrackKind};
+    use ondina_core::model::{AutomationPoint, Cycle, Note, RegionContent, TrackKind};
     use ondina_studio::{Session, Source};
     use serde_json::{json, Value};
 
@@ -286,6 +288,32 @@ mod tests {
         assert!(take_cancelled(&mut d).is_none());
         assert!(d.is_none());
         assert_eq!(lane(&s), points);
+        assert_eq!(s.can_undo().map(String::from), undo_before);
+    }
+
+    #[test]
+    fn a_cancelled_step_paint_sends_nothing_and_leaves_the_pattern() {
+        let mut s = Session::new(false);
+        let tid = run(&mut s, "add_track", json!({"kind": "instrument", "patch": "Pop Drum Kit"}))["track_id"].as_u64().unwrap();
+        let rid = run(&mut s, "create_pattern_region", json!({"track_id": tid, "start": 0, "steps": 16}))["region_id"]
+            .as_u64()
+            .unwrap();
+        run(&mut s, "set_pattern_step", json!({"region_id": rid, "row": 0, "step": 2, "velocity": 120}));
+        let pattern = |s: &Session| match &s.project.find_region(rid).unwrap().1.content {
+            RegionContent::Pattern(p) => p.rows.iter().map(|r| r.steps.clone()).collect::<Vec<_>>(),
+            _ => panic!("not a pattern"),
+        };
+        let before = pattern(&s);
+        let undo_before = s.can_undo().map(String::from);
+
+        let mut stroke = StepStroke::begin(0, 0, 0);
+        stroke.reach(0, 3);
+        let d = Drag::StepPaint { region: rid, stroke };
+        assert!(cancel_command(&d).is_none());
+        let mut d = Some(d);
+        assert!(take_cancelled(&mut d).is_none());
+        assert!(d.is_none());
+        assert_eq!(pattern(&s), before);
         assert_eq!(s.can_undo().map(String::from), undo_before);
     }
 }

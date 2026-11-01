@@ -20,6 +20,7 @@ use crate::piano_roll_view::{
     follow_scroll, initial_view, loop_local_beat, playing_pattern_step, scroll_pitch, wheel_zoom, zoom_factor,
     zoom_pitch, zoom_time,
 };
+use crate::step_paint::{self, cell_at, RowFill, StepCell, StepStroke, DRUM_SOUNDS, PAINT_VELOCITY};
 use crate::theme;
 
 const KEYS_W: f32 = 54.0;
@@ -1041,7 +1042,7 @@ impl OndinaApp {
             }
         });
         ui.label(
-            RichText::new("Click: on/off · Right-click: cycle accent → normal → ghost")
+            RichText::new("Click: on/off · Drag: paint · Right-click: accent → normal → ghost · Right-click a name: row menu")
                 .small()
                 .color(theme::TEXT_DIM),
         );
@@ -1051,12 +1052,15 @@ impl OndinaApp {
         } else {
             None
         };
-        egui::ScrollArea::both().show(ui, |ui| {
+        let steps = pt.steps as usize;
+        egui::ScrollArea::both().drag_to_scroll(false).show(ui, |ui| {
+            let mut cells: Vec<StepCell> = Vec::with_capacity(pt.rows.iter().map(|r| r.steps.len()).sum());
+            let mut started: Option<(usize, usize)> = None;
             egui::Grid::new(("steps", rid))
                 .spacing(vec2(3.0, 3.0))
                 .show(ui, |ui| {
                     for (ri, row) in pt.rows.iter().enumerate() {
-                        if ui
+                        let name = ui
                             .add(
                                 egui::Button::new(
                                     RichText::new(format!("{:<11}", row.name)).monospace(),
@@ -1064,47 +1068,43 @@ impl OndinaApp {
                                 .min_size(vec2(100.0, 20.0)),
                             )
                             .on_hover_text(format!(
-                                "pitch {} ({})",
+                                "pitch {} ({}) · right-click for the row menu",
                                 row.pitch,
                                 note_name(row.pitch)
-                            ))
-                            .clicked()
-                        {
-                            self.live_note(
-                                track.id,
-                                MidiKind::NoteOn {
-                                    pitch: row.pitch,
-                                    velocity: 110,
-                                },
-                            );
-                            self.live_note(track.id, MidiKind::NoteOff { pitch: row.pitch });
+                            ));
+                        if name.clicked() {
+                            self.preview_row(track.id, row.pitch);
                         }
+                        name.context_menu(|ui| {
+                            if ui.button("Preview").clicked() {
+                                self.preview_row(track.id, row.pitch);
+                                ui.close_menu();
+                            }
+                            ui.separator();
+                            for fill in RowFill::ALL {
+                                if ui.button(fill.label()).clicked() {
+                                    if row.steps != fill.velocities(steps, pt.step_length) {
+                                        self.cmd(Command::SetPatternRow {
+                                            region_id: rid,
+                                            row: ri,
+                                            pattern: fill.pattern(steps, pt.step_length),
+                                        });
+                                    }
+                                    ui.close_menu();
+                                }
+                            }
+                        });
                         for (si, v) in row.steps.iter().enumerate() {
                             let on = *v > 0;
-                            let beat_group = (si / 4) % 2 == 0;
-                            let col = if on {
-                                theme::velocity_color(theme::ACCENT, *v)
-                            } else if beat_group {
-                                theme::LANE
-                            } else {
-                                theme::LANE_ALT
-                            };
                             let (rect, resp) =
-                                ui.allocate_exact_size(vec2(22.0, 20.0), Sense::click());
-                            ui.painter().rect_filled(rect, Rounding::same(3.0_f32), col);
-                            if playing_step == Some(si) {
-                                ui.painter().rect_stroke(
-                                    rect,
-                                    Rounding::same(3.0_f32),
-                                    Stroke::new(1.5_f32, Color32::WHITE),
-                                );
-                            }
+                                ui.allocate_exact_size(vec2(22.0, 20.0), Sense::click_and_drag());
+                            cells.push(StepCell { row: ri, step: si, rect });
                             if resp.clicked() {
                                 self.cmd(Command::SetPatternStep {
                                     region_id: rid,
                                     row: ri,
                                     step: si,
-                                    velocity: if on { 0 } else { 100 },
+                                    velocity: if on { 0 } else { PAINT_VELOCITY },
                                 });
                             }
                             if resp.secondary_clicked() {
@@ -1121,11 +1121,67 @@ impl OndinaApp {
                                     velocity: nv,
                                 });
                             }
+                            if resp.drag_started_by(PointerButton::Primary) {
+                                started = Some((ri, si));
+                            }
                         }
                         ui.end_row();
                     }
                 });
+            // the press decides the stroke's value; egui gives the drag to the cell under the press
+            if let Some((r, s)) = started {
+                if self.drag.is_none() {
+                    let cur = pt.rows[r].steps[s];
+                    self.drag = Some(Drag::StepPaint { region: rid, stroke: StepStroke::begin(r, s, cur) });
+                }
+            }
+            // during a drag egui hovers only the pressed cell, so the stroke follows the pointer over the rects
+            if let (Some(pos), Some(Drag::StepPaint { region, stroke })) =
+                (ui.input(|i| i.pointer.latest_pos()), self.drag.as_mut())
+            {
+                if *region == rid {
+                    if let Some((r, s)) = cell_at(&cells, pos) {
+                        stroke.reach(r, s);
+                    }
+                }
+            }
+            let stroke = match &self.drag {
+                Some(Drag::StepPaint { region, stroke }) if *region == rid => Some(stroke.clone()),
+                _ => None,
+            };
+            paint_step_cells(ui, &cells, pt, stroke.as_ref(), playing_step);
+            ui.menu_button("+ Row", |ui| {
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    for (name, pitch) in DRUM_SOUNDS {
+                        if ui.button(format!("{name}  ·  {pitch} {}", note_name(pitch))).clicked() {
+                            self.cmd(Command::AddPatternRow { region_id: rid, name: name.into(), pitch });
+                            ui.close_menu();
+                        }
+                    }
+                });
+            })
+            .response
+            .on_hover_text("Add a drum sound as a new row");
         });
+        // the stroke reaches the project on release, as one undo step
+        if ui.input(|i| i.pointer.any_released()) {
+            match self.drag.take() {
+                Some(Drag::StepPaint { region, stroke }) if region == rid => {
+                    let key = step_paint::paint_gesture_key();
+                    for c in stroke.commands(rid, &pt.rows) {
+                        self.cmd_merge(c, key.clone());
+                    }
+                }
+                Some(Drag::StepPaint { .. }) => {}
+                other => self.drag = other,
+            }
+        }
+    }
+
+    /// Plays a pattern row's sound once.
+    fn preview_row(&self, track_id: Id, pitch: u8) {
+        self.live_note(track_id, MidiKind::NoteOn { pitch, velocity: 110 });
+        self.live_note(track_id, MidiKind::NoteOff { pitch });
     }
 
     fn audio_editor(&mut self, ui: &mut egui::Ui, p: &Project, region: &Region, a: &AudioContent) {
@@ -1233,5 +1289,31 @@ fn len_label(l: f64) -> &'static str {
         x if x == 0.5 => "1/8",
         x if x == 0.25 => "1/16",
         _ => "1/32",
+    }
+}
+
+/// Paints the step sequencer's cells after the grid laid them out: a paint stroke in progress shows its value
+/// in the cells it touched, and the playing step gets a white border.
+fn paint_step_cells(
+    ui: &egui::Ui,
+    cells: &[StepCell],
+    pt: &PatternContent,
+    stroke: Option<&StepStroke>,
+    playing_step: Option<usize>,
+) {
+    for c in cells {
+        let stored = pt.rows[c.row].steps[c.step];
+        let v = stroke.map_or(stored, |st| st.shown(c.row, c.step, stored));
+        let col = if v > 0 {
+            theme::velocity_color(theme::ACCENT, v)
+        } else if (c.step / 4) % 2 == 0 {
+            theme::LANE
+        } else {
+            theme::LANE_ALT
+        };
+        ui.painter().rect_filled(c.rect, Rounding::same(3.0_f32), col);
+        if playing_step == Some(c.step) {
+            ui.painter().rect_stroke(c.rect, Rounding::same(3.0_f32), Stroke::new(1.5_f32, Color32::WHITE));
+        }
     }
 }
