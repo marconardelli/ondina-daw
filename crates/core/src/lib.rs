@@ -35,9 +35,14 @@ pub fn save_project_string(p: &Project) -> Result<String, String> {
     serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())
 }
 
-/// Parse a project file.
+/// Parse a project file. The file is checked like a command's input before anything plays it: a time signature,
+/// tempo map or pattern the commands would refuse is refused here too (see `ops2::check_loaded_project`), and
+/// values with an obvious safe form (a tempo out of range, a cycle of no length, an automation value out of its
+/// range) are put back in range.
 pub fn load_project_str(s: &str) -> Result<Project, String> {
     let v: serde_json::Value = serde_json::from_str(s).map_err(|e| format!("invalid project file: {e}"))?;
     let p = v.get("project").cloned().unwrap_or(v);
-    serde_json::from_value(p).map_err(|e| format!("invalid project file: {e}"))
+    let mut project: Project = serde_json::from_value(p).map_err(|e| format!("invalid project file: {e}"))?;
+    ops2::check_loaded_project(&mut project).map_err(|e| format!("invalid project file: {e}"))?;
+    Ok(project)
 }

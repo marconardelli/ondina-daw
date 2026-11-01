@@ -287,6 +287,68 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
     }
 }
 
+/// Checks a project read from a file before anything plays it. What the commands refuse is refused here (a time
+/// signature with 0 beats per bar or an odd denominator, a tempo map without points, a pattern with more than
+/// `MAX_PATTERN_STEPS` steps, numbers that are not numbers); what has an obvious safe form is put back in range
+/// (tempos, the order of tempo points, a cycle of no length, region lengths and loop counts, pattern rows of the
+/// wrong length).
+pub fn check_loaded_project(p: &mut Project) -> Result<(), String> {
+    let ts = p.time_signature;
+    if !ts.is_valid() {
+        return Err(format!("invalid time signature {}/{}: at least 1 beat per bar, denominator 1, 2, 4, 8 or 16", ts.numerator, ts.denominator));
+    }
+    p.tempo.repair_loaded()?;
+    if !(p.cycle.start.is_finite() && p.cycle.end.is_finite()) {
+        return Err("the cycle range is not a number".into());
+    }
+    p.cycle.start = p.cycle.start.max(0.0);
+    if p.cycle.end <= p.cycle.start {
+        p.cycle.end = p.cycle.start + ts.beats_per_bar();
+    }
+    if !p.frame_rate.is_finite() || p.frame_rate <= 0.0 {
+        p.frame_rate = 25.0;
+    }
+    for t in &mut p.tracks {
+        for r in &mut t.regions {
+            if !(r.start.is_finite() && r.length.is_finite()) {
+                return Err(format!("region {} has a position or length that is not a number", r.id));
+            }
+            r.start = r.start.max(0.0);
+            r.length = r.length.max(0.0625);
+            r.loop_count = r.loop_count.clamp(1, 1024);
+            if let RegionContent::Pattern(pc) = &mut r.content {
+                check_loaded_pattern(pc).map_err(|e| format!("region {}: {e}", r.id))?;
+            }
+        }
+    }
+    for c in &mut p.live.cells {
+        if !c.length.is_finite() {
+            return Err(format!("Live Loops cell {} has a length that is not a number", c.id));
+        }
+        c.length = c.length.max(0.0625);
+        if let RegionContent::Pattern(pc) = &mut c.content {
+            check_loaded_pattern(pc).map_err(|e| format!("Live Loops cell {}: {e}", c.id))?;
+        }
+    }
+    Ok(())
+}
+
+fn check_loaded_pattern(p: &mut PatternContent) -> Result<(), String> {
+    if p.steps > MAX_PATTERN_STEPS {
+        return Err(format!("a pattern can have at most {MAX_PATTERN_STEPS} steps"));
+    }
+    if !p.step_length.is_finite() || !p.swing.is_finite() {
+        return Err("pattern step length or swing is not a number".into());
+    }
+    p.steps = p.steps.max(1);
+    p.step_length = p.step_length.max(0.03125);
+    p.swing = p.swing.clamp(0.0, 1.0);
+    for row in &mut p.rows {
+        row.steps.resize(p.steps as usize, 0);
+    }
+    Ok(())
+}
+
 /// The copy `paste_region` adds, without its id: `region` checked against the destination track and the project,
 /// its numbers kept in the ranges the other region commands keep. JSON numbers are always finite; the checks cover
 /// a region built in code.
@@ -349,8 +411,8 @@ fn pasted_region(project: &Project, track_id: Id, start: f64, region: &Region) -
             }
             // resize_region has no step limit, so a valid pattern keeps all its steps; the bound only stops a
             // huge allocation from a hand-written region.
-            if p.steps > 65_536 {
-                return Err("a pattern can have at most 65536 steps".into());
+            if p.steps > MAX_PATTERN_STEPS {
+                return Err(format!("a pattern can have at most {MAX_PATTERN_STEPS} steps"));
             }
             p.steps = p.steps.max(1);
             p.step_length = p.step_length.max(0.03125);

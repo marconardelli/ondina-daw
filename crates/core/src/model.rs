@@ -161,6 +161,12 @@ pub struct TimeSignature {
 }
 
 impl TimeSignature {
+    /// At least one beat per bar, and a whole, half, quarter, eighth or sixteenth note as the beat: the time
+    /// signatures `set_time_signature` accepts. The metronome divides by the numerator.
+    pub fn is_valid(&self) -> bool {
+        self.numerator >= 1 && matches!(self.denominator, 1 | 2 | 4 | 8 | 16)
+    }
+
     /// Length of one bar in beats (quarter notes).
     pub fn beats_per_bar(&self) -> f64 {
         self.numerator as f64 * 4.0 / self.denominator.max(1) as f64
@@ -370,6 +376,10 @@ pub struct AudioContent {
     pub fade_out: f64,
     pub reverse: bool,
 }
+
+/// Most steps a pattern region can have: `resize_region`, `paste_region` and project files are held to it (a
+/// row stores one byte per step, and every row is resized at once).
+pub const MAX_PATTERN_STEPS: u32 = 65_536;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PatternContent {

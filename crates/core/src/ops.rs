@@ -826,6 +826,9 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             if let Some(ts) = time_signature {
                 let (a, b) = ts.split_once('/').ok_or("time signature like 4/4")?;
                 p.time_signature = TimeSignature { numerator: a.trim().parse().map_err(|_| "bad numerator")?, denominator: b.trim().parse().map_err(|_| "bad denominator")? };
+                if !p.time_signature.is_valid() {
+                    return err(format!("invalid time signature {ts}: at least 1 beat per bar, denominator 1, 2, 4, 8 or 16"));
+                }
             }
             if let Some(k) = key {
                 p.key = parse_key(k)?;
@@ -854,10 +857,11 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             ok(json!({"ok": true}))
         }
         SetTimeSignature { numerator, denominator } => {
-            if *numerator == 0 || !matches!(denominator, 1 | 2 | 4 | 8 | 16) {
+            let ts = TimeSignature { numerator: *numerator, denominator: *denominator };
+            if !ts.is_valid() {
                 return err("invalid time signature");
             }
-            project.time_signature = TimeSignature { numerator: *numerator, denominator: *denominator };
+            project.time_signature = ts;
             ok(json!({"ok": true}))
         }
         SetKey { key } => {
