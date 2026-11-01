@@ -478,6 +478,32 @@ pub fn find(kind: &str) -> Option<&'static PluginInfo> {
     REGISTRY.iter().find(|p| p.kind == kind)
 }
 
+/// The name to show for a plug-in instance. A VST3 is called by the name it reported when it was added (kept in
+/// `preset`), or by its bundle file name when the project has none; a built-in by its registry name. An unknown
+/// kind (a project saved by a newer version) shows the kind itself.
+pub fn plugin_label(p: &crate::model::PluginInstance) -> String {
+    if p.kind == "vst3" {
+        if let Some(name) = p.preset.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            return name.to_string();
+        }
+        return p.vst3_path.as_deref().and_then(vst3_bundle_name).unwrap_or_else(|| "VST3".to_string());
+    }
+    find(&p.kind).map_or_else(|| p.kind.clone(), |i| i.name.to_string())
+}
+
+/// `C:\VST3\Foo Synth.vst3` -> `Foo Synth`: the last path component without a `.vst3` extension (any case).
+/// Plain string work, so it reads both `\` and `/` the same way on every platform.
+fn vst3_bundle_name(path: &str) -> Option<String> {
+    let is_sep = |c: char| c == '\\' || c == '/';
+    let file = path.trim_end_matches(is_sep).rsplit(is_sep).next()?;
+    let name = match file.len().checked_sub(5).and_then(|i| Some((file.get(..i)?, file.get(i..)?))) {
+        Some((stem, ext)) if ext.eq_ignore_ascii_case(".vst3") => stem,
+        _ => file,
+    };
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 pub struct Preset {
     pub name: &'static str,
     pub kind: &'static str,
@@ -584,4 +610,47 @@ pub static PATCHES: &[Patch] = &[
 
 pub fn find_patch(name: &str) -> Option<&'static Patch> {
     PATCHES.iter().find(|p| p.name.eq_ignore_ascii_case(name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inst(kind: &str, preset: Option<&str>, path: Option<&str>) -> crate::model::PluginInstance {
+        crate::model::PluginInstance {
+            id: 1,
+            kind: kind.to_string(),
+            params: Default::default(),
+            bypass: false,
+            preset: preset.map(str::to_string),
+            sample: None,
+            vst3_path: path.map(str::to_string),
+            vst3_params: vec![],
+            vst3_state: None,
+        }
+    }
+
+    #[test]
+    fn plugin_label_uses_the_name_a_vst3_reported() {
+        assert_eq!(plugin_label(&inst("vst3", Some("Foo Synth"), Some(r"C:\VST3\Other.vst3"))), "Foo Synth");
+        assert_eq!(plugin_label(&inst("vst3", Some("  Pad  "), Some(r"C:\VST3\Other.vst3"))), "Pad");
+    }
+
+    #[test]
+    fn plugin_label_falls_back_to_the_vst3_bundle_name() {
+        assert_eq!(plugin_label(&inst("vst3", None, Some(r"C:\VST3\Foo Synth.vst3"))), "Foo Synth");
+        assert_eq!(plugin_label(&inst("vst3", None, Some("C:/VST3/Bar.VST3"))), "Bar");
+        assert_eq!(plugin_label(&inst("vst3", None, Some(r"C:\VST3\Baz.vst3\"))), "Baz");
+        assert_eq!(plugin_label(&inst("vst3", None, Some(r"C:\VST3\Ñandú.vst3"))), "Ñandú");
+        assert_eq!(plugin_label(&inst("vst3", Some(""), Some(r"C:\VST3\Foo.vst3"))), "Foo");
+        assert_eq!(plugin_label(&inst("vst3", None, Some(r"C:\plugins\evil.dll"))), "evil.dll");
+        assert_eq!(plugin_label(&inst("vst3", None, None)), "VST3");
+        assert_eq!(plugin_label(&inst("vst3", None, Some(r"C:\VST3\"))), "VST3");
+    }
+
+    #[test]
+    fn plugin_label_uses_the_registry_name_for_built_ins() {
+        assert_eq!(plugin_label(&inst("compressor", Some("Gentle"), None)), find("compressor").unwrap().name);
+        assert_eq!(plugin_label(&inst("future_fx", None, None)), "future_fx");
+    }
 }
