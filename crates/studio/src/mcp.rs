@@ -46,7 +46,7 @@ Ondina is a digital audio workstation. Everything is controlled through tools th
 6. Arrange: `add_marker` (with length for sections), `copy_section`, `duplicate_region`, `paste_region` (a region object from `get_project_json` onto any track of the same type).
 7. Mix: `set_volume`, `set_pan`, `add_effect`, buses + `add_send` for shared reverb/delay, `set_automation`.
 8. Listen: `analyze_mix` returns loudness, peaks, spectral balance and advice. `auto_master` builds a master chain.
-9. Deliver: `bounce` to WAV, `save_project`, `export_midi`.
+9. Deliver: `bounce` to WAV (`normalize_lufs: -14` for streaming, `-23` for broadcast: one gain, peaks under `true_peak_ceiling_db`; if `loudness.target_reached` is false the mix needs `auto_master`), `save_project`, `export_midi`.
 "#;
 
 fn ok(id: &Value, result: Value) -> Value {

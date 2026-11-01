@@ -474,6 +474,16 @@ mano.
 
 - **File > Bounce to WAV…** (Ctrl+B) scrive il mix in un file WAV: tutta la canzone, oppure solo
   l'intervallo del ciclo se il ciclo è attivo.
+- **File > Bounce loudness** sceglie il livello del file: Off (il mix com'è), Peak -1 dB (il picco a
+  -1 dBFS), -14 LUFS (streaming), -16 LUFS, -23 LUFS (broadcast). Con un target LUFS Ondina misura la
+  loudness integrata del mix e applica un solo guadagno a tutto il brano, senza limiter, tenendo i
+  picchi sotto -1 dBTP. La scelta vale fino alla chiusura di Ondina, come la bit depth.
+- Se il mix è troppo dinamico, il guadagno si ferma al tetto dei picchi e la barra di stato dice che
+  il target non è stato raggiunto: per arrivarci serve un limiter (**Mix > Mastering Assistant**). Da
+  MCP e dall'assistente: `bounce` con `normalize_lufs` (da -30 a -6) e, se serve,
+  `true_peak_ceiling_db` (da -9 a 0, default -1); il risultato riporta `loudness` con `gain_db`,
+  `lufs_after`, `true_peak_after` e `target_reached`. Il picco è la stima di `analyze_mix`; a 16 e
+  24 bit il dither può aggiungere circa un LSB.
 - Dopo la fine, Ondina continua finché le code di riverbero e delay non si spengono (sotto circa
   −90 dBFS): almeno 2 secondi, al massimo 20. Così il finale suona come in riproduzione. Vale anche
   per Bounce in Place, Bounce Surround e Bounce Binaural.

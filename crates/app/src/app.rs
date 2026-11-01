@@ -20,6 +20,7 @@ use eframe::egui::{self, Color32, Key, RichText};
 use parking_lot::Mutex;
 use serde_json::Value;
 
+use crate::bounce_menu;
 use crate::theme;
 use crate::doc_guard::{self, Answer, CloseStep, DocAction, Step};
 use crate::editors::take_event;
@@ -290,6 +291,8 @@ pub struct OndinaApp {
     pub devices_cache: Option<Value>,
     pub midi_inputs_cache: Vec<String>,
     pub bounce_bits: u16,
+    /// Loudness of File > Bounce to WAV; kept for the session like bounce_bits.
+    pub bounce_loudness: bounce_menu::Loudness,
     pub extra: crate::extra_ui::ExtraState,
     pub last_playhead: f64,
     /// Action waiting for the answer to the "Save changes?" prompt; `Some` while the prompt is open.
@@ -393,6 +396,7 @@ impl OndinaApp {
             devices_cache: None,
             midi_inputs_cache: vec![],
             bounce_bits: 24,
+            bounce_loudness: bounce_menu::Loudness::Off,
             extra: crate::extra_ui::ExtraState::new(),
             last_playhead: 0.0,
             doc_prompt: None,
@@ -922,25 +926,16 @@ impl OndinaApp {
             .save_file()
         {
             let cycle = self.view.project.cycle;
-            let (start, end) = if cycle.enabled {
-                (Some(cycle.start), Some(cycle.end))
-            } else {
-                (None, None)
-            };
-            if let Some(v) = self.exec(Command::Bounce {
-                path: p.display().to_string(),
-                start,
-                end,
-                bit_depth: Some(self.bounce_bits),
-                normalize: Some(false),
-                track_ids: None,
-                tail_sec: None,
-            }) {
-                self.status = format!(
-                    "Bounced {:.1}s to {}",
-                    v["duration_sec"].as_f64().unwrap_or(0.0),
-                    p.display()
-                );
+            let range = cycle.enabled.then_some((cycle.start, cycle.end));
+            let loudness = self.bounce_loudness;
+            let path = p.display().to_string();
+            if let Some(v) = self.exec(bounce_menu::command(
+                path.clone(),
+                range,
+                self.bounce_bits,
+                loudness,
+            )) {
+                self.status = bounce_menu::status(&v, &path, loudness);
             }
         }
     }
@@ -1412,6 +1407,18 @@ impl OndinaApp {
                     ui.selectable_value(&mut self.bounce_bits, 24, "24");
                     ui.selectable_value(&mut self.bounce_bits, 32, "32f");
                 });
+                ui.menu_button(
+                    format!("Bounce loudness: {}", self.bounce_loudness.label()),
+                    |ui| {
+                        for l in bounce_menu::Loudness::ALL {
+                            ui.radio_value(&mut self.bounce_loudness, l, l.label());
+                        }
+                    },
+                )
+                .response
+                .on_hover_text(
+                    "LUFS targets: one gain for the whole mix, peaks kept under -1 dBTP, no limiter",
+                );
                 if ui.button("Bounce to WAV…   Ctrl+B").clicked() {
                     ui.close_menu();
                     self.bounce_dialog();

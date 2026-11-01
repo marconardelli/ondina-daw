@@ -54,12 +54,27 @@ fn result_for_model(name: &str, out: &str) -> String {
     out.chars().take(limit).collect()
 }
 
+/// The tool schema without the numeric `format` hints schemars adds ("double", "uint64"...): `type` already says number
+/// or integer, and every character of the schema is taken from the local model's small context.
+fn compact_schema(v: &Value) -> Value {
+    match v {
+        Value::Object(m) => Value::Object(
+            m.iter()
+                .filter(|(k, x)| !(k.as_str() == "format" && x.is_string()))
+                .map(|(k, x)| (k.clone(), compact_schema(x)))
+                .collect(),
+        ),
+        Value::Array(a) => Value::Array(a.iter().map(compact_schema).collect()),
+        _ => v.clone(),
+    }
+}
+
 fn local_tools() -> Value {
     Value::Array(
         mcp::tools()
             .iter()
             .filter(|t| LOCAL_TOOLS.contains(&t.name.as_str()))
-            .map(|t| json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.input_schema}}))
+            .map(|t| json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": compact_schema(&t.input_schema)}}))
             .collect(),
     )
 }
@@ -922,5 +937,20 @@ mod tests {
         let mut slot = Some(done);
         assert!(!take_if_exited(&mut slot));
         assert!(slot.is_none());
+    }
+
+    #[test]
+    fn local_tool_schemas_drop_the_numeric_format_hints() {
+        let compact = compact_schema(&json!({"type": "object", "properties": {
+            "beat": {"type": "number", "format": "double"},
+            "format": {"type": "string", "description": "a parameter named format"}
+        }}));
+        assert_eq!(compact, json!({"type": "object", "properties": {
+            "beat": {"type": "number"},
+            "format": {"type": "string", "description": "a parameter named format"}
+        }}));
+        let tools = local_tools().to_string();
+        assert!(!tools.contains("\"format\":\""), "a numeric format hint is left in the local schema");
+        assert!(tools.contains("\"bounce\""));
     }
 }

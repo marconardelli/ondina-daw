@@ -144,11 +144,46 @@ fn render_offline_body(project: &Project, pool: Arc<AudioPool>, opt: OfflineOpti
 
 /// Peak-normalize to -1 dBFS.
 pub fn normalize(left: &mut [f32], right: &mut [f32]) {
-    let peak = left.iter().chain(right.iter()).fold(0.0f32, |a, b| a.max(b.abs()));
+    let peak = sample_peak(left, right);
     if peak > 1e-6 {
         let g = 0.891 / peak;
         left.iter_mut().chain(right.iter_mut()).for_each(|x| *x *= g);
     }
+}
+
+/// Largest absolute sample of a stereo buffer. The analyzer's true-peak estimate interpolates linearly between
+/// samples, which never goes past them, so this is the same number without the rounding of the report.
+pub fn sample_peak(left: &[f32], right: &[f32]) -> f32 {
+    left.iter().chain(right.iter()).fold(0.0f32, |a, b| a.max(b.abs()))
+}
+
+/// One gain for a whole bounce that moves its loudness toward a target.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoudnessGain {
+    /// Linear factor for every sample.
+    pub gain: f32,
+    pub gain_db: f32,
+    /// False when the peak ceiling stopped the gain before the target.
+    pub target_reached: bool,
+}
+
+/// The gain that brings a mix measured at `integrated_lufs`, whose sample peak is `peak` (linear), to `target_lufs`
+/// without the peak going over `ceiling_db`. It can be a cut as well as a boost. None for a silent mix: there is
+/// nothing to scale, and a boost toward the target would only raise the noise floor.
+pub fn loudness_gain(integrated_lufs: f32, peak: f32, target_lufs: f32, ceiling_db: f32) -> Option<LoudnessGain> {
+    if peak <= 1e-6 || integrated_lufs <= -70.0 {
+        return None;
+    }
+    let to_target = 10f32.powf((target_lufs - integrated_lufs) / 20.0);
+    let to_ceiling = 10f32.powf(ceiling_db / 20.0) / peak;
+    let gain = to_target.min(to_ceiling);
+    // A hair of tolerance: a target that lands exactly on the ceiling counts as reached.
+    Some(LoudnessGain { gain, gain_db: 20.0 * gain.log10(), target_reached: to_target <= to_ceiling * 1.0001 })
+}
+
+/// Multiply a stereo buffer by one gain.
+pub fn apply_gain(left: &mut [f32], right: &mut [f32], gain: f32) {
+    left.iter_mut().chain(right.iter_mut()).for_each(|x| *x *= gain);
 }
 
 /// Render a multichannel surround bed ("5.1", "7.1", "7.1.4"). Returns (channel names, channels).
@@ -504,5 +539,54 @@ mod tests {
         assert_eq!(subnormal, None, "subnormal sample with flush-to-zero");
         let old_subnormal = old.left.iter().chain(&old.right).filter(|x| x.is_subnormal()).count();
         println!("subnormal samples without flush-to-zero: {old_subnormal}");
+    }
+
+    fn db(x: f32) -> f32 {
+        10f32.powf(x / 20.0)
+    }
+
+    #[test]
+    fn loudness_gain_reaches_the_target_under_the_ceiling() {
+        let peak = db(2.4);
+        let g = loudness_gain(-9.9, peak, -14.0, -1.0).unwrap();
+        assert!(g.target_reached);
+        assert!((g.gain_db + 4.1).abs() < 0.01, "gain {}", g.gain_db);
+        assert!(peak * g.gain <= db(-1.0));
+    }
+
+    #[test]
+    fn loudness_gain_stops_at_the_ceiling() {
+        let peak = db(2.4);
+        let g = loudness_gain(-9.9, peak, -8.0, -3.0).unwrap();
+        assert!(!g.target_reached);
+        assert!((peak * g.gain - db(-3.0)).abs() < 1e-6);
+        assert!((g.gain_db + 5.4).abs() < 0.01, "gain {}", g.gain_db);
+        // A mix too dynamic for a loud target: the boost stops at the ceiling.
+        let g = loudness_gain(-29.9, db(-17.6), -6.0, -1.0).unwrap();
+        assert!(!g.target_reached);
+        assert!((g.gain_db - 16.6).abs() < 0.01, "gain {}", g.gain_db);
+    }
+
+    #[test]
+    fn loudness_gain_leaves_a_silent_mix_alone() {
+        assert_eq!(loudness_gain(-20.0, 0.0, -14.0, -1.0), None);
+        assert_eq!(loudness_gain(-120.0, 0.5, -14.0, -1.0), None);
+    }
+
+    /// The ceiling of normalize_lufs is kept with the sample peak. This breaks if the analyzer's true-peak estimate
+    /// ever goes above the sample peak: then the bounce has to use that estimate instead.
+    #[test]
+    fn sample_peak_matches_the_analyzer_true_peak() {
+        let sr = 44100usize;
+        let mut left: Vec<f32> = (0..sr).map(|i| 0.5 * (2.0 * std::f32::consts::PI * 997.0 * i as f32 / sr as f32).sin()).collect();
+        let mut right = left.clone();
+        left[10000] = 0.9;
+        right[20000] = -0.95;
+        let mut a = crate::Analyzer::new(sr as f32);
+        a.push(&left, &right);
+        let report = a.report();
+        let peak = sample_peak(&left, &right);
+        assert!((peak - 0.95).abs() < 1e-6);
+        assert_eq!(report.true_peak_dbtp, (ondina_dsp::util::gain_to_db(peak) * 10.0).round() / 10.0);
     }
 }
