@@ -301,6 +301,20 @@ pub enum Command {
     SetPatternRow { region_id: Id, row: usize, pattern: String },
     /// Add a row to a pattern region.
     AddPatternRow { region_id: Id, name: String, pitch: u8 },
+    /// Change a pattern row in place: rename it, change its MIDI pitch (the drum sound) or mute it (a muted row keeps its steps but does not play). Only the fields passed change; the steps stay as they are.
+    UpdatePatternRow {
+        region_id: Id,
+        /// Row index, from get_region.
+        row: usize,
+        /// New name (surrounding spaces are trimmed; must not be empty).
+        name: Option<String>,
+        /// MIDI pitch 0..127 (General MIDI drums: 36 kick, 38 snare, 39 clap, 42 closed hat, 46 open hat, 49 crash, 51 ride).
+        pitch: Option<u8>,
+        /// true mutes the row, false unmutes it.
+        muted: Option<bool>,
+    },
+    /// Delete a row of a pattern region together with its steps. The rows after it move up one index, so read get_region again before the next edit by row index. Deleting the last row leaves an empty pattern that add_pattern_row can fill again.
+    RemovePatternRow { region_id: Id, row: usize },
     /// Set pattern swing 0..1.
     SetPatternSwing { region_id: Id, swing: f32 },
     /// Convert a pattern region into a regular MIDI region.
