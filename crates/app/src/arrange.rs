@@ -59,6 +59,33 @@ pub enum ChordTarget {
     Existing(Id),
 }
 
+/// The text fields open in place over the arrangement and in the inspector. They belong to the document they were
+/// opened on: ids start again from 1 in a new project, so a field left open would edit a different object.
+#[derive(Default)]
+pub struct InPlaceEdits {
+    pub marker_rename: Option<InPlaceRename>,
+    pub track_rename: Option<InPlaceRename>,
+    pub region_rename: Option<InPlaceRename>,
+    /// The selected region's name as typed in the inspector, with the region it was typed for.
+    pub region_name_edit: Option<(Id, String)>,
+    pub chord_edit: Option<ChordEdit>,
+}
+
+impl InPlaceEdits {
+    /// Closes every field without applying what was typed.
+    pub fn clear(&mut self) {
+        *self = InPlaceEdits::default();
+    }
+
+    /// Closes every field when the project shown (`shown`, a `Session::document`) was replaced by another one
+    /// (`fresh`), whoever opened or created it.
+    pub fn follow_document(&mut self, shown: u64, fresh: u64) {
+        if shown != fresh {
+            self.clear();
+        }
+    }
+}
+
 impl OndinaApp {
     pub fn beat_to_x(&self, beat: f64, origin: f32) -> f32 {
         origin + ((beat - self.scroll_beat) as f32) * self.px_per_beat
@@ -398,7 +425,7 @@ impl OndinaApp {
             if ghost {
                 painter.rect_stroke(r, Rounding::same(2.0_f32), Stroke::new(1.5_f32, theme::SELECT));
             }
-            if self.marker_rename.as_ref().is_some_and(|e| e.id == m.id) {
+            if self.edits.marker_rename.as_ref().is_some_and(|e| e.id == m.id) {
                 rename_rect = Some(r);
             } else {
                 painter.text(
@@ -457,7 +484,7 @@ impl OndinaApp {
                 });
             }
             if resp.double_clicked() {
-                self.marker_rename = Some(InPlaceRename {
+                self.edits.marker_rename = Some(InPlaceRename {
                     id: m.id,
                     text: m.name.clone(),
                     focus: true,
@@ -495,7 +522,7 @@ impl OndinaApp {
         }
         // Rename field, registered last so it sits on top of the lane. A marker that scrolled out of
         // view, was deleted or undone away drops the edit.
-        let target = self.marker_rename.take().and_then(|ren| {
+        let target = self.edits.marker_rename.take().and_then(|ren| {
             let old = p.markers.iter().find(|m| m.id == ren.id)?.name.clone();
             Some((ren, old, rename_rect?))
         });
@@ -503,7 +530,7 @@ impl OndinaApp {
             // computed first: the call below borrows ui mutably
             let edit_id = ui.id().with(("mrename", ren.id));
             match rename_field(ui, edit_id, r, FontId::proportional(11.0), &mut ren.text, &mut ren.focus) {
-                RenameEdit::Editing => self.marker_rename = Some(ren),
+                RenameEdit::Editing => self.edits.marker_rename = Some(ren),
                 RenameEdit::Commit => {
                     if let Some(name) = rename_commit(&old, &ren.text) {
                         self.cmd(Command::UpdateMarker {
@@ -544,7 +571,7 @@ impl OndinaApp {
             if let Some(pp) = cresp.interact_pointer_pos() {
                 let pb = self.x_to_beat(pp.x, timeline_x);
                 if let Some((beat, length)) = new_chord_span(pb, self.snap, bpb, &p.chords) {
-                    self.chord_edit = Some(ChordEdit {
+                    self.edits.chord_edit = Some(ChordEdit {
                         target: ChordTarget::New { beat, length },
                         text: String::new(),
                         focus: true,
@@ -565,7 +592,7 @@ impl OndinaApp {
             if ghost {
                 painter.rect_stroke(r, Rounding::same(2.0_f32), Stroke::new(1.5_f32, theme::SELECT));
             }
-            if !self.chord_edit.as_ref().is_some_and(|e| e.target == ChordTarget::Existing(c.id)) {
+            if !self.edits.chord_edit.as_ref().is_some_and(|e| e.target == ChordTarget::Existing(c.id)) {
                 painter.text(
                     pos2(r.left() + 4.0, r.center().y),
                     Align2::LEFT_CENTER,
@@ -621,7 +648,7 @@ impl OndinaApp {
             }
             // not when a drag started on this same frame
             if resp.double_clicked() && !start_move && !start_resize {
-                self.chord_edit = Some(ChordEdit {
+                self.edits.chord_edit = Some(ChordEdit {
                     target: ChordTarget::Existing(c.id),
                     text: c.symbol.clone(),
                     focus: true,
@@ -632,7 +659,7 @@ impl OndinaApp {
             let symbol = &c.symbol;
             resp.context_menu(|ui| {
                 if ui.button("Edit chord").clicked() {
-                    self.chord_edit = Some(ChordEdit {
+                    self.edits.chord_edit = Some(ChordEdit {
                         target: ChordTarget::Existing(cid),
                         text: symbol.clone(),
                         focus: true,
@@ -648,7 +675,7 @@ impl OndinaApp {
         }
         // Chord field, registered last so it sits on top of the lane. A chord that scrolled out of view, was
         // deleted or undone away drops the edit, and so does a new chord whose place is out of view.
-        let target = self.chord_edit.take().and_then(|edit| {
+        let target = self.edits.chord_edit.take().and_then(|edit| {
             let r = chord_field_rect(edit.target, &p.chords, cgeom)?;
             let old = match edit.target {
                 ChordTarget::Existing(id) => Some(p.chords.iter().find(|c| c.id == id)?.symbol.clone()),
@@ -666,7 +693,7 @@ impl OndinaApp {
                 }
             };
             match rename_field(ui, edit_id, r, FontId::proportional(11.0), &mut edit.text, &mut edit.focus) {
-                RenameEdit::Editing => self.chord_edit = Some(edit),
+                RenameEdit::Editing => self.edits.chord_edit = Some(edit),
                 RenameEdit::Commit => {
                     let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
                     match chord_commit(old.as_deref(), &edit.text, p.key) {
@@ -687,14 +714,14 @@ impl OndinaApp {
                             if enter {
                                 edit.focus = true;
                                 edit.invalid = true;
-                                self.chord_edit = Some(edit);
+                                self.edits.chord_edit = Some(edit);
                             }
                         }
                     }
                 }
                 RenameEdit::Cancel => {}
             }
-            if self.chord_edit.as_ref().is_some_and(|e| e.invalid) {
+            if self.edits.chord_edit.as_ref().is_some_and(|e| e.invalid) {
                 let fr = Rect::from_min_size(r.min, vec2(r.width().max(120.0), r.height()));
                 painter.rect_stroke(fr, Rounding::same(2.0_f32), Stroke::new(1.5_f32, theme::REC));
             }
@@ -870,7 +897,7 @@ impl OndinaApp {
                 );
                 let clip =
                     rect.intersect(Rect::from_min_max(pos2(timeline_x, tracks_top), full.max));
-                let renaming = self.region_rename.as_ref().is_some_and(|e| e.id == r.id);
+                let renaming = self.edits.region_rename.as_ref().is_some_and(|e| e.id == r.id);
                 if renaming {
                     region_rename_rect = region_name_field(rect, region_area);
                 }
@@ -1064,7 +1091,7 @@ impl OndinaApp {
                 let rtid = t.id;
                 body_resp.context_menu(|ui| {
                     if ui.button("Rename…").clicked() {
-                        self.region_rename = Some(InPlaceRename { id: rid, text: rname.clone(), focus: true });
+                        self.edits.region_rename = Some(InPlaceRename { id: rid, text: rname.clone(), focus: true });
                         self.selected_region = Some(rid);
                         self.selected_track = Some(rtid);
                         // open the field on this frame: region_rename_rect was decided before the menu
@@ -1128,20 +1155,17 @@ impl OndinaApp {
 
         // Track name field, registered after every header so it sits on top. A track that scrolled out of
         // view, was deleted or undone away drops the edit.
-        let target = self.track_rename.take().and_then(|ren| {
-            let old = p.track(ren.id)?.name.clone();
-            Some((ren, old, track_rename_rect?))
+        let target = self.edits.track_rename.take().and_then(|ren| {
+            p.track(ren.id)?;
+            Some((ren, track_rename_rect?))
         });
-        if let Some((mut ren, old, r)) = target {
+        if let Some((mut ren, r)) = target {
             let edit_id = ui.id().with(("trename", ren.id));
             match rename_field(ui, edit_id, r, FontId::proportional(12.5), &mut ren.text, &mut ren.focus) {
-                RenameEdit::Editing => self.track_rename = Some(ren),
+                RenameEdit::Editing => self.edits.track_rename = Some(ren),
                 RenameEdit::Commit => {
-                    if let Some(name) = rename_commit(&old, &ren.text) {
-                        self.cmd(Command::RenameTrack {
-                            track_id: ren.id,
-                            name,
-                        });
+                    if let Some(c) = track_rename_command(&ren, &p) {
+                        self.cmd(c);
                     }
                 }
                 RenameEdit::Cancel => {}
@@ -1150,14 +1174,14 @@ impl OndinaApp {
 
         // Region name field, registered after every region so it sits on top. A region that scrolled out of
         // view, was deleted or undone away drops the edit.
-        let target = self.region_rename.take().and_then(|ren| {
+        let target = self.edits.region_rename.take().and_then(|ren| {
             let old = p.find_region(ren.id)?.1.name.clone();
             Some((ren, old, region_rename_rect?))
         });
         if let Some((mut ren, old, r)) = target {
             let edit_id = ui.id().with(("rrename", ren.id));
             match rename_field(ui, edit_id, r, FontId::proportional(10.5), &mut ren.text, &mut ren.focus) {
-                RenameEdit::Editing => self.region_rename = Some(ren),
+                RenameEdit::Editing => self.edits.region_rename = Some(ren),
                 RenameEdit::Commit => {
                     if let Some(c) = region_edit::name_command(ren.id, &old, &ren.text) {
                         self.cmd(c);
@@ -1524,7 +1548,7 @@ impl OndinaApp {
             pos2(if compact { name_right } else { rect.right() - 26.0 }, rect.top() + 22.0),
         );
         if resp.double_clicked() && resp.interact_pointer_pos().is_some_and(|pp| name_row.contains(pp)) {
-            self.track_rename = Some(InPlaceRename {
+            self.edits.track_rename = Some(InPlaceRename {
                 id: t.id,
                 text: t.name.clone(),
                 focus: true,
@@ -1546,7 +1570,7 @@ impl OndinaApp {
             TrackKind::Bus => "🔀",
         };
         // decided after the double-click above, so the field opens on the same frame
-        let renaming = self.track_rename.as_ref().is_some_and(|e| e.id == t.id);
+        let renaming = self.edits.track_rename.as_ref().is_some_and(|e| e.id == t.id);
         let name_pos = pos2(rect.left() + 10.0, rect.top() + 12.0);
         let mut field = None;
         if renaming {
@@ -1935,6 +1959,13 @@ pub(crate) fn rename_commit(old: &str, typed: &str) -> Option<String> {
     (!t.is_empty() && t != old).then(|| t.to_string())
 }
 
+/// The command Enter (or a click elsewhere) sends from the track name field: None when the track is gone or the
+/// name is empty or unchanged.
+fn track_rename_command(ren: &InPlaceRename, project: &Project) -> Option<Command> {
+    let old = &project.track(ren.id)?.name;
+    rename_commit(old, &ren.text).map(|name| Command::RenameTrack { track_id: ren.id, name })
+}
+
 /// What the user did with an in-place name field this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RenameEdit {
@@ -2016,12 +2047,12 @@ pub fn draw_meter(painter: &egui::Painter, r: Rect, m: [f32; 2]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        button_row_top, chord_commit, chord_field_rect, chord_span_rect, cycle_gesture_key, cycle_hit_zone, cycle_toggle, dragged_marker_beat,
+        button_row_top, chord_commit, chord_field_rect, chord_span_rect, cycle_gesture_key, track_rename_command, cycle_hit_zone, cycle_toggle, dragged_marker_beat,
         edge_scroll_speed, moved_cycle, new_chord_span, next_cycle_gesture, region_edge_width, region_hit_zone,
         rename_commit, resized_chord_length, resized_cycle, resized_marker_length, ruler_click_action,
         ruler_drag_action, track_drop_index, track_move_target, CycleZone, RegionZone, RulerClick, RulerDrag,
         CYCLE_EDGE_PX, HEADER_BUTTON_H, HEADER_FULL_H, MIN_CHORD_LEN, MIN_CYCLE_LEN, MIN_MARKER_LEN, REGION_EDGE_PX,
-        TRACK_DRAG_SCROLL_PX_S, ChordLaneGeom, ChordTarget, LANE_H,
+        TRACK_DRAG_SCROLL_PX_S, ChordEdit, ChordLaneGeom, ChordTarget, InPlaceEdits, InPlaceRename, LANE_H,
     };
     use crate::arrange_view::{TRACK_H_MAX, TRACK_H_MIN};
     use eframe::egui::{pos2, vec2, Rect};
@@ -2292,6 +2323,48 @@ mod tests {
             Some(Rect::from_min_size(pos2(210.0, 49.0), vec2(79.0, LANE_H - 2.0)))
         );
         assert_eq!(chord_field_rect(ChordTarget::New { beat: 60.0, length: 4.0 }, &chords, g), None);
+    }
+
+    #[test]
+    fn in_place_edits_close_when_the_project_is_replaced() {
+        let mut s = Session::new(false);
+        run(&mut s, "add_track", json!({"kind": "instrument", "name": "Bass"}));
+        let id = track_id(&s, "Bass");
+        let field = |text: &str| InPlaceRename { id, text: text.into(), focus: false };
+        let mut edits = InPlaceEdits {
+            marker_rename: Some(field("Verse")),
+            track_rename: Some(field("Lead")),
+            region_rename: Some(field("Take 2")),
+            region_name_edit: Some((id, "Take 2".into())),
+            chord_edit: Some(ChordEdit {
+                target: ChordTarget::New { beat: 0.0, length: 4.0 },
+                text: "Am".into(),
+                focus: false,
+                invalid: false,
+            }),
+        };
+        // an ordinary edit is the same document: the fields stay open
+        let shown = s.document;
+        run(&mut s, "set_tempo", json!({"bpm": 100}));
+        edits.follow_document(shown, s.document);
+        assert!(edits.track_rename.is_some() && edits.chord_edit.is_some());
+
+        let shown = s.document;
+        run(&mut s, "new_project", json!({}));
+        run(&mut s, "add_track", json!({"kind": "instrument", "name": "Drums"}));
+        // ids start again in the new project: the old field would rename the new track
+        assert_eq!(track_id(&s, "Drums"), id);
+        assert!(track_rename_command(edits.track_rename.as_ref().unwrap(), &s.project).is_some());
+
+        edits.follow_document(shown, s.document);
+        assert!(edits.marker_rename.is_none());
+        assert!(edits.track_rename.is_none());
+        assert!(edits.region_rename.is_none());
+        assert!(edits.region_name_edit.is_none());
+        assert!(edits.chord_edit.is_none());
+        // Enter now has nothing to send, and the new track keeps its name
+        assert!(edits.track_rename.as_ref().and_then(|r| track_rename_command(r, &s.project)).is_none());
+        assert_eq!(track_names(&s), ["Drums"]);
     }
 
     #[test]
