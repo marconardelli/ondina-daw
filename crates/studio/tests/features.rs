@@ -223,6 +223,29 @@ fn new_project_stops_the_transport_and_returns_to_the_start() {
 }
 
 #[test]
+fn transport_changes_are_visible_in_get_transport_at_once() {
+    let mut s = Session::new(false);
+    for i in 0..100 {
+        let beat = (i % 9 * 4 + 1) as f64;
+        ok(&mut s, "set_playhead", json!({"beat": beat}));
+        let tr = ok(&mut s, "get_transport", json!({}));
+        assert_eq!(tr["beat"].as_f64().unwrap(), beat, "{i}: {tr}");
+    }
+    for i in 0..50 {
+        ok(&mut s, "play", json!({}));
+        assert_eq!(ok(&mut s, "get_transport", json!({}))["playing"], true, "play {i}");
+        ok(&mut s, "stop", json!({}));
+        assert_eq!(ok(&mut s, "get_transport", json!({}))["playing"], false, "stop {i}");
+    }
+    ok(&mut s, "play", json!({"from_beat": 8}));
+    let tr = ok(&mut s, "get_transport", json!({}));
+    assert_eq!(tr["playing"], true, "{tr}");
+    let b = tr["beat"].as_f64().unwrap();
+    assert!((8.0..9.0).contains(&b), "{tr}");
+    ok(&mut s, "stop", json!({}));
+}
+
+#[test]
 fn gui_open_during_a_recording_drops_the_take_instead_of_moving_it() {
     let mut s = Session::new(false);
     ok(&mut s, "set_count_in", json!({"bars": 0}));

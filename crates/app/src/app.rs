@@ -510,7 +510,7 @@ impl OndinaApp {
     }
 
     pub fn playing(&self) -> bool {
-        self.shared.playing.load(Ordering::Relaxed)
+        self.shared.is_playing()
     }
 
     pub fn recording(&self) -> bool {
