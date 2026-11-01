@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+pub mod denormal;
 pub mod drums;
 pub mod effects;
 pub mod midifx;
