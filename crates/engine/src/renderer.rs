@@ -890,14 +890,17 @@ impl Renderer {
         let click_on = project.metronome && (self.recording || !project.metronome_only_recording);
         if self.playing && (click_on || counting_in) && self.solo_override.is_none() && self.analyzers.is_none() {
             let click_gain = project.metronome_gain();
-            let beat_len = 4.0 / project.time_signature.denominator as f64;
-            let bar_len = project.time_signature.beats_per_bar();
+            // A time signature the commands refuse (0 beats, denominator 0) can still arrive in a project built in
+            // code: count it as 1 beat of a quarter note rather than divide by zero on the audio thread.
+            let beats_per_bar = i64::from(project.time_signature.numerator.max(1));
+            let beat_len = 4.0 / f64::from(project.time_signature.denominator.max(1));
+            let bar_len = beats_per_bar as f64 * beat_len;
             let start = if counting_in { -self.count_in_beats } else { b0 };
             for i in 0..frames {
                 let b = start + i as f64 * bps;
                 let prev = b - bps;
                 if (b / beat_len).floor() != (prev / beat_len).floor() || (i == 0 && (b / beat_len).fract().abs() < bps / beat_len) {
-                    let down = ((b.rem_euclid(bar_len)) / beat_len).round() as i64 % project.time_signature.numerator as i64 == 0;
+                    let down = ((b.rem_euclid(bar_len)) / beat_len).round() as i64 % beats_per_bar == 0;
                     self.click_env = 1.0;
                     self.click_freq = if down { 1600.0 } else { 1000.0 };
                 }
@@ -970,6 +973,26 @@ mod tests {
             e += l.iter().map(|x| x * x).sum::<f32>();
         }
         e
+    }
+
+    /// A project that skipped the checks at the boundary (built in code, or a file from an older version) must not
+    /// stop the audio thread: the metronome with 0 beats per bar and an empty tempo map used to panic.
+    #[test]
+    fn metronome_and_empty_tempo_map_never_panic_the_renderer() {
+        let mut p = Project::new("t");
+        p.metronome = true;
+        p.count_in_bars = 1;
+        p.time_signature = TimeSignature { numerator: 0, denominator: 0 };
+        p.tempo.points.clear();
+        let mut r = Renderer::new(48000.0, Arc::new(p), Arc::new(AudioPool::new()));
+        r.play();
+        let mut l = vec![0.0; 512];
+        let mut rr = vec![0.0; 512];
+        for _ in 0..(48000 / 512) {
+            r.render(&mut l, &mut rr);
+            assert!(l.iter().chain(&rr).all(|x| x.is_finite()));
+        }
+        assert!(r.beat > 0.0, "the transport did not move");
     }
 
     #[test]
