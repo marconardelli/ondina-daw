@@ -1109,17 +1109,25 @@ impl OndinaApp {
     /// `,` `.` move the playhead by a bar, with Shift to the previous or next marker; Ctrl+T splits the selected
     /// region at the playhead. Up/Down select the previous or next track unless the piano roll is moving the
     /// selected notes (`note_arrows`), M mutes and S solos the selected track, Shift+M adds a marker at the playhead.
-    /// Runs from `handle_keys` after the piano roll keys.
+    /// A shows or hides the automation view. Runs from `handle_keys` after the piano roll keys.
     fn transport_keys(&mut self, ctx: &egui::Context, note_arrows: bool) {
-        if !tk::keys_on(ctx.wants_keyboard_input(), self.musical_typing, self.drag.is_some()) {
+        let (text_focus, dragging) = (ctx.wants_keyboard_input(), self.drag.is_some());
+        if !tk::keys_on(text_focus, self.musical_typing, dragging) {
             return;
         }
-        let (jump, split, track) = ctx.input_mut(|i| {
-            let (mut jump, mut split, mut track) = (None, false, None);
+        let musical_typing = self.musical_typing;
+        let (jump, split, track, auto_toggle) = ctx.input_mut(|i| {
+            let (mut jump, mut split, mut track, mut auto_toggle) = (None, false, None, false);
             i.events.retain(|e| {
                 let egui::Event::Key { key, physical_key, pressed: true, repeat, modifiers } = e else {
                     return true;
                 };
+                if !auto_toggle
+                    && crate::automation_lane::view_toggle(text_focus, musical_typing, dragging, *key, *repeat, *modifiers)
+                {
+                    auto_toggle = true;
+                    return false;
+                }
                 if jump.is_none() {
                     if let Some(j) = tk::jump_from_key(*key, *physical_key, *modifiers) {
                         jump = Some(j);
@@ -1138,8 +1146,12 @@ impl OndinaApp {
                 }
                 true
             });
-            (jump, split, track)
+            (jump, split, track, auto_toggle)
         });
+        if auto_toggle {
+            self.automation.on = !self.automation.on;
+            self.status = if self.automation.on { "Automation view on" } else { "Automation view off" }.into();
+        }
         if let Some(j) = jump {
             let pos = self.position();
             let to = tk::jump_target(&self.view.project, pos, j, self.playing());
@@ -1668,6 +1680,8 @@ impl OndinaApp {
                 ui.checkbox(&mut self.extra.show_video, "Movie window");
                 ui.checkbox(&mut self.extra.show_score, "Score view in editor");
                 ui.checkbox(&mut self.follow_playhead, "Follow playhead");
+                ui.checkbox(&mut self.automation.on, "Show Automation")
+                    .on_hover_text("A: show each track's volume, pan or other automation over its regions");
                 ui.separator();
                 use crate::arrange_view::{can_step, ViewStep};
                 let wheel_zoom = "Ctrl+wheel over the tracks zooms around the pointer";
