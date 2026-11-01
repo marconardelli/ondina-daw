@@ -81,7 +81,7 @@ pub enum Command {
     SetCountIn { bars: u32 },
     /// Get transport state: playing, recording, playhead position (beats, bar.beat.tick, seconds), cycle, metronome, metronome_level_db, metronome_only_while_recording, sample rate, dsp_load (share of the audio block time the last block used) and dsp_overloads (audio blocks since the last Play that took longer than the audio device allows; each one can be heard as a click).
     GetTransport {},
-    /// Get what the user has selected in the Ondina window: the selected track, the selected region and up to 256 selected notes of that region (each with its index, pitch, name, start and length in beats from the region start, velocity), plus the playhead and the cycle range. To act on "the notes I selected", pass the note index values as `indices` to quantize_notes, transpose_notes, humanize_notes, set_note_velocities, snap_notes_to_key, add_harmony or remove_notes. Indices refer to the region as it is now: read the selection again after editing the region, and compare pitch and start if in doubt. selected_note_count is the real number of selected notes and can be larger than the list. A headless session has no window: track and region are null and notes is empty.
+    /// Get what the user has selected in the Ondina window: the selected track, the selected region and up to 256 selected notes of that region (each with its index, pitch, name, start and length in beats from the region start, velocity), plus the playhead and the cycle range. To act on "the notes I selected", pass the note index values as `indices` to quantize_notes, transpose_notes, humanize_notes, set_note_velocities, set_note_lengths, snap_notes_to_key, add_harmony or remove_notes. Indices refer to the region as it is now: read the selection again after editing the region, and compare pitch and start if in doubt. selected_note_count is the real number of selected notes and can be larger than the list. A headless session has no window: track and region are null and notes is empty.
     GetSelection {},
     /// Get what happened in this Ondina session since you last looked, newest last: the edits the user made in the Ondina window (source "gui"), the tools called by MCP clients ("mcp"), the built-in assistant's tool calls ("ai") and scripts ("script"). Each entry has seq, source, command (the tool name), ok, mutating (whether the command changes the project), message (a short summary of the result or the error; it can contain file paths that the user or a client chose), count (how many steps of one continuous gesture, such as a fader drag, the entry stands for) and seconds_ago. Save latest_seq and pass it as `since` next time to get only newer entries; without `since` you get the latest `limit` entries. truncated is true when entries after `since` are missing from the list (the session keeps the last 500, `limit` cut the list, or `since` is larger than latest_seq because Ondina was restarted): read get_project again. revision grows with every change to the project, also changes that leave no entry (knob moves in native plug-in windows); document changes when open_project or new_project replaced the project and session_id changes when Ondina restarts: if either differs from what you saw, ids you remembered may no longer exist. Calls to get_activity are not listed. The selection and the playhead are not listed: read them with get_selection and get_transport.
     GetActivity {
@@ -248,6 +248,17 @@ pub enum Command {
     HumanizeNotes { region_id: Id, timing: Option<f64>, velocity: Option<i32>, seed: Option<u64>, indices: Option<Vec<usize>> },
     /// Set velocities: fixed value, or scale factor, for all or given notes.
     SetNoteVelocities { region_id: Id, velocity: Option<u8>, scale: Option<f32>, indices: Option<Vec<usize>> },
+    /// Change the lengths of notes in a MIDI region (all, or the given indices). Starts and pitches never change, so the notes keep their order and their indices. mode "legato": each note lasts until the start of the next chosen note that starts later; chosen notes starting less than 1/32 beat after the first note of a group count as one chord and end together; the last group keeps its lengths. "no_overlap": a chosen note is cut where any note of the same pitch starts again in the region. "fixed": every chosen note lasts `length` beats. "scale": every chosen length is multiplied by `factor` (0.5 halves, 2 doubles). No note is made shorter than 1/64 beat, and a lengthened note stops at the end of the region (a note already past it keeps its length). Returns `changed` (how many notes got a new length), `note_count` and, when indices were given, the same `indices`. Indices past the last note are ignored.
+    SetNoteLengths {
+        region_id: Id,
+        /// "legato", "no_overlap", "fixed" or "scale".
+        mode: NoteLengthMode,
+        /// New length in beats for mode "fixed" (1 = a quarter note, 0.25 = 1/16). Ignored by the other modes.
+        length: Option<f64>,
+        /// Multiplier for mode "scale" (0.5 = half as long, 2 = twice as long). Ignored by the other modes.
+        factor: Option<f64>,
+        indices: Option<Vec<usize>>,
+    },
     /// Move notes of a region (all, or the given indices) to the nearest pitch in the project key. Indices past the last note are ignored.
     SnapNotesToKey { region_id: Id, indices: Option<Vec<usize>> },
     /// Add a harmony voice to notes of a MIDI region (all, or the given indices): each note gets a copy with the same start and length and 85% of its velocity, `interval` above it (below with below=true) in the project key. In a seven-note key "3rd", "5th" and "6th" count scale steps, so the voice stays in the key (C major, 3rd above: C->E, E->G, B->D); a note outside the key starts from the nearest scale note. In pentatonic, blues and chromatic keys the copy goes to the scale note nearest to the major interval. "octave" is always 12 semitones. A copy identical to a note already there (same pitch and start) is not added (already_present), nor one outside MIDI 0..127 (out_of_range). Notes are re-sorted by time afterwards; the result's `indices` lists where the added notes ended up (ascending), ready to pass to transpose_notes, set_note_velocities or remove_notes. Indices past the last note are ignored.
@@ -550,6 +561,16 @@ pub struct NoteOps {
     /// Quantize starts to this grid (beats).
     pub quantize: Option<f64>,
     pub delete: Option<bool>,
+}
+
+/// How set_note_lengths changes the notes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteLengthMode {
+    Legato,
+    NoOverlap,
+    Fixed,
+    Scale,
 }
 
 impl Command {

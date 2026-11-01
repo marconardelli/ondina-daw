@@ -4,7 +4,7 @@
 
 use serde_json::{json, Value};
 
-use crate::command::{CcPoint, Command};
+use crate::command::{CcPoint, Command, NoteLengthMode};
 use crate::generate::{self, TimedChord};
 use crate::model::*;
 use crate::plugins::{self, PluginCategory};
@@ -294,6 +294,61 @@ fn with_indices(mut v: Value, asked: bool, indices: Vec<usize>) -> Value {
         v["indices"] = json!(indices);
     }
     v
+}
+
+/// The shortest length `set_note_lengths` gives a note: 1/64 of a beat.
+const MIN_NOTE_LENGTH: f64 = 1.0 / 64.0;
+/// For legato, chosen notes that start less than this (beats) after the first note of a group are one chord:
+/// a chord played live is never exactly together.
+const LEGATO_CHORD_WINDOW: f64 = 1.0 / 32.0;
+
+/// The length a note gets when `set_note_lengths` asks for `wanted`: never under the minimum, and a note that grows
+/// stops at the end of the region (the renderer cuts it there anyway); a note already past the end keeps its length.
+fn fit_length(old: f64, wanted: f64, start: f64, region_len: f64) -> f64 {
+    let l = wanted.max(MIN_NOTE_LENGTH);
+    if l <= old {
+        return l;
+    }
+    l.min((region_len - start).max(old))
+}
+
+/// The new length of every note for `set_note_lengths`; notes outside `mask` keep theirs. `notes` is sorted by
+/// start, as a region keeps it; `value` is the length of "fixed" or the factor of "scale".
+fn new_note_lengths(notes: &[Note], mask: &[bool], mode: NoteLengthMode, value: f64, region_len: f64) -> Vec<f64> {
+    let mut out: Vec<f64> = notes.iter().map(|n| n.length).collect();
+    let chosen: Vec<usize> = (0..notes.len()).filter(|&i| mask[i]).collect();
+    let fit = |i: usize, wanted: f64| fit_length(notes[i].length, wanted, notes[i].start, region_len);
+    match mode {
+        NoteLengthMode::Legato => {
+            // (start of the group's first note, notes of the group)
+            let mut groups: Vec<(f64, Vec<usize>)> = Vec::new();
+            for &i in &chosen {
+                match groups.last_mut() {
+                    Some((first, g)) if notes[i].start - *first < LEGATO_CHORD_WINDOW => g.push(i),
+                    _ => groups.push((notes[i].start, vec![i])),
+                }
+            }
+            for w in groups.windows(2) {
+                for &i in &w[0].1 {
+                    out[i] = fit(i, w[1].0 - notes[i].start);
+                }
+            }
+        }
+        NoteLengthMode::NoOverlap => {
+            for &i in &chosen {
+                let n = notes[i];
+                // Sorted by start: the first later note of the same pitch is the one that cuts.
+                if let Some(m) = notes[i + 1..].iter().find(|m| m.pitch == n.pitch && m.start > n.start + 1e-9) {
+                    if n.start + n.length > m.start {
+                        out[i] = fit(i, m.start - n.start);
+                    }
+                }
+            }
+        }
+        NoteLengthMode::Fixed => chosen.iter().for_each(|&i| out[i] = fit(i, value)),
+        NoteLengthMode::Scale => chosen.iter().for_each(|&i| out[i] = fit(i, notes[i].length * value)),
+    }
+    out
 }
 
 pub fn default_drum_rows(steps: u32) -> Vec<PatternRow> {
@@ -1357,6 +1412,32 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             }
             ok(json!({"ok": true}))
         }
+        SetNoteLengths { region_id, mode, length, factor, indices } => {
+            let positive = |v: Option<f64>, msg: &str| match v {
+                Some(x) if x.is_finite() && x > 0.0 => Ok(x),
+                _ => Err(msg.to_string()),
+            };
+            let value = match mode {
+                NoteLengthMode::Fixed => positive(*length, "mode \"fixed\" needs length: the new length in beats, more than 0")?,
+                NoteLengthMode::Scale => positive(*factor, "mode \"scale\" needs factor: a multiplier more than 0")?,
+                NoteLengthMode::Legato | NoteLengthMode::NoOverlap => 0.0,
+            };
+            let r = region_mut(project, *region_id)?;
+            let region_len = r.length;
+            let RegionContent::Midi(m) = &mut r.content else { return err("region is not a MIDI region") };
+            let mask = note_mask(m.notes.len(), indices.as_deref());
+            let lengths = new_note_lengths(&m.notes, &mask, *mode, value, region_len);
+            let mut changed = 0;
+            for (n, l) in m.notes.iter_mut().zip(lengths) {
+                if (n.length - l).abs() > 1e-9 {
+                    n.length = l;
+                    changed += 1;
+                }
+            }
+            // Starts and pitches stay, so the order and every index stay too.
+            let kept: Vec<usize> = (0..mask.len()).filter(|&i| mask[i]).collect();
+            ok(with_indices(json!({"changed": changed, "note_count": m.notes.len()}), indices.is_some(), kept))
+        }
         SnapNotesToKey { region_id, indices } => {
             let key = project.key;
             let m = midi_mut(project, *region_id)?;
@@ -1990,6 +2071,157 @@ mod tests {
         assert_eq!(v["indices"], json!([0, 1]));
         let pitches: Vec<u8> = notes_of(&p, rid).iter().map(|n| n.pitch).collect();
         assert_eq!(pitches, vec![60, 62, 63, 66]);
+    }
+
+    fn lengths(c: NoteLengthMode, region_id: Id, length: Option<f64>, factor: Option<f64>, indices: Option<Vec<usize>>) -> Command {
+        Command::SetNoteLengths { region_id, mode: c, length, factor, indices }
+    }
+
+    fn note(pitch: u8, start: f64, length: f64) -> Note {
+        Note { pitch, velocity: 100, start, length }
+    }
+
+    fn lens(p: &Project, rid: Id) -> Vec<f64> {
+        notes_of(p, rid).iter().map(|n| n.length).collect()
+    }
+
+    #[test]
+    fn set_note_lengths_legato_reaches_the_next_start() {
+        let (mut p, rid) = midi_region(&[note(60, 0.0, 1.0), note(62, 2.0, 0.5), note(64, 4.0, 0.5)]);
+        let v = run(&mut p, lengths(NoteLengthMode::Legato, rid, None, None, None));
+        assert_eq!(v, json!({"changed": 2, "note_count": 3}));
+        assert_eq!(lens(&p, rid), vec![2.0, 2.0, 0.5]);
+    }
+
+    #[test]
+    fn set_note_lengths_legato_ends_a_chord_together() {
+        let (mut p, rid) = midi_region(&[note(60, 0.0, 0.5), note(64, 0.0, 1.5), note(67, 0.0, 3.0), note(65, 2.0, 0.5)]);
+        run(&mut p, lengths(NoteLengthMode::Legato, rid, None, None, None));
+        assert_eq!(lens(&p, rid), vec![2.0, 2.0, 2.0, 0.5]);
+        // a chord played live is never exactly together: it still ends together
+        let (mut q, rid2) = midi_region(&[note(60, 0.0, 0.3), note(64, 0.01, 0.3), note(67, 0.02, 0.3), note(62, 1.0, 0.5)]);
+        run(&mut q, lengths(NoteLengthMode::Legato, rid2, None, None, None));
+        let after = notes_of(&q, rid2);
+        for n in &after[..3] {
+            assert!((n.start + n.length - 1.0).abs() < 1e-9, "note {} ends at {}", n.pitch, n.start + n.length);
+        }
+        assert_eq!(after[3].length, 0.5);
+    }
+
+    #[test]
+    fn set_note_lengths_legato_looks_only_at_the_chosen_notes() {
+        let start = [note(60, 0.0, 0.5), note(72, 1.0, 0.5), note(62, 2.0, 0.5), note(64, 3.0, 0.5)];
+        let (mut p, rid) = midi_region(&start);
+        let v = run(&mut p, lengths(NoteLengthMode::Legato, rid, None, None, Some(vec![0, 2])));
+        assert_eq!(lens(&p, rid), vec![2.0, 0.5, 0.5, 0.5]);
+        assert_eq!(v["changed"], json!(1));
+        assert_eq!(v["indices"], json!([0, 2]));
+        // duplicates, order and indices past the end do not matter
+        let (mut q, rid2) = midi_region(&start);
+        let w = run(&mut q, lengths(NoteLengthMode::Legato, rid2, None, None, Some(vec![2, 0, 0, 99])));
+        assert_eq!(lens(&q, rid2), vec![2.0, 0.5, 0.5, 0.5]);
+        assert_eq!(w["indices"], json!([0, 2]));
+    }
+
+    #[test]
+    fn set_note_lengths_no_overlap_cuts_only_the_same_pitch() {
+        let start = [note(60, 0.0, 2.0), note(64, 0.5, 3.0), note(60, 1.0, 0.5), note(67, 4.0, 1.0)];
+        let (mut p, rid) = midi_region(&start);
+        let v = run(&mut p, lengths(NoteLengthMode::NoOverlap, rid, None, None, None));
+        assert_eq!(lens(&p, rid), vec![1.0, 3.0, 0.5, 1.0]);
+        assert_eq!(v["changed"], json!(1));
+        // the note that starts again cuts even when it is not chosen
+        let (mut q, rid2) = midi_region(&start);
+        let v = run(&mut q, lengths(NoteLengthMode::NoOverlap, rid2, None, None, Some(vec![0])));
+        assert_eq!(lens(&q, rid2), vec![1.0, 3.0, 0.5, 1.0]);
+        assert_eq!(v["indices"], json!([0]));
+        // only the chosen notes change
+        let (mut q, rid2) = midi_region(&start);
+        let v = run(&mut q, lengths(NoteLengthMode::NoOverlap, rid2, None, None, Some(vec![1, 2])));
+        assert_eq!(lens(&q, rid2), vec![2.0, 3.0, 0.5, 1.0]);
+        assert_eq!(v["changed"], json!(0));
+        // a note that ends exactly where the same pitch starts again stays
+        let (mut q, rid2) = midi_region(&[note(60, 0.0, 1.0), note(60, 1.0, 0.5)]);
+        let v = run(&mut q, lengths(NoteLengthMode::NoOverlap, rid2, None, None, None));
+        assert_eq!(lens(&q, rid2), vec![1.0, 0.5]);
+        assert_eq!(v["changed"], json!(0));
+    }
+
+    #[test]
+    fn set_note_lengths_fixed_and_scale_keep_the_minimum() {
+        let start = [note(60, 0.0, 0.5), note(62, 1.0, 0.5)];
+        let (mut p, rid) = midi_region(&start);
+        let v = run(&mut p, lengths(NoteLengthMode::Fixed, rid, Some(0.001), None, None));
+        assert_eq!(lens(&p, rid), vec![1.0 / 64.0, 1.0 / 64.0]);
+        assert_eq!(v["changed"], json!(2));
+        let (mut q, rid2) = midi_region(&start);
+        run(&mut q, lengths(NoteLengthMode::Scale, rid2, None, Some(0.01), None));
+        assert_eq!(lens(&q, rid2), vec![1.0 / 64.0, 1.0 / 64.0]);
+        let (mut q, rid2) = midi_region(&start);
+        run(&mut q, lengths(NoteLengthMode::Scale, rid2, None, Some(2.0), None));
+        assert_eq!(lens(&q, rid2), vec![1.0, 1.0]);
+        run(&mut q, lengths(NoteLengthMode::Fixed, rid2, Some(0.25), None, None));
+        assert_eq!(lens(&q, rid2), vec![0.25, 0.25]);
+    }
+
+    #[test]
+    fn set_note_lengths_stop_at_the_region_end() {
+        let mut p = Project::new("t");
+        let t = run(&mut p, Command::AddTrack { kind: TrackKind::Instrument, name: None, patch: None, instrument: None, preset: None, index: None });
+        let tid = t["track_id"].as_u64().unwrap();
+        let notes = vec![note(64, 2.0, 3.0), note(60, 3.0, 0.5), note(62, 5.0, 0.5)];
+        let r = run(&mut p, Command::CreateMidiRegion { track_id: tid, start: 0.0, length: 4.0, name: None, notes: Some(notes) });
+        let rid = r["region_id"].as_u64().unwrap();
+        // 64 is already past the end and keeps its length; 60 stops at 4; 62 is past the end and does not grow
+        let v = run(&mut p, lengths(NoteLengthMode::Fixed, rid, Some(8.0), None, None));
+        assert_eq!(lens(&p, rid), vec![3.0, 1.0, 0.5]);
+        assert_eq!(v["changed"], json!(1));
+        // shortening is always possible
+        run(&mut p, lengths(NoteLengthMode::Scale, rid, None, Some(0.5), None));
+        assert_eq!(lens(&p, rid), vec![1.5, 0.5, 0.25]);
+        // a looped region: one repeat counts, not the whole looped length
+        let mut props = region_color_props(rid, None, None);
+        if let Command::SetRegionProperties { loop_count, .. } = &mut props {
+            *loop_count = Some(3);
+        }
+        run(&mut p, props);
+        run(&mut p, lengths(NoteLengthMode::Fixed, rid, Some(8.0), None, None));
+        assert_eq!(lens(&p, rid), vec![2.0, 1.0, 0.25]);
+    }
+
+    #[test]
+    fn set_note_lengths_keeps_order_and_indices() {
+        let start = [note(60, 0.0, 1.0), note(64, 0.0, 2.0), note(67, 0.01, 0.1), note(60, 0.5, 1.0), note(72, 0.5, 0.05), note(62, 3.0, 0.25)];
+        let modes = [
+            (NoteLengthMode::Legato, None, None),
+            (NoteLengthMode::NoOverlap, None, None),
+            (NoteLengthMode::Fixed, Some(0.75), None),
+            (NoteLengthMode::Scale, None, Some(1.5)),
+        ];
+        let rest = |p: &Project, rid: Id| notes_of(p, rid).iter().map(|n| (n.pitch, n.start, n.velocity)).collect::<Vec<_>>();
+        for (mode, length, factor) in modes {
+            let (mut p, rid) = midi_region(&start);
+            let before = rest(&p, rid);
+            run(&mut p, lengths(mode, rid, length, factor, None));
+            assert_eq!(rest(&p, rid), before, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn set_note_lengths_rejects_missing_or_bad_values() {
+        let (mut p, rid) = midi_region(&[note(60, 0.0, 0.5), note(62, 1.0, 0.5)]);
+        let before = notes_of(&p, rid);
+        for length in [None, Some(0.0), Some(-1.0), Some(f64::NAN)] {
+            assert!(apply(&mut p, &lengths(NoteLengthMode::Fixed, rid, length, None, None)).is_err(), "{length:?}");
+        }
+        for factor in [None, Some(0.0), Some(f64::INFINITY)] {
+            assert!(apply(&mut p, &lengths(NoteLengthMode::Scale, rid, None, factor, None)).is_err(), "{factor:?}");
+        }
+        assert_eq!(notes_of(&p, rid), before);
+        let tid = p.tracks.iter().find(|t| t.kind == TrackKind::Instrument).unwrap().id;
+        let pr = run(&mut p, Command::CreatePatternRegion { track_id: tid, start: 8.0, steps: None, step_length: None, rows: None, name: None });
+        assert!(apply(&mut p, &lengths(NoteLengthMode::Legato, pr["region_id"].as_u64().unwrap(), None, None, None)).is_err());
+        assert!(apply(&mut p, &lengths(NoteLengthMode::Legato, 9999, None, None, None)).is_err());
     }
 
     fn harmony(region_id: Id, interval: theory::HarmonyInterval, below: Option<bool>, indices: Option<Vec<usize>>) -> Command {
