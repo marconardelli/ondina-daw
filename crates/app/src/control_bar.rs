@@ -42,6 +42,56 @@ impl BottomTab {
     }
 }
 
+/// Shorter labels of the bottom panel choices, for a narrow window.
+pub const BOTTOM_SHORT: [&str; 4] = ["Editor", "Mixer", "Clips", "Hide"];
+
+/// What the control bar shows at a given width. On a narrow window the least important items are compacted or left
+/// out one at a time (see [`bar_fit`]), so nothing ever overlaps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BarFit {
+    /// The "Typing" word before the octave of Musical Typing.
+    pub typing_word: bool,
+    /// The Musical Typing indicator at all.
+    pub typing: bool,
+    pub dsp: bool,
+    pub snap_label: bool,
+    /// "Assistant" after the assistant's icon.
+    pub assistant_text: bool,
+    /// The bottom panel choices with their short labels.
+    pub short_tabs: bool,
+    /// The SMPTE field of the LCD (only with a movie).
+    pub smpte: bool,
+    /// The TIME field of the LCD.
+    pub time: bool,
+    /// The bottom panel choices at all (they are also in the View menu).
+    pub tabs: bool,
+}
+
+/// How many steps of [`bar_fit`] there are after the full bar.
+pub const BAR_FIT_STEPS: usize = 9;
+
+/// The bar after `level` steps of compacting, least important first: the Typing word, the DSP meter, the Snap
+/// caption, the assistant's text, the short panel labels, SMPTE, TIME, the Typing indicator, the panel choices.
+pub fn bar_fit(level: usize) -> BarFit {
+    BarFit {
+        typing_word: level < 1,
+        dsp: level < 2,
+        snap_label: level < 3,
+        assistant_text: level < 4,
+        short_tabs: level >= 5,
+        smpte: level < 6,
+        time: level < 7,
+        typing: level < 8,
+        tabs: level < 9,
+    }
+}
+
+/// The first level whose bar needs no more than `avail` points (`need` measures a bar); the last level when even that
+/// does not fit.
+pub fn fit_level(avail: f32, need: impl Fn(BarFit) -> f32) -> usize {
+    (0..=BAR_FIT_STEPS).find(|l| need(bar_fit(*l)) <= avail).unwrap_or(BAR_FIT_STEPS)
+}
+
 /// The bottom panel after picking `choice` in the segmented control: one panel at a time, whatever was open before.
 pub fn pick_bottom(_current: BottomTab, choice: usize) -> BottomTab {
     BottomTab::from_index(choice)
@@ -147,7 +197,7 @@ pub fn load_color(load: f32) -> Color32 {
 
 const LCD_HEIGHT: f32 = 40.0;
 const FIELD_PAD: f32 = 10.0;
-const FIELD_LINE: Color32 = Color32::from_rgb(0x1E, 0x22, 0x26);
+const FIELD_LINE: Color32 = theme::LCD_DIVIDER;
 const POS_W: f32 = 146.0;
 const TIME_W: f32 = 100.0;
 const SMPTE_W: f32 = 118.0;
@@ -172,7 +222,7 @@ fn lcd_field(ui: &mut Ui, width: f32, label: &str, sense: Sense, last: bool) -> 
     if ui.is_rect_visible(rect) {
         let p = ui.painter();
         if resp.hovered() && sense != Sense::hover() {
-            p.rect_filled(rect.shrink(2.0), Rounding::same(theme::R_SM), Color32::from_rgb(0x14, 0x17, 0x1A));
+            p.rect_filled(rect.shrink(2.0), Rounding::same(theme::R_SM), theme::LCD_HOVER);
         }
         p.text(
             pos2(rect.left() + FIELD_PAD, rect.bottom() - 5.0),
@@ -214,44 +264,85 @@ impl OndinaApp {
             bar_divider(ui);
             self.transport_buttons(ui, &p);
             ui.add_space(theme::SP_4);
-            self.lcd(ui, &p);
+            let level = fit_level(ui.available_width(), |f| self.lcd_width(&p, f) + self.right_width(ui, f));
+            let fit = bar_fit(level);
+            self.lcd(ui, &p, fit);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = theme::SP_4;
-                self.dsp_meter(ui);
-                let assistant = ToolButton::new(Icon::Ai)
-                    .text("Assistant")
+                ui.spacing_mut().item_spacing.x = RIGHT_GAP;
+                if fit.dsp {
+                    self.dsp_meter(ui);
+                }
+                let mut assistant = ToolButton::new(Icon::Ai)
                     .lit(self.show_assistant.then_some(ToolColors::AI))
                     .icon_color(if self.show_assistant { theme::AI_TEXT } else { theme::AI });
+                if fit.assistant_text {
+                    assistant = assistant.text("Assistant");
+                }
                 if ui.add(assistant).on_hover_text("Show or hide the AI assistant").clicked() {
                     self.show_assistant = !self.show_assistant;
                 }
-                let mut choice = self.bottom.index();
-                let labels: Vec<&str> = BOTTOM_CHOICES.iter().map(|(_, l)| *l).collect();
-                if widgets::segmented(ui, &mut choice, &labels)
-                    .on_hover_text("Bottom panel: Editor, Mixer, Clip Grid, or hidden")
-                    .changed()
-                {
-                    self.bottom = pick_bottom(self.bottom, choice);
+                if fit.tabs {
+                    let mut choice = self.bottom.index();
+                    let labels = bottom_labels(fit);
+                    if widgets::segmented(ui, &mut choice, &labels)
+                        .on_hover_text("Bottom panel: Editor, Mixer, Clip Grid, or hidden")
+                        .changed()
+                    {
+                        self.bottom = pick_bottom(self.bottom, choice);
+                    }
                 }
                 bar_divider(ui);
                 egui::ComboBox::from_id_salt("snap")
-                    .width(64.0)
+                    .width(SNAP_W)
                     .selected_text(crate::app::snap_label(self.snap))
                     .show_ui(ui, |ui| {
                         for s in [0.0, 4.0, 1.0, 0.5, 0.25, 0.125] {
                             ui.selectable_value(&mut self.snap, s, crate::app::snap_label(s));
                         }
-                    });
-                ui.label(egui::RichText::new("Snap").color(theme::TEXT_2));
-                if self.musical_typing {
+                    })
+                    .response
+                    .on_hover_text("Snap: the grid that moves, draws and the playhead keys follow");
+                if fit.snap_label {
+                    ui.label(egui::RichText::new("Snap").color(theme::TEXT_2));
+                }
+                if self.musical_typing && fit.typing {
                     ui.add_space(theme::SP_4);
-                    ui.label(
-                        egui::RichText::new(format!("Typing C{}", self.typing_octave)).color(theme::ACCENT),
-                    );
+                    let text = typing_text(self.typing_octave, fit.typing_word);
+                    ui.label(egui::RichText::new(text).color(theme::ACCENT))
+                        .on_hover_text("Musical Typing: the computer keyboard plays notes (Z and X change the octave)");
                     widgets::icon(ui, Icon::Piano, 14.0, theme::ACCENT);
                 }
             });
         });
+    }
+
+    /// Width of the LCD with the fields `fit` keeps.
+    fn lcd_width(&self, p: &Project, fit: BarFit) -> f32 {
+        let movie = p.movie.is_some() && fit.smpte;
+        POS_W + if fit.time { TIME_W } else { 0.0 } + if movie { SMPTE_W } else { 0.0 } + BPM_W + SIG_W + KEY_W
+    }
+
+    /// Width of the right side of the bar (snap, panel choices, assistant, DSP, Typing) with what `fit` keeps,
+    /// plus the least gap left between it and the LCD.
+    fn right_width(&self, ui: &Ui, fit: BarFit) -> f32 {
+        let text_w = |s: &str| ui.painter().layout_no_wrap(s.to_owned(), theme::body_font(), theme::TEXT).size().x;
+        let mut items: Vec<f32> = Vec::new();
+        if fit.dsp {
+            items.push(DSP_W);
+        }
+        items.push(if fit.assistant_text { 10.0 + 14.0 + theme::SP_3 + text_w("Assistant") + 10.0 } else { 34.0 });
+        if fit.tabs {
+            items.push(bottom_labels(fit).iter().map(|l| text_w(l) + 2.0 * theme::SP_5).sum::<f32>() + 4.0);
+        }
+        items.push(DIVIDER_W);
+        items.push(SNAP_W + 2.0 * ui.spacing().button_padding.x + ui.spacing().icon_width);
+        if fit.snap_label {
+            items.push(text_w("Snap"));
+        }
+        if self.musical_typing && fit.typing {
+            items.push(theme::SP_4 + text_w(&typing_text(self.typing_octave, fit.typing_word)) + RIGHT_GAP + 14.0);
+        }
+        items.iter().sum::<f32>() + RIGHT_GAP * items.len() as f32 + MIN_GAP
     }
 
     fn side_toggles(&mut self, ui: &mut Ui) {
@@ -345,10 +436,10 @@ impl OndinaApp {
         });
     }
 
-    fn lcd(&mut self, ui: &mut Ui, p: &Project) {
+    fn lcd(&mut self, ui: &mut Ui, p: &Project, fit: BarFit) {
         let pos = self.position();
-        let movie = p.movie.is_some();
-        let width = POS_W + TIME_W + if movie { SMPTE_W } else { 0.0 } + BPM_W + SIG_W + KEY_W;
+        let movie = p.movie.is_some() && fit.smpte;
+        let width = self.lcd_width(p, fit);
         let (rect, _) = ui.allocate_exact_size(vec2(width, LCD_HEIGHT), Sense::hover());
         ui.painter().rect(rect, Rounding::same(theme::R_XL), theme::LCD, Stroke::new(1.0_f32, theme::BORDER));
         let layout = egui::Layout::left_to_right(egui::Align::Center);
@@ -359,9 +450,11 @@ impl OndinaApp {
             let r = r.on_hover_text("Bar, beat, division (a quarter of the beat) and tick");
             lcd_value(ui, r.rect, &position_text(pos, p.time_signature), theme::lcd_font(), theme::ACCENT_TEXT, Align::Right);
             // time
-            let r = lcd_field(ui, TIME_W, "TIME", Sense::hover(), false);
-            let secs = p.tempo.beat_to_sec(pos);
-            lcd_value(ui, r.rect, &time_text(secs), value_font(14.0), theme::ICON, Align::Right);
+            if fit.time {
+                let r = lcd_field(ui, TIME_W, "TIME", Sense::hover(), false);
+                let secs = p.tempo.beat_to_sec(pos);
+                lcd_value(ui, r.rect, &time_text(secs), value_font(14.0), theme::ICON, Align::Right);
+            }
             if movie {
                 let r = lcd_field(ui, SMPTE_W, "SMPTE", Sense::hover(), false);
                 lcd_value(ui, r.rect, &p.timecode(pos), value_font(14.0), theme::ICON, Align::Right);
@@ -483,7 +576,7 @@ impl OndinaApp {
     fn dsp_meter(&mut self, ui: &mut Ui) {
         let load = self.shared.load().clamp(0.0, 1.0);
         let overloads = self.shared.overloads();
-        let (rect, resp) = ui.allocate_exact_size(vec2(58.0, 26.0), Sense::hover());
+        let (rect, resp) = ui.allocate_exact_size(vec2(DSP_W, 26.0), Sense::hover());
         if ui.is_rect_visible(rect) {
             let p = ui.painter();
             p.text(rect.left_top(), Align2::LEFT_TOP, "DSP", theme::label_font(), theme::TEXT_3);
@@ -514,8 +607,37 @@ impl OndinaApp {
     }
 }
 
+/// Width of the DSP meter.
+const DSP_W: f32 = 58.0;
+/// Width of a divider between groups of the bar.
+const DIVIDER_W: f32 = theme::SP_5 * 2.0 + 1.0;
+/// Width of the snap value box.
+const SNAP_W: f32 = 64.0;
+/// Gap between the items on the right of the bar.
+const RIGHT_GAP: f32 = theme::SP_4;
+/// Least room kept between the LCD and the right side of the bar.
+const MIN_GAP: f32 = theme::SP_5;
+
+/// The bottom panel labels the bar shows.
+fn bottom_labels(fit: BarFit) -> Vec<&'static str> {
+    if fit.short_tabs {
+        BOTTOM_SHORT.to_vec()
+    } else {
+        BOTTOM_CHOICES.iter().map(|(_, l)| *l).collect()
+    }
+}
+
+/// The Musical Typing indicator: "Typing C4", or only "C4" on a narrow bar.
+pub fn typing_text(octave: i32, word: bool) -> String {
+    if word {
+        format!("Typing C{octave}")
+    } else {
+        format!("C{octave}")
+    }
+}
+
 fn bar_divider(ui: &mut Ui) {
-    let (rect, _) = ui.allocate_exact_size(vec2(theme::SP_5 * 2.0 + 1.0, 28.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(DIVIDER_W, 28.0), Sense::hover());
     ui.painter().vline(rect.center().x, rect.y_range(), Stroke::new(1.0_f32, theme::BORDER));
 }
 
@@ -634,6 +756,51 @@ mod tests {
         assert!(side_lit(true, Library, Library));
         assert!(!side_lit(false, Library, Library));
         assert!(!side_lit(true, Inspector, Library));
+    }
+
+    #[test]
+    fn control_bar_drops_the_least_important_items_first() {
+        let full = bar_fit(0);
+        assert!(full.typing_word && full.dsp && full.snap_label && full.assistant_text && full.time && full.tabs);
+        assert!(!full.short_tabs);
+        // every step takes one more thing away, and what is gone stays gone
+        let score = |f: BarFit| {
+            [f.typing_word, f.dsp, f.snap_label, f.assistant_text, !f.short_tabs, f.smpte, f.time, f.typing, f.tabs]
+                .iter()
+                .filter(|x| **x)
+                .count()
+        };
+        for l in 0..BAR_FIT_STEPS {
+            assert_eq!(score(bar_fit(l)), score(bar_fit(l + 1)) + 1, "level {l}");
+        }
+        // the transport-related fields go last: TIME only after the DSP meter, the snap caption and the labels
+        let time_gone = (0..=BAR_FIT_STEPS).find(|l| !bar_fit(*l).time).unwrap();
+        let dsp_gone = (0..=BAR_FIT_STEPS).find(|l| !bar_fit(*l).dsp).unwrap();
+        assert!(dsp_gone < time_gone);
+        assert_eq!(BOTTOM_SHORT.len(), BOTTOM_CHOICES.len());
+    }
+
+    #[test]
+    fn control_bar_picks_the_fullest_bar_that_fits() {
+        // a bar that needs 100 points per item still shown
+        let need = |f: BarFit| {
+            100.0 * [f.typing_word, f.dsp, f.snap_label, f.assistant_text, !f.short_tabs, f.smpte, f.time, f.typing, f.tabs]
+                .iter()
+                .filter(|x| **x)
+                .count() as f32
+        };
+        assert_eq!(fit_level(10_000.0, need), 0);
+        assert_eq!(fit_level(900.0, need), 0);
+        assert_eq!(fit_level(899.0, need), 1);
+        assert_eq!(fit_level(450.0, need), 5);
+        // nothing fits: the most compact bar
+        assert_eq!(fit_level(10.0, need), BAR_FIT_STEPS);
+        for avail in [0.0_f32, 250.0, 520.0, 777.0, 1200.0] {
+            let l = fit_level(avail, need);
+            assert!(need(bar_fit(l)) <= avail || l == BAR_FIT_STEPS, "{avail}");
+        }
+        assert_eq!(typing_text(4, true), "Typing C4");
+        assert_eq!(typing_text(3, false), "C3");
     }
 
     #[test]
