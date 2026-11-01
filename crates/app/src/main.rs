@@ -35,6 +35,7 @@ mod session_players;
 mod step_paint;
 mod theme;
 mod transport_keys;
+mod widgets;
 
 use ondina_studio::{Session, Settings, Source};
 
