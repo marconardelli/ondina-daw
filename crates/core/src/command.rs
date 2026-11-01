@@ -197,7 +197,7 @@ pub enum Command {
     DeleteRegion { region_id: Id },
     /// Move a region in time and/or to another track.
     MoveRegion { region_id: Id, start: Option<f64>, track_id: Option<Id> },
-    /// Change a region's length in beats (MIDI notes beyond the end are kept but not played).
+    /// Change a region's length in beats (MIDI notes beyond the end are kept but not played). A pattern region keeps whole steps and can have at most 65536 steps: a longer length is refused.
     ResizeRegion { region_id: Id, length: f64 },
     /// Split a region at an absolute beat position. Returns the new right-hand region id.
     SplitRegion { region_id: Id, beat: f64 },
@@ -321,15 +321,15 @@ pub enum Command {
     ConvertPatternToMidi { region_id: Id },
 
     // ------------------------------------------------------------------ session players (generators)
-    /// Session drummer: generate a drum groove as a MIDI region on a (drum) instrument track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
+    /// Session drummer: generate a drum groove as a MIDI region on a (drum) instrument track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512.
     GenerateDrums { track_id: Id, start: f64, bars: u32, style: DrumStyle, intensity: Option<f32>, fill: Option<bool>, seed: Option<u64> },
-    /// Session bassist: generate a bass line following `chords` (one symbol per `beats_per_chord`, default one bar) or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
+    /// Session bassist: generate a bass line following `chords` (one symbol per `beats_per_chord`, default one bar) or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512. beats_per_chord is at least 0.25.
     GenerateBass { track_id: Id, start: f64, bars: u32, style: BassStyle, chords: Option<Vec<String>>, beats_per_chord: Option<f64>, octave: Option<i32>, seed: Option<u64> },
-    /// Session keyboard player: generate chord comping following `chords` or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
+    /// Session keyboard player: generate chord comping following `chords` or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512. beats_per_chord is at least 0.25.
     GenerateChords { track_id: Id, start: f64, bars: u32, style: CompStyle, chords: Option<Vec<String>>, beats_per_chord: Option<f64>, center_pitch: Option<u8>, seed: Option<u64> },
-    /// Generate an arpeggio following `chords` or the chord track. rate in beats (0.25 = 1/16). Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
+    /// Generate an arpeggio following `chords` or the chord track. rate in beats (0.25 = 1/16). Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512. beats_per_chord is at least 0.25.
     GenerateArpeggio { track_id: Id, start: f64, bars: u32, mode: ArpMode, rate: Option<f64>, octaves: Option<u32>, chords: Option<Vec<String>>, beats_per_chord: Option<f64>, center_pitch: Option<u8>, seed: Option<u64> },
-    /// Generate a melody in the project key over `chords` or the chord track. density 0..1. Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
+    /// Generate a melody in the project key over `chords` or the chord track. density 0..1. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512. beats_per_chord is at least 0.25.
     GenerateMelody { track_id: Id, start: f64, bars: u32, density: Option<f32>, octave: Option<i32>, chords: Option<Vec<String>>, beats_per_chord: Option<f64>, seed: Option<u64> },
 
     // ------------------------------------------------------------------ chord track
@@ -367,7 +367,7 @@ pub enum Command {
     InsertTime { at_beat: f64, length: f64 },
 
     // ------------------------------------------------------------------ import / export
-    /// Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed). After the end the render goes on until reverb and delay tails fade below about -90 dBFS (at least 2 s, at most 20 s: a sound that never fades, like a note held past the end or a noisy plug-in, stops at 20 s). tail_sec sets an exact tail instead: 0 cuts exactly at end, e.g. to export a loop. normalize=true scales the peak to -1 dBFS. normalize_lufs brings the integrated loudness to a target with one gain for the whole mix (no limiter), keeping the peak under true_peak_ceiling_db: the result's loudness reports gain_db, lufs_after, true_peak_after and target_reached (false when the ceiling stopped the gain: the mix needs a limiter, e.g. auto_master, to get that loud). The peak is the analyze_mix estimate; 16 and 24 bit dither can add about one LSB. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
+    /// Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed). After the end the render goes on until reverb and delay tails fade below about -90 dBFS (at least 2 s, at most 20 s: a sound that never fades, like a note held past the end or a noisy plug-in, stops at 20 s). tail_sec sets an exact tail instead: 0 cuts exactly at end, e.g. to export a loop. normalize=true scales the peak to -1 dBFS. normalize_lufs brings the integrated loudness to a target with one gain for the whole mix (no limiter), keeping the peak under true_peak_ceiling_db: the result's loudness reports gain_db, lufs_after, true_peak_after and target_reached (false when the ceiling stopped the gain: the mix needs a limiter, e.g. auto_master, to get that loud). The peak is the analyze_mix estimate; 16 and 24 bit dither can add about one LSB. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
     Bounce {
         path: String,
         start: Option<f64>,
@@ -383,7 +383,7 @@ pub enum Command {
         /// Peak ceiling for normalize_lufs in dBTP, -9 to 0 (default -1).
         true_peak_ceiling_db: Option<f32>,
     },
-    /// Render a track to audio and place it on a new audio track (bounce in place). The source track is muted. Reverb and delay tails are kept: the render goes on until they fade (at least 2 s, at most 20 s after the last region).
+    /// Render a track to audio and place it on a new audio track (bounce in place). The source track is muted. Reverb and delay tails are kept: the render goes on until they fade (at least 2 s, at most 20 s after the last region). A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
     BounceInPlace { track_id: Id },
     /// Export MIDI regions to a Standard MIDI File. The path must be a .mid or .midi file on a local drive (no network shares); .mid is added when the path has no extension.
     ExportMidi { path: String, track_ids: Option<Vec<Id>> },
@@ -391,7 +391,7 @@ pub enum Command {
     ImportMidi { path: String, at_beat: Option<f64> },
 
     // ------------------------------------------------------------------ analysis / mastering
-    /// Render offline and analyze: integrated loudness (LUFS), true-peak estimate, RMS, crest factor, stereo correlation, low/mid/high spectral balance for the master and each track. Use it to "listen" to the mix.
+    /// Render offline and analyze: integrated loudness (LUFS), true-peak estimate, RMS, crest factor, stereo correlation, low/mid/high spectral balance for the master and each track. Use it to "listen" to the mix. A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
     AnalyzeMix { start: Option<f64>, end: Option<f64> },
     /// Get live peak meters (dBFS) for every track and the master.
     GetMeters {},
@@ -447,13 +447,13 @@ pub enum Command {
     // ------------------------------------------------------------------ live loops
     /// Get the Live Loops grid: scenes, cells (per track/scene) and which cells are playing or queued.
     GetLiveLoops {},
-    /// Add a scene (row) to the Live Loops grid.
+    /// Add a scene (row) to the Live Loops grid. The grid has at most 256 scenes.
     AddScene { name: Option<String> },
     /// Rename a scene.
     RenameScene { scene: usize, name: String },
     /// Remove a scene and its cells.
     RemoveScene { scene: usize },
-    /// Create a Live Loops cell on a track and scene: empty MIDI (length in beats), with notes, or copied from an existing region.
+    /// Create a Live Loops cell on a track and scene: empty MIDI (length in beats), with notes, or copied from an existing region. scene is 0..255 (the grid has at most 256 scenes); missing scenes up to it are added.
     CreateLiveCell { track_id: Id, scene: usize, length: Option<f64>, notes: Option<Vec<Note>>, from_region_id: Option<Id>, name: Option<String> },
     /// Delete a Live Loops cell.
     DeleteLiveCell { cell_id: Id },
@@ -475,11 +475,11 @@ pub enum Command {
     SetSurroundFormat { format: SurroundFormat },
     /// Position a track in 3D space for surround/binaural mixing (azimuth degrees: 0 front, 90 right, -90 left, 180 rear). object=true makes it an audio object (object-based mixing, exported as an ADM object) instead of part of the bed. Animate positions with automation targets "surround:azimuth", "surround:elevation", "surround:spread".
     SetSurroundPan { track_id: Id, azimuth: f32, elevation: Option<f32>, spread: Option<f32>, object: Option<bool> },
-    /// Bounce a multichannel surround WAV (channel order L R C LFE Ls Rs, plus Lrs Rrs for 7.1, plus Ltf Rtf Ltr Rtr for 7.1.4). Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
+    /// Bounce a multichannel surround WAV (channel order L R C LFE Ls Rs, plus Lrs Rrs for 7.1, plus Ltf Rtf Ltr Rtr for 7.1.4). Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
     BounceSurround { path: String, format: Option<SurroundFormat> },
-    /// Bounce a binaural (headphone spatial audio) stereo WAV from the 3D positions. Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
+    /// Bounce a binaural (headphone spatial audio) stereo WAV from the 3D positions. Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
     BounceBinaural { path: String },
-    /// Export an ADM BWF master (ITU-R BS.2076 metadata in a BW64 file, 48 kHz / 24-bit), the interchange format used for Dolby Atmos deliveries: a 7.1.2 channel bed plus one audio object per object track, with time-varying positions from the surround automation. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
+    /// Export an ADM BWF master (ITU-R BS.2076 metadata in a BW64 file, 48 kHz / 24-bit), the interchange format used for Dolby Atmos deliveries: a 7.1.2 channel bed plus one audio object per object track, with time-varying positions from the surround automation. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
     ExportAdm { path: String, start: Option<f64>, end: Option<f64> },
 
     // ------------------------------------------------------------------ video
@@ -493,7 +493,7 @@ pub enum Command {
     SetFrameRate { fps: f64 },
     /// Extract the movie frame at a song position as an image (path ending in .png, .jpg or .jpeg; requires ffmpeg on PATH), so an agent can look at the picture.
     ExtractMovieFrame { path: String, beat: Option<f64> },
-    /// Export the movie with the bounced mix as soundtrack (path ending in .mp4, .mov, .mkv or .m4v; requires ffmpeg on PATH).
+    /// Export the movie with the bounced mix as soundtrack (path ending in .mp4, .mov, .mkv or .m4v; requires ffmpeg on PATH). A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
     ExportMovie { path: String },
 
     // ------------------------------------------------------------------ environment / MIDI transform

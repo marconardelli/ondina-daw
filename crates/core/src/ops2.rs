@@ -135,6 +135,9 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
         // ---------------------------------------------------------------- live loops (grid editing)
         AddScene { name } => {
             let n = project.live.scenes.len();
+            if n >= MAX_SCENES {
+                return Err(format!("the Live Loops grid already has the most scenes it can have ({MAX_SCENES})"));
+            }
             project.live.scenes.push(name.clone().unwrap_or_else(|| format!("Scene {}", n + 1)));
             ok(json!({"scene": n}))
         }
@@ -159,6 +162,9 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             let tkind = project.track(*track_id).ok_or("track not found")?.kind;
             if tkind == TrackKind::Bus {
                 return Err("cells need an instrument or audio track".into());
+            }
+            if *scene >= MAX_SCENES {
+                return Err(format!("scene {scene} is out of range: the Live Loops grid has at most {MAX_SCENES} scenes (0..{})", MAX_SCENES - 1));
             }
             while project.live.scenes.len() <= *scene {
                 let n = project.live.scenes.len();
@@ -409,8 +415,7 @@ fn pasted_region(project: &Project, track_id: Id, start: f64, region: &Region) -
             if !p.step_length.is_finite() {
                 return Err("pattern step length must be a finite number".into());
             }
-            // resize_region has no step limit, so a valid pattern keeps all its steps; the bound only stops a
-            // huge allocation from a hand-written region.
+            // the same bound as resize_region: a pattern made in Ondina always fits
             if p.steps > MAX_PATTERN_STEPS {
                 return Err(format!("a pattern can have at most {MAX_PATTERN_STEPS} steps"));
             }

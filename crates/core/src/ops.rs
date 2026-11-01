@@ -401,6 +401,12 @@ fn parse_step_string(s: &str, steps: usize) -> Vec<u8> {
 /// Resolve chords for generators: chord symbols or roman numerals, from `chords` or the chord track (when `chords`
 /// is None). Roman numerals on the chord track are read in the current project key.
 pub fn resolve_chords(project: &Project, start: f64, bars: u32, chords: &Option<Vec<String>>, beats_per_chord: Option<f64>) -> Result<Vec<TimedChord>, String> {
+    check_generated_bars(bars)?;
+    if let Some(per) = beats_per_chord {
+        if !per.is_finite() || per < MIN_BEATS_PER_CHORD {
+            return Err(format!("beats_per_chord must be at least {MIN_BEATS_PER_CHORD} beats"));
+        }
+    }
     let bpb = project.time_signature.beats_per_bar();
     let total = bars as f64 * bpb;
     if let Some(list) = chords {
@@ -467,6 +473,18 @@ pub fn resolve_chord_symbol(sym: &str, key: Key) -> Result<String, String> {
         }
     }
     err(format!("cannot parse chord '{s}'"))
+}
+
+/// Most bars one generator call writes.
+pub const MAX_GENERATED_BARS: u32 = 512;
+/// Shortest chord a generator follows (a sixteenth note): shorter ones would only multiply the work.
+pub const MIN_BEATS_PER_CHORD: f64 = 0.25;
+
+fn check_generated_bars(bars: u32) -> Result<(), String> {
+    if bars > MAX_GENERATED_BARS {
+        return Err(format!("bars must be at most {MAX_GENERATED_BARS} (got {bars}): generate a long part in pieces"));
+    }
+    Ok(())
 }
 
 fn put_generated_region(project: &mut Project, track_id: Id, start: f64, bars: u32, name: &str, notes: Vec<Note>) -> Result<Id, String> {
@@ -1207,7 +1225,16 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             ok(json!({"ok": true}))
         }
         ResizeRegion { region_id, length } => {
+            if !length.is_finite() {
+                return err("length must be a finite number of beats");
+            }
             let r = region_mut(project, *region_id)?;
+            if let RegionContent::Pattern(p) = &r.content {
+                let steps = (length.max(0.0625) / p.step_length).round();
+                if steps > f64::from(MAX_PATTERN_STEPS) {
+                    return Err(format!("a pattern can have at most {MAX_PATTERN_STEPS} steps: {length} beats would need {steps} steps of {} beats", p.step_length));
+                }
+            }
             r.length = length.max(0.0625);
             if let RegionContent::Pattern(p) = &mut r.content {
                 let steps = (r.length / p.step_length).round().max(1.0) as u32;
@@ -1589,9 +1616,10 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
 
         // generators
         GenerateDrums { track_id, start, bars, style, intensity, fill, seed } => {
+            check_generated_bars(*bars)?;
             let bpb = project.time_signature.beats_per_bar();
             let seed = seed_or_random(*seed);
-            let notes = generate::drums(*style, (*bars).clamp(1, 512), bpb, intensity.unwrap_or(0.5).clamp(0.0, 1.0), fill.unwrap_or(true), seed);
+            let notes = generate::drums(*style, (*bars).max(1), bpb, intensity.unwrap_or(0.5).clamp(0.0, 1.0), fill.unwrap_or(true), seed);
             let bars = (*bars).max(1);
             let id = put_generated_region(project, *track_id, *start, bars, &format!("Drums ({style:?})"), notes)?;
             ok(generated(id, seed, *start, bars))
