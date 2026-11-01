@@ -46,20 +46,13 @@ impl OndinaApp {
                 ui.label(RichText::new("Add an Anthropic API key (Settings ⚙ or ANTHROPIC_API_KEY) to use the built-in assistant. External agents can always drive Ondina through MCP.").small());
             });
         }
-        let engine = if self.settings.use_local() {
-            "local model (offline)".to_string()
-        } else {
-            self.settings.model()
-        };
-        ui.label(
-            RichText::new(format!(
-                "{} · {} tools · same API as MCP",
-                engine,
-                ondina_studio::mcp::tools().len()
-            ))
-            .small()
-            .color(theme::TEXT_DIM),
+        let caption = engine_caption(
+            self.settings.use_local(),
+            &self.settings.model(),
+            ondina_studio::local_ai::tool_count(),
+            ondina_studio::mcp::tools().len(),
         );
+        ui.label(RichText::new(caption).small().color(theme::TEXT_DIM));
         ui.separator();
         ui.horizontal_wrapped(|ui| {
             for (label, prompt) in QUICK {
@@ -165,5 +158,33 @@ impl OndinaApp {
                 self.cmd(ondina_core::Command::Undo {});
             }
         });
+    }
+}
+
+/// The line under the panel title: which engine answers and how many tools it is given.
+/// The local model gets a subset of the MCP tools, Claude gets all of them.
+fn engine_caption(local: bool, model: &str, local_tools: usize, all_tools: usize) -> String {
+    if local {
+        format!("local model (offline) · {local_tools} tools")
+    } else {
+        format!("{model} · {all_tools} tools · same API as MCP")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn engine_caption_counts_the_local_tools_when_offline() {
+        let caption = engine_caption(true, "claude-x", 45, 160);
+        assert_eq!(caption, "local model (offline) · 45 tools");
+        assert!(!caption.contains("160"));
+        assert!(!caption.contains("same API as MCP"));
+    }
+
+    #[test]
+    fn engine_caption_counts_all_tools_with_claude() {
+        assert_eq!(engine_caption(false, "claude-x", 45, 160), "claude-x · 160 tools · same API as MCP");
     }
 }
