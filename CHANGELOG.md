@@ -7,6 +7,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-01
+
+### Added
+
+- Piano roll: **Ctrl+D** with notes selected repeats them right after themselves instead of duplicating the whole
+  region. The copies start where the selection ends (rounded up to the snap grid, at most a beat; exact with snap
+  off), notes that would fall past the region end are dropped, and the copies become the new selection, so
+  pressing Ctrl+D again repeats the phrase again. Each repeat is a single Ctrl+Z. Also in **Edit > Repeat Selected
+  Notes**. Without selected notes, Ctrl+D still duplicates the region.
+
+### Changed
+
+- Session players from the track menu (right-click an empty spot on an instrument track) now fill the cycle when
+  it is on and the playhead is inside it; otherwise they start at the bar under the playhead and last the
+  **Length** chosen at the top of the menu (1, 2, 4, 8 or 16 bars). The menu entries show the length that will be
+  used.
+- Session Drummer: choose the **Intensity** (Soft, Medium, Hard) and add a **Fill at the end** of parts of two bars
+  or more. Length, intensity and fill are remembered while Ondina is open.
+- After generating a part, the status bar shows the part, its length and the seed, for example
+  "Drums (Pop), 8 bars, seed 1234". Each generation is a single Ctrl+Z.
+- The `generate_drums`, `generate_bass`, `generate_chords`, `generate_arpeggio` and `generate_melody` tools return
+  the seed they used, with the start and length in bars: the same seed with the same settings gives the same part
+  again, a different seed gives a variation.
+
 ## [0.18.0] - 2026-11-01
 
 ### Added
@@ -549,7 +573,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/marconardelli/ondina-daw/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/marconardelli/ondina-daw/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/marconardelli/ondina-daw/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/marconardelli/ondina-daw/compare/v0.15.2...v0.16.0
