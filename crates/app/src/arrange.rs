@@ -1218,12 +1218,12 @@ impl OndinaApp {
                         }
                     });
                     ui.separator();
-                    if ui.button("Split at playhead").clicked() {
+                    if ui.add(egui::Button::new("Split at playhead").shortcut_text("Ctrl+T")).clicked() {
                         let b = self.position();
                         self.cmd(Command::SplitRegion { region_id: rid, beat: b });
                         ui.close_menu();
                     }
-                    if ui.button("Duplicate").clicked() {
+                    if ui.add(egui::Button::new("Duplicate").shortcut_text("Ctrl+D")).clicked() {
                         self.cmd(Command::DuplicateRegion { region_id: rid, start: None, count: Some(1) });
                         ui.close_menu();
                     }
@@ -1244,7 +1244,7 @@ impl OndinaApp {
                         self.cmd(Command::ConvertPatternToMidi { region_id: rid });
                         ui.close_menu();
                     }
-                    if ui.button("Delete").clicked() {
+                    if ui.add(egui::Button::new("Delete").shortcut_text("Del")).clicked() {
                         self.cmd(Command::DeleteRegion { region_id: rid });
                         ui.close_menu();
                     }
