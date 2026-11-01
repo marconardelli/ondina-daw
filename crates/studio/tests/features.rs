@@ -2247,6 +2247,7 @@ fn failed_save_keeps_the_previous_project_byte_for_byte() {
     let before = std::fs::read(&song).unwrap();
     ok(&mut s, "add_track", json!({"kind": "instrument"}));
     std::fs::create_dir_all(dir.join("song.ondina.tmp")).unwrap();
+    ondina_studio::fs_safe::fail_next_temp_file_for_test();
     let e = call(&mut s, "save_project", json!({"path": song.display().to_string()})).unwrap_err();
     assert!(e.contains("cannot save"), "{e}");
     assert!(e.contains("nothing was overwritten"), "{e}");

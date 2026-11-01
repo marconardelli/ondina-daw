@@ -712,8 +712,9 @@ mod tests {
         let dir = test_dir("failed_tmp");
         let path = dir.join("s.ondina");
         write_atomic(&path, "old").unwrap();
-        // A folder where the temporary file should go: the write fails before touching the copy.
+        // The disk refuses the temporary file: the write fails before touching the copy.
         std::fs::create_dir_all(dir.join("s.ondina.tmp")).unwrap();
+        ondina_studio::fs_safe::fail_next_temp_file_for_test();
         assert!(write_atomic(&path, "new").is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
     }
