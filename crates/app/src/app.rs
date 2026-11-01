@@ -1856,7 +1856,7 @@ impl OndinaApp {
             if resp.clicked() {
                 self.cmd(metronome_ui::toggle(&p));
             }
-            resp.context_menu(|ui| {
+            crate::drag_cancel::menu_unless_dragging(&resp, self.drag.is_some(), |ui| {
                 ui.label("Click level");
                 let mut db = p.metronome_level_db;
                 if ui

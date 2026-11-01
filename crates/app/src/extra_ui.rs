@@ -112,7 +112,7 @@ impl OndinaApp {
                     if resp.clicked() {
                         self.cmd(Command::LaunchScene { scene: si });
                     }
-                    resp.context_menu(|ui| {
+                    crate::drag_cancel::menu_unless_dragging(&resp, self.drag.is_some(), |ui| {
                         if ui.button("Remove scene").clicked() {
                             self.cmd(Command::RemoveScene { scene: si });
                             ui.close_menu();
@@ -156,7 +156,7 @@ impl OndinaApp {
                                 if resp.clicked() {
                                     self.cmd(Command::LaunchCell { cell_id: cid });
                                 }
-                                resp.context_menu(|ui| {
+                                crate::drag_cancel::menu_unless_dragging(&resp, self.drag.is_some(), |ui| {
                                     if ui.button("Delete cell").clicked() {
                                         self.cmd(Command::DeleteLiveCell { cell_id: cid });
                                         ui.close_menu();

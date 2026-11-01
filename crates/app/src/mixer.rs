@@ -138,7 +138,7 @@ impl OndinaApp {
                         if resp.double_clicked() && is_vst3 {
                             self.open_vst3_window(pid, not_loaded.as_deref());
                         }
-                        resp.context_menu(|ui| {
+                        crate::drag_cancel::menu_unless_dragging(&resp, self.drag.is_some(), |ui| {
                             if is_vst3 && ui.button("Open plug-in window").clicked() {
                                 self.open_vst3_window(pid, not_loaded.as_deref());
                                 ui.close_menu();

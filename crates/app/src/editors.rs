@@ -548,7 +548,7 @@ impl OndinaApp {
                     ));
                 });
             }
-            if resp.double_clicked() || resp.secondary_clicked() {
+            if resp.double_clicked() || (resp.secondary_clicked() && self.drag.is_none()) {
                 self.cmd(Command::RemoveNotes {
                     region_id: rid,
                     indices: Some(vec![i]),
@@ -1124,7 +1124,7 @@ impl OndinaApp {
                         if name.clicked() {
                             self.preview_row(track.id, row.pitch);
                         }
-                        name.context_menu(|ui| {
+                        crate::drag_cancel::menu_unless_dragging(&name, self.drag.is_some(), |ui| {
                             ui.label(RichText::new(format!("{} · {} {}", row.name, row.pitch, note_name(row.pitch))).strong());
                             ui.separator();
                             if ui.button("Preview").clicked() {
@@ -1195,7 +1195,7 @@ impl OndinaApp {
                                     velocity: if on { 0 } else { PAINT_VELOCITY },
                                 });
                             }
-                            if resp.secondary_clicked() {
+                            if resp.secondary_clicked() && self.drag.is_none() {
                                 let nv = match *v {
                                     0 => 120,
                                     101..=127 => 90,
