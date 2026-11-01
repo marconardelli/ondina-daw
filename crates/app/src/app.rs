@@ -84,6 +84,8 @@ pub struct View {
     pub sample_rate: u32,
     pub device: String,
     pub midi_input: Option<String>,
+    /// VST3 plug-ins of the document that the engine does not load, by id, with the reason (`Session::unloaded_vst3`).
+    pub unloaded_vst3: HashMap<Id, String>,
 }
 
 pub enum Drag {
@@ -405,6 +407,7 @@ impl OndinaApp {
             sample_rate: s.engine.sample_rate(),
             device: s.engine.shared.device_name.lock().clone(),
             midi_input: s.midi_input_name.clone(),
+            unloaded_vst3: s.unloaded_vst3(),
         }
     }
 

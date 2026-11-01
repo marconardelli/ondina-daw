@@ -25,6 +25,16 @@ impl OndinaApp {
         });
     }
 
+    /// Double click on a VST3 slot of the strip: opens the plug-in's native window, or says in the status bar why it
+    /// cannot (the engine does not load it).
+    fn open_vst3_window(&mut self, plugin_id: Id, not_loaded: Option<&str>) {
+        if let Some(reason) = not_loaded {
+            self.status = format!("⚠ Plug-in not loaded: {reason}");
+            return;
+        }
+        self.exec(Command::OpenPluginEditor { plugin_id });
+    }
+
     fn channel_strip(
         &mut self,
         ui: &mut egui::Ui,
@@ -63,22 +73,26 @@ impl OndinaApp {
                     // instrument
                     if let Some(t) = track {
                         if let Some(inst) = &t.instrument {
-                            let label = plugins::find(&inst.kind).map(|i| i.name).unwrap_or("?");
-                            if ui
-                                .add_sized(
-                                    vec2(STRIP_W, 18.0),
-                                    egui::Button::new(
-                                        RichText::new(short(label, 15))
-                                            .small()
-                                            .color(theme::ACCENT),
-                                    ),
-                                )
-                                .clicked()
-                            {
+                            let label = plugins::plugin_label(inst);
+                            let not_loaded = self.view.unloaded_vst3.get(&inst.id).cloned();
+                            let mut txt = RichText::new(short(&label, 15)).small();
+                            txt = if not_loaded.is_some() {
+                                txt.color(theme::TEXT_DIM).strikethrough()
+                            } else {
+                                txt.color(theme::ACCENT)
+                            };
+                            let mut resp = ui.add_sized(vec2(STRIP_W, 18.0), egui::Button::new(txt));
+                            if let Some(tip) = slot_tooltip(&label, 15, not_loaded.as_deref()) {
+                                resp = resp.on_hover_text(tip);
+                            }
+                            if resp.clicked() {
                                 self.selected_track = Some(id);
                                 self.selected_plugin = Some(inst.id);
                                 self.left = LeftTab::Inspector;
                                 self.show_left = true;
+                            }
+                            if resp.double_clicked() && inst.kind == "vst3" {
+                                self.open_vst3_window(inst.id, not_loaded.as_deref());
                             }
                         } else {
                             ui.add_space(22.0);
@@ -89,13 +103,18 @@ impl OndinaApp {
                     // inserts
                     ui.label(RichText::new("Inserts").small().color(theme::TEXT_DIM));
                     for fx in &ch.inserts {
-                        let label = plugins::find(&fx.kind).map(|i| i.name).unwrap_or("?");
-                        let txt = RichText::new(short(label, 15)).small().color(if fx.bypass {
-                            theme::TEXT_DIM
+                        let label = plugins::plugin_label(fx);
+                        let not_loaded = self.view.unloaded_vst3.get(&fx.id).cloned();
+                        let is_vst3 = fx.kind == "vst3";
+                        let mut txt = RichText::new(short(&label, 15)).small();
+                        txt = if not_loaded.is_some() {
+                            txt.color(theme::TEXT_DIM).strikethrough()
+                        } else if fx.bypass {
+                            txt.color(theme::TEXT_DIM)
                         } else {
-                            Color32::WHITE
-                        });
-                        let resp = ui.add_sized(
+                            txt.color(Color32::WHITE)
+                        };
+                        let mut resp = ui.add_sized(
                             vec2(STRIP_W, 17.0),
                             egui::Button::new(txt).fill(if self.selected_plugin == Some(fx.id) {
                                 Color32::from_rgb(90, 70, 30)
@@ -103,6 +122,9 @@ impl OndinaApp {
                                 theme::LANE
                             }),
                         );
+                        if let Some(tip) = slot_tooltip(&label, 15, not_loaded.as_deref()) {
+                            resp = resp.on_hover_text(tip);
+                        }
                         if resp.clicked() {
                             self.selected_plugin = Some(fx.id);
                             if id != MASTER_ID {
@@ -113,7 +135,14 @@ impl OndinaApp {
                         }
                         let pid = fx.id;
                         let byp = fx.bypass;
+                        if resp.double_clicked() && is_vst3 {
+                            self.open_vst3_window(pid, not_loaded.as_deref());
+                        }
                         resp.context_menu(|ui| {
+                            if is_vst3 && ui.button("Open plug-in window").clicked() {
+                                self.open_vst3_window(pid, not_loaded.as_deref());
+                                ui.close_menu();
+                            }
                             if ui.button(if byp { "Enable" } else { "Bypass" }).clicked() {
                                 self.cmd(Command::SetPluginBypass {
                                     plugin_id: pid,
@@ -447,10 +476,51 @@ pub fn effect_menu(ui: &mut egui::Ui, mut on_pick: impl FnMut(&'static str)) {
     }
 }
 
+/// Hover text for a plug-in slot of the strip: the full name when `short` cut it to `max_chars`, and why the
+/// plug-in is not loaded. None when there is nothing to add.
+pub fn slot_tooltip(label: &str, max_chars: usize, not_loaded: Option<&str>) -> Option<String> {
+    let cut = label.chars().count() > max_chars;
+    match (cut, not_loaded) {
+        (false, None) => None,
+        (true, None) => Some(label.to_string()),
+        (false, Some(reason)) => Some(format!("Not loaded: {reason}")),
+        (true, Some(reason)) => Some(format!("{label}\nNot loaded: {reason}")),
+    }
+}
+
 pub fn short(s: &str, n: usize) -> String {
     if s.chars().count() > n {
         format!("{}…", s.chars().take(n - 1).collect::<String>())
     } else {
         s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slot_tooltip_is_empty_for_a_short_loaded_plugin() {
+        assert_eq!(slot_tooltip("Compressor", 15, None), None);
+    }
+
+    #[test]
+    fn slot_tooltip_shows_the_full_name_when_cut() {
+        assert_eq!(slot_tooltip("Valhalla VintageVerb", 15, None), Some("Valhalla VintageVerb".into()));
+        assert_eq!(slot_tooltip("Fifteen chars!!", 15, None), None);
+        assert_eq!(short("Fifteen chars!!", 15), "Fifteen chars!!");
+    }
+
+    #[test]
+    fn slot_tooltip_says_why_a_plugin_is_not_loaded() {
+        assert_eq!(
+            slot_tooltip("Foo", 15, Some("X is not a .vst3 plug-in bundle")),
+            Some("Not loaded: X is not a .vst3 plug-in bundle".into())
+        );
+        assert_eq!(
+            slot_tooltip("Valhalla VintageVerb", 15, Some("X is not a .vst3 plug-in bundle")),
+            Some("Valhalla VintageVerb\nNot loaded: X is not a .vst3 plug-in bundle".into())
+        );
     }
 }
