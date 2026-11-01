@@ -146,6 +146,13 @@ pub fn loop_local_beat(rel: f64, length: f64, loop_count: u32) -> f64 {
     }
 }
 
+/// Index of the pattern step under the playhead, `rel` beats after the region start, in whichever repeat of the
+/// region it falls; None before the region, after its last repeat, or with no step length.
+pub fn playing_pattern_step(rel: f64, length: f64, loop_count: u32, step_length: f64) -> Option<usize> {
+    let local = loop_local_beat(rel, length, loop_count);
+    (step_length > 0.0 && local >= 0.0 && local < length).then(|| (local / step_length) as usize)
+}
+
 /// New horizontal scroll when the playhead leaves the visible beats (or gets within `margin` beats of
 /// the right edge): the view jumps so the playhead sits `margin` beats from the left edge.
 pub fn follow_scroll(scroll: f64, beat: f64, visible: f64, margin: f64) -> Option<f64> {
@@ -343,6 +350,22 @@ mod tests {
         assert_eq!(loop_local_beat(-1.0, 4.0, 4), -1.0);
         assert_eq!(loop_local_beat(5.0, 4.0, 1), 5.0);
         assert_eq!(loop_local_beat(5.0, 0.0, 4), 5.0);
+    }
+
+    #[test]
+    fn playing_pattern_step_follows_the_repeats() {
+        // 4-beat pattern looped 4 times, sixteenth steps: 9.5 beats in is beat 1.5 of the third repeat
+        assert_eq!(playing_pattern_step(9.5, 4.0, 4, 0.25), Some(6));
+        assert_eq!(playing_pattern_step(0.0, 4.0, 4, 0.25), Some(0));
+        assert_eq!(playing_pattern_step(4.0, 4.0, 4, 0.25), Some(0));
+        assert_eq!(playing_pattern_step(15.9, 4.0, 4, 0.25), Some(15));
+        // after the last repeat and before the start there is no step
+        assert_eq!(playing_pattern_step(16.0, 4.0, 4, 0.25), None);
+        assert_eq!(playing_pattern_step(-0.1, 4.0, 4, 0.25), None);
+        // a region that does not loop works as before
+        assert_eq!(playing_pattern_step(3.99, 4.0, 1, 0.25), Some(15));
+        assert_eq!(playing_pattern_step(5.0, 4.0, 1, 0.25), None);
+        assert_eq!(playing_pattern_step(1.0, 4.0, 4, 0.0), None);
     }
 
     #[test]

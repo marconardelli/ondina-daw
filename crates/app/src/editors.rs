@@ -15,7 +15,8 @@ use crate::cc_lane::{self, CcStroke};
 use crate::note_clipboard as nc;
 use crate::note_selection;
 use crate::piano_roll_view::{
-    follow_scroll, initial_view, loop_local_beat, scroll_pitch, wheel_zoom, zoom_factor, zoom_pitch, zoom_time,
+    follow_scroll, initial_view, loop_local_beat, playing_pattern_step, scroll_pitch, wheel_zoom, zoom_factor,
+    zoom_pitch, zoom_time,
 };
 use crate::theme;
 
@@ -968,6 +969,12 @@ impl OndinaApp {
                 .small()
                 .color(theme::TEXT_DIM),
         );
+        // the step under the playhead, in whichever repeat of a looped pattern it is
+        let playing_step = if self.playing() {
+            playing_pattern_step(self.position() - region.start, region.length, region.loop_count, pt.step_length)
+        } else {
+            None
+        };
         egui::ScrollArea::both().show(ui, |ui| {
             egui::Grid::new(("steps", rid))
                 .spacing(vec2(3.0, 3.0))
@@ -1009,14 +1016,7 @@ impl OndinaApp {
                             let (rect, resp) =
                                 ui.allocate_exact_size(vec2(22.0, 20.0), Sense::click());
                             ui.painter().rect_filled(rect, Rounding::same(3.0_f32), col);
-                            let playing_step = {
-                                let rel = self.position() - region.start;
-                                rel >= 0.0
-                                    && rel < region.length
-                                    && ((rel / pt.step_length) as usize) == si
-                                    && self.playing()
-                            };
-                            if playing_step {
+                            if playing_step == Some(si) {
                                 ui.painter().rect_stroke(
                                     rect,
                                     Rounding::same(3.0_f32),
