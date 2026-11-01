@@ -7,6 +7,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-01
+
+### Added
+
+- Step sequencer: each row now has an **M** button to mute it. A muted row stays visible, greyed out, keeps its
+  steps and can still be edited, but it does not play and is left out of the region thumbnail and the MIDI export.
+- Step sequencer: the row-name menu gains **Mute** / **Unmute**, **Rename...** (type the new name in place, Enter
+  confirms, Esc cancels), **Sound** (pick one of the 25 Drum Kit sounds: name and note change together, steps and
+  mute stay) and **Delete row** (the rows below move up; an empty pattern can be filled again with **+ Row**).
+  Every change is a single Ctrl+Z.
+- The assistant and MCP clients can do the same with the new `update_pattern_row` (name, sound, mute) and
+  `remove_pattern_row` tools.
+
+### Changed
+
+- Bounce to a loudness target: **File > Bounce loudness** chooses Off, Peak -1 dB, -14 LUFS (streaming), -16 LUFS
+  or -23 LUFS (broadcast). With a LUFS target Ondina measures the mix and applies one gain to the whole song, with
+  no limiter, keeping peaks under -1 dBTP. If the mix is too dynamic to get there, the status bar says so: use the
+  Mastering Assistant to add a limiter.
+- The `bounce` tool takes `normalize_lufs` (-30 to -6) and `true_peak_ceiling_db` (-9 to 0, default -1) and
+  reports the gain applied, the loudness and true peak after, and whether the target was reached.
+
 ## [0.17.0] - 2026-11-01
 
 ### Added
@@ -527,7 +549,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/marconardelli/ondina-daw/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/marconardelli/ondina-daw/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/marconardelli/ondina-daw/compare/v0.15.2...v0.16.0
 [0.15.2]: https://github.com/marconardelli/ondina-daw/compare/v0.15.1...v0.15.2
