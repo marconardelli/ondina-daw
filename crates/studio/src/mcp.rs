@@ -43,7 +43,7 @@ Ondina is a digital audio workstation. Everything is controlled through tools th
 3. `set_chord_progression` (symbols or roman numerals) for the harmony.
 4. `add_track` with a `patch` from `list_patches` (e.g. "Pop Drum Kit", "Deep Sub Bass", "Lush Pad", "Stage Electric Piano", "Supersaw Lead").
 5. Fill tracks: session players `generate_drums`, `generate_bass`, `generate_chords`, `generate_arpeggio`, `generate_melody` — or write exact notes with `create_midi_region` / `add_notes`.
-6. Arrange: `add_marker` (with length for sections), `copy_section`, `duplicate_region`.
+6. Arrange: `add_marker` (with length for sections), `copy_section`, `duplicate_region`, `paste_region` (a region object from `get_project_json` onto any track of the same type).
 7. Mix: `set_volume`, `set_pan`, `add_effect`, buses + `add_send` for shared reverb/delay, `set_automation`.
 8. Listen: `analyze_mix` returns loudness, peaks, spectral balance and advice. `auto_master` builds a master chain.
 9. Deliver: `bounce` to WAV, `save_project`, `export_midi`.

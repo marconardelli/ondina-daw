@@ -16,7 +16,8 @@ Questa guida spiega come usare gli editor di Ondina con mouse, tastiera e menu.
 - Ctrl+C copia le note selezionate, Ctrl+X le taglia, Ctrl+V le incolla. Se il playhead è dentro la regione
   aperta, la prima nota va sul playhead (arrotondato alla griglia dello snap); altrimenti le note tornano alla
   posizione da cui le hai copiate, anche in un'altra regione. Le note che cadrebbero oltre la fine della regione
-  si scartano. Le note incollate restano selezionate. Ogni operazione si annulla con un solo Ctrl+Z.
+  si scartano. Le note incollate restano selezionate. Ogni operazione si annulla con un solo Ctrl+Z. Senza note
+  selezionate, Ctrl+C e Ctrl+X copiano la regione intera (vedi «Copiare, tagliare e incollare regioni»).
 - Le note copiate vanno anche negli appunti di Windows come testo (JSON), che puoi incollare nella chat
   dell'assistente. Se dopo aver copiato in Ondina copi un'immagine in un altro programma, Ctrl+V nel piano roll
   non fa nulla finché non copi di nuovo le note.
@@ -175,6 +176,33 @@ il nome di partenza viene dalla traccia o dal file importato.
 - Il doppio clic sulla regione apre l'editor, come prima.
 - L'assistente e i tool MCP usano `set_region_properties`: `color` vuoto o `"none"` toglie il colore
   della regione, e `get_region` riporta `color` solo se la regione ne ha uno.
+
+## Copiare, tagliare e incollare regioni
+
+- Seleziona una regione con un clic: **Ctrl+C** la copia, **Ctrl+X** la taglia (la toglie dall'arrangiamento). Le
+  stesse azioni sono nel menu **Edit**: *Copy Region*, *Cut Region* e *Paste Region*.
+- **Ctrl+V** incolla una copia al playhead, portato indietro alla linea della griglia dello snap (con lo snap spento
+  esattamente al playhead), sulla traccia selezionata. Per incollare su un'altra traccia fai clic su uno spazio vuoto
+  della sua corsia o sulla sua intestazione, poi Ctrl+V. Senza una traccia selezionata la copia va sulla traccia da
+  cui viene.
+- Le regioni MIDI e i pattern vanno su tracce instrument, le regioni audio su tracce audio. Su una traccia di altro
+  tipo la barra di stato lo dice e non cambia niente.
+- La copia porta con sé tutto: note, controller, testi, pattern, impostazioni audio (gain, dissolvenze, reverse),
+  nome, colore, ripetizioni, transpose e velocity offset. Diventa la regione selezionata e non fa parte di un gruppo
+  di take.
+- Puoi incollare più volte; due incolla nello stesso punto sovrappongono due copie.
+- Ogni taglio e ogni incolla si annulla con un solo Ctrl+Z.
+- Con note selezionate nel piano roll Ctrl+C e Ctrl+X copiano le note, come prima. Per copiare la regione intera
+  togli la selezione delle note (un clic oltre la fine della regione) o usa il menu Edit. Ctrl+V incolla l'ultima
+  cosa copiata, note o regione.
+- Gli appunti restano finché Ondina è aperto e non si salvano nel progetto. Una regione MIDI o un pattern si può
+  incollare anche dopo aver aperto un altro progetto; una regione audio no, perché il suo file appartiene al
+  progetto da cui l'hai copiata.
+- La regione copiata va anche negli appunti di Windows come testo (JSON), lo stesso oggetto che accetta il tool MCP
+  `paste_region`. Se dopo aver copiato in Ondina copi un'immagine in un altro programma, Ctrl+V non fa nulla finché
+  non copi di nuovo.
+- Ctrl+C, Ctrl+X e Ctrl+V funzionano anche con Musical Typing acceso; sono spenti mentre scrivi in un campo di testo
+  e durante un trascinamento.
 
 ## Dissolvenze delle regioni audio
 
@@ -449,7 +477,7 @@ l'assistente o un client MCP.
 | Ctrl+rotella | zoom orizzontale attorno al puntatore |
 | Maiusc+rotella | scorrimento orizzontale |
 | Ctrl+Maiusc+rotella | altezza delle tracce (nel piano roll: altezza dei tasti) |
-| Ctrl+C / Ctrl+X / Ctrl+V | copia / taglia / incolla le note (piano roll) |
+| Ctrl+C / Ctrl+X / Ctrl+V | copia / taglia / incolla le note selezionate nel piano roll, altrimenti la regione selezionata (incolla al playhead) |
 | Ctrl+A | seleziona tutte le note (piano roll) |
 | ← / → | sposta le note selezionate di un passo di snap |
 | ↑ / ↓, Maiusc+↑ / ↓ | trasporta le note selezionate di un semitono / un'ottava |
