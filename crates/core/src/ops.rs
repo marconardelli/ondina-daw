@@ -230,6 +230,11 @@ fn pattern_mut<'a>(p: &'a mut Project, id: Id) -> Result<&'a mut PatternContent,
     }
 }
 
+/// The error for a row index the pattern does not have.
+fn row_not_found(row: usize, rows: usize) -> String {
+    format!("row {row} not found: the pattern has {rows} rows")
+}
+
 fn clamp_note(n: &mut Note) {
     n.pitch = n.pitch.min(127);
     n.velocity = n.velocity.clamp(1, 127);
@@ -1521,6 +1526,42 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             p.rows.push(PatternRow { name: name.clone(), pitch: (*pitch).min(127), steps: vec![0; p.steps as usize], muted: false });
             ok(json!({"row": p.rows.len() - 1}))
         }
+        UpdatePatternRow { region_id, row, name, pitch, muted } => {
+            if name.is_none() && pitch.is_none() && muted.is_none() {
+                return err("nothing to change: pass name, pitch or muted");
+            }
+            let name = match name {
+                Some(n) if n.trim().is_empty() => return err("name must not be empty"),
+                Some(n) => Some(n.trim().to_string()),
+                None => None,
+            };
+            if let Some(p) = pitch {
+                if *p > 127 {
+                    return Err(format!("pitch {p} is out of range 0..127"));
+                }
+            }
+            let p = pattern_mut(project, *region_id)?;
+            let rows = p.rows.len();
+            let r = p.rows.get_mut(*row).ok_or_else(|| row_not_found(*row, rows))?;
+            if let Some(n) = name {
+                r.name = n;
+            }
+            if let Some(v) = pitch {
+                r.pitch = *v;
+            }
+            if let Some(m) = muted {
+                r.muted = *m;
+            }
+            ok(json!({"row": row, "name": r.name, "pitch": r.pitch, "muted": r.muted}))
+        }
+        RemovePatternRow { region_id, row } => {
+            let p = pattern_mut(project, *region_id)?;
+            if *row >= p.rows.len() {
+                return Err(row_not_found(*row, p.rows.len()));
+            }
+            let removed = p.rows.remove(*row);
+            ok(json!({"removed": {"name": removed.name, "pitch": removed.pitch}, "rows": p.rows.len()}))
+        }
         SetPatternSwing { region_id, swing } => {
             pattern_mut(project, *region_id)?.swing = swing.clamp(0.0, 1.0);
             ok(json!({"ok": true}))
@@ -2691,5 +2732,149 @@ mod tests {
         let v = run(&mut p, Command::ReplaceCc { region_id: rid, controller: 64, from_beat: Some(1.0), to_beat: None, events: pt(1.5, 0) });
         assert_eq!(v, json!({"removed": 1, "added": 1, "cc_count": 2}));
         assert_eq!(cc_of(&p, rid), vec![cc(0.0, 64, 127), cc(1.5, 64, 0)]);
+    }
+
+    /// A Drums instrument track with a default 16-step pattern; returns the project and the region id.
+    fn drum_pattern() -> (Project, Id) {
+        let mut p = Project::new("t");
+        let tid = add_track_named(&mut p, TrackKind::Instrument, "Drums");
+        let v = run(&mut p, Command::CreatePatternRegion { track_id: tid, start: 0.0, steps: Some(16), step_length: None, rows: None, name: None });
+        (p, v["region_id"].as_u64().unwrap())
+    }
+
+    fn pattern_of(p: &Project, rid: Id) -> PatternContent {
+        match &p.find_region(rid).unwrap().1.content {
+            RegionContent::Pattern(pt) => pt.clone(),
+            _ => panic!("not a pattern"),
+        }
+    }
+
+    /// (name, pitch, steps, muted) of every row.
+    fn row_fields(p: &Project, rid: Id) -> Vec<(String, u8, Vec<u8>, bool)> {
+        pattern_of(p, rid).rows.iter().map(|r| (r.name.clone(), r.pitch, r.steps.clone(), r.muted)).collect()
+    }
+
+    fn update_row(region_id: Id, row: usize, name: Option<&str>, pitch: Option<u8>, muted: Option<bool>) -> Command {
+        Command::UpdatePatternRow { region_id, row, name: name.map(String::from), pitch, muted }
+    }
+
+    /// Kick, Closed Hat and Open Hat with different steps.
+    fn fill_rows(p: &mut Project, rid: Id) {
+        for (row, pattern) in [(0, "x...x...x...x..."), (3, "o.o.o.o.o.o.o.o."), (4, "..x...x...x...x.")] {
+            run(p, Command::SetPatternRow { region_id: rid, row, pattern: pattern.into() });
+        }
+    }
+
+    #[test]
+    fn update_pattern_row_changes_only_the_fields_passed() {
+        let (mut p, rid) = drum_pattern();
+        fill_rows(&mut p, rid);
+        let before = row_fields(&p, rid);
+
+        let v = run(&mut p, update_row(rid, 3, None, None, Some(true)));
+        assert_eq!(v, json!({"row": 3, "name": "Closed Hat", "pitch": 42, "muted": true}));
+        let mut expected = before.clone();
+        expected[3].3 = true;
+        assert_eq!(row_fields(&p, rid), expected);
+
+        run(&mut p, update_row(rid, 3, Some("  Hats "), None, None));
+        expected[3].0 = "Hats".into();
+        assert_eq!(row_fields(&p, rid), expected);
+
+        run(&mut p, update_row(rid, 3, None, Some(44), None));
+        expected[3].1 = 44;
+        assert_eq!(row_fields(&p, rid), expected);
+
+        let v = run(&mut p, update_row(rid, 0, Some("Big Kick"), Some(35), Some(true)));
+        assert_eq!(v, json!({"row": 0, "name": "Big Kick", "pitch": 35, "muted": true}));
+        expected[0] = ("Big Kick".into(), 35, before[0].2.clone(), true);
+        assert_eq!(row_fields(&p, rid), expected);
+        for (after, b) in row_fields(&p, rid).iter().zip(&before) {
+            assert_eq!(after.2, b.2, "the steps never change");
+        }
+    }
+
+    #[test]
+    fn muted_pattern_row_is_left_out_of_the_notes() {
+        let (mut p, rid) = drum_pattern();
+        fill_rows(&mut p, rid);
+        let notes = pattern_to_notes(&pattern_of(&p, rid));
+        assert!(notes.iter().any(|n| n.pitch == 36) && notes.iter().any(|n| n.pitch == 42));
+
+        run(&mut p, update_row(rid, 3, None, None, Some(true)));
+        let muted = pattern_to_notes(&pattern_of(&p, rid));
+        assert!(muted.iter().any(|n| n.pitch == 36));
+        assert!(!muted.iter().any(|n| n.pitch == 42));
+
+        run(&mut p, update_row(rid, 3, None, None, Some(false)));
+        let back = pattern_to_notes(&pattern_of(&p, rid));
+        assert!(back.iter().any(|n| n.pitch == 36) && back.iter().any(|n| n.pitch == 42));
+        assert_eq!(back.len(), notes.len());
+    }
+
+    #[test]
+    fn pattern_row_commands_reject_bad_arguments() {
+        let (mut p, rid) = drum_pattern();
+        fill_rows(&mut p, rid);
+        let tid = p.find_region(rid).unwrap().0.id;
+        let midi = run(&mut p, Command::CreateMidiRegion { track_id: tid, start: 8.0, length: 4.0, name: None, notes: None })["region_id"].as_u64().unwrap();
+        let before = row_fields(&p, rid);
+        let error = |p: &mut Project, c: Command| match apply(p, &c) {
+            Err(e) => e,
+            Ok(_) => panic!("{c:?} should fail"),
+        };
+
+        assert_eq!(error(&mut p, update_row(rid, 8, None, None, Some(true))), "row 8 not found: the pattern has 8 rows");
+        assert_eq!(error(&mut p, Command::RemovePatternRow { region_id: rid, row: 8 }), "row 8 not found: the pattern has 8 rows");
+        assert!(error(&mut p, update_row(rid, 0, None, Some(128), None)).contains("pitch 128"));
+        assert!(error(&mut p, update_row(rid, 0, Some("   "), None, None)).contains("name"));
+        assert!(error(&mut p, update_row(rid, 0, None, None, None)).contains("nothing to change"));
+        assert!(error(&mut p, update_row(midi, 0, None, None, Some(true))).contains("not a pattern"));
+        assert!(error(&mut p, Command::RemovePatternRow { region_id: midi, row: 0 }).contains("not a pattern"));
+        error(&mut p, update_row(9999, 0, None, None, Some(true)));
+        error(&mut p, Command::RemovePatternRow { region_id: 9999, row: 0 });
+        assert_eq!(row_fields(&p, rid), before);
+    }
+
+    #[test]
+    fn remove_pattern_row_moves_the_later_rows_up() {
+        let (mut p, rid) = drum_pattern();
+        fill_rows(&mut p, rid);
+        let before = row_fields(&p, rid);
+        let shape = |p: &Project| {
+            let pt = pattern_of(p, rid);
+            (pt.steps, pt.step_length, pt.swing, p.find_region(rid).unwrap().1.length)
+        };
+        let shape_before = shape(&p);
+
+        let v = run(&mut p, Command::RemovePatternRow { region_id: rid, row: 3 });
+        assert_eq!(v, json!({"removed": {"name": "Closed Hat", "pitch": 42}, "rows": 7}));
+        let after = row_fields(&p, rid);
+        assert_eq!(after.len(), 7);
+        assert_eq!(after[..3], before[..3]);
+        assert_eq!(after[3..], before[4..]);
+        assert_eq!(after[3].0, "Open Hat");
+        assert_eq!(shape(&p), shape_before);
+    }
+
+    #[test]
+    fn remove_pattern_row_can_empty_the_pattern() {
+        let (mut p, rid) = drum_pattern();
+        fill_rows(&mut p, rid);
+        for _ in 0..8 {
+            run(&mut p, Command::RemovePatternRow { region_id: rid, row: 0 });
+        }
+        let pt = pattern_of(&p, rid);
+        assert!(pt.rows.is_empty());
+        assert_eq!(pt.steps, 16);
+        assert!(pattern_to_notes(&pt).is_empty());
+        assert!(matches!(p.find_region(rid).unwrap().1.content, RegionContent::Pattern(_)));
+        match apply(&mut p, &Command::RemovePatternRow { region_id: rid, row: 0 }) {
+            Err(e) => assert_eq!(e, "row 0 not found: the pattern has 0 rows"),
+            Ok(_) => panic!("an empty pattern has no row to remove"),
+        }
+        let v = run(&mut p, Command::AddPatternRow { region_id: rid, name: "Kick".into(), pitch: 36 });
+        assert_eq!(v, json!({"row": 0}));
+        assert_eq!(pattern_of(&p, rid).rows[0].steps, vec![0; 16]);
     }
 }

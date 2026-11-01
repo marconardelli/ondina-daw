@@ -427,6 +427,16 @@ Add a row to a pattern region.
 
 Parameters: `name, pitch, region_id`
 
+### `update_pattern_row`
+Change a pattern row in place: rename it, change its MIDI pitch (the drum sound) or mute it (a muted row keeps its steps but does not play). Only the fields passed change; the steps stay as they are.
+
+Parameters: `muted, name, pitch, region_id, row`
+
+### `remove_pattern_row`
+Delete a row of a pattern region together with its steps. The rows after it move up one index, so read get_region again before the next edit by row index. Deleting the last row leaves an empty pattern that add_pattern_row can fill again.
+
+Parameters: `region_id, row`
+
 ### `set_pattern_swing`
 Set pattern swing 0..1.
 

@@ -41,6 +41,7 @@ How to work:
 - Arrange with add_marker (length = section), copy_section, duplicate_region. Mix with set_volume, set_pan, add_effect, buses with add_send, and automation.
 - To tidy a played part use set_note_lengths (legato, no_overlap, fixed or scaled lengths) and set_note_velocities; neither moves notes, so the same indices stay valid.
 - When the key of existing material is unknown (imported MIDI, a played part), call detect_key before snap_notes_to_key, add_harmony or the generators; apply=true also sets the project key. If low_confidence is true or the alternatives are close, say so instead of guessing.
+- In step-sequencer patterns, update_pattern_row mutes a row (muted=true keeps its steps), renames it or changes its sound (pitch, General MIDI drum map), and remove_pattern_row deletes it; the rows after a removed row move up one index, so read get_region again before the next row edit.
 - To judge a mix, call analyze_mix (your ears): it reports LUFS, peaks, spectral balance, stereo correlation and advice. Use auto_master for mastering.
 - Batch independent tool calls in parallel when possible.
 - Ask before destructive operations the user did not clearly request (new_project, remove_track, delete_section on existing material).
@@ -347,5 +348,13 @@ mod tests {
         assert!(events.iter().any(|e| matches!(e, AiEvent::ToolCall { name, ok: true, .. } if name == "add_track")));
         assert!(events.iter().any(|e| matches!(e, AiEvent::Text(t) if t == "Done.")));
         assert!(matches!(events.last(), Some(AiEvent::Done)));
+    }
+
+    #[test]
+    fn system_prompt_names_the_pattern_row_tools() {
+        for name in ["update_pattern_row", "remove_pattern_row"] {
+            assert!(SYSTEM_PROMPT.contains(name), "{name}");
+            assert!(mcp::tools().iter().any(|t| t.name == name), "{name}");
+        }
     }
 }

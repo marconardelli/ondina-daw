@@ -139,13 +139,26 @@ per suono di batteria, una cella per step.
   veloce non salta celle. Le celle cambiano colore subito, il progetto cambia al rilascio: un Ctrl+Z annulla
   l'intero tratto. Le celle non toccate tengono la loro velocity; un tratto che non cambia nulla non lascia passi
   di undo. **Esc** col tasto ancora premuto annulla il tratto.
-- **Clic sul nome** della riga: suona il suono. **Clic destro sul nome**: menu con **Preview** e cinque
-  riempimenti che riscrivono la riga intera a velocity normale: **Clear row**, **Every step**, **Every 2nd step**,
-  **Every 4th step** e **Offbeats** (il "e" di ogni battito: con step da 1/16 gli step 3, 7, 11, 15). Ogni voce si
-  annulla con un Ctrl+Z.
+- **Clic sul nome** della riga: suona il suono. **Clic destro sul nome**: menu con il nome e la nota della riga in
+  testa, poi:
+  - **Preview** suona il suono;
+  - **Mute** / **Unmute** silenzia o riattiva la riga (come il pulsante **M**);
+  - **Rename…** apre un campo sopra il nome: **Invio** (o un clic altrove) conferma, **Esc** annulla;
+  - **Sound** elenca i 25 suoni del Drum Kit e cambia nota e nome insieme; il mute e gli step restano. Su una
+    traccia che non è un Drum Kit cambia solo la nota suonata;
+  - cinque riempimenti che riscrivono la riga intera a velocity normale: **Clear row**, **Every step**, **Every
+    2nd step**, **Every 4th step** e **Offbeats** (il "e" di ogni battito: con step da 1/16 gli step 3, 7, 11, 15);
+  - **Delete row** toglie la riga con i suoi step; le righe sotto salgono di uno. Tolta l'ultima, il pattern resta
+    vuoto e si riempie di nuovo con **+ Row**.
+
+  Ogni voce si annulla con un Ctrl+Z.
+- **M** accanto al nome muta la riga: resta visibile, con il nome in grigio e le celle più scure, ma non suona e
+  non compare nella miniatura della regione né nell'export MIDI. Gli step restano e si possono modificare. Un
+  altro clic la riattiva.
 - **+ Row**, sotto la griglia: elenco dei 25 suoni del Drum Kit con la loro altezza General MIDI (per esempio
-  *Ride · 51*). La riga nuova compare in fondo, vuota. Per togliere una riga non c'è ancora un comando.
-- L'assistente e i client MCP fanno lo stesso con `set_pattern_step`, `set_pattern_row` e `add_pattern_row`.
+  *Ride · 51*). La riga nuova compare in fondo, vuota. Una riga si toglie con **Delete row** nel menu del nome.
+- L'assistente e i client MCP fanno lo stesso con `set_pattern_step`, `set_pattern_row`, `add_pattern_row`,
+  `update_pattern_row` (nome, nota, mute) e `remove_pattern_row`.
 
 ## Tracce nell'arrangiamento
 

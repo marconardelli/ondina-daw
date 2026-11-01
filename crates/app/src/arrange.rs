@@ -60,7 +60,7 @@ pub enum ChordTarget {
     Existing(Id),
 }
 
-/// The text fields open in place over the arrangement and in the inspector. They belong to the document they were
+/// The text fields open in place over the arrangement, in the inspector and in the step sequencer. They belong to the document they were
 /// opened on: ids start again from 1 in a new project, so a field left open would edit a different object.
 #[derive(Default)]
 pub struct InPlaceEdits {
@@ -70,6 +70,7 @@ pub struct InPlaceEdits {
     /// The selected region's name as typed in the inspector, with the region it was typed for.
     pub region_name_edit: Option<(Id, String)>,
     pub chord_edit: Option<ChordEdit>,
+    pub row_rename: Option<crate::step_paint::RowRename>,
 }
 
 impl InPlaceEdits {
@@ -2172,7 +2173,7 @@ fn track_rename_command(ren: &InPlaceRename, project: &Project) -> Option<Comman
 
 /// What the user did with an in-place name field this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RenameEdit {
+pub(crate) enum RenameEdit {
     /// Still typing: keep the edit open.
     Editing,
     /// Enter, or a click elsewhere.
@@ -2183,7 +2184,7 @@ enum RenameEdit {
 
 /// Draws the in-place name field over `r` (at least 120 px wide). Call it after every widget it covers,
 /// so it sits on top and gets the clicks.
-fn rename_field(
+pub(crate) fn rename_field(
     ui: &mut egui::Ui,
     edit_id: egui::Id,
     r: Rect,
@@ -2250,6 +2251,7 @@ pub fn draw_meter(painter: &egui::Painter, r: Rect, m: [f32; 2]) {
 
 #[cfg(test)]
 mod tests {
+    use crate::step_paint::RowRename;
     use super::{
         button_row_top, chord_commit, chord_field_rect, chord_span_rect, cycle_gesture_key, track_rename_command, cycle_hit_zone, cycle_toggle, dragged_marker_beat,
         edge_scroll_speed, moved_cycle, new_chord_span, next_cycle_gesture, region_edge_width, region_hit_zone,
@@ -2577,12 +2579,14 @@ mod tests {
                 focus: false,
                 invalid: false,
             }),
+            row_rename: Some(RowRename { region: id, row: 0, rows: 8, text: "Kick".into(), focus: false }),
         };
         // an ordinary edit is the same document: the fields stay open
         let shown = s.document;
         run(&mut s, "set_tempo", json!({"bpm": 100}));
         edits.follow_document(shown, s.document);
         assert!(edits.track_rename.is_some() && edits.chord_edit.is_some());
+        assert!(edits.row_rename.is_some());
 
         let shown = s.document;
         run(&mut s, "new_project", json!({}));
@@ -2597,6 +2601,7 @@ mod tests {
         assert!(edits.region_rename.is_none());
         assert!(edits.region_name_edit.is_none());
         assert!(edits.chord_edit.is_none());
+        assert!(edits.row_rename.is_none());
         // Enter now has nothing to send, and the new track keeps its name
         assert!(edits.track_rename.as_ref().and_then(|r| track_rename_command(r, &s.project)).is_none());
         assert_eq!(track_names(&s), ["Drums"]);
