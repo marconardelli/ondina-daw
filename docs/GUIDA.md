@@ -65,8 +65,11 @@ Sotto la corsia delle velocity c'è la corsia dei controller: mostra un controll
 - Dopo il tratto il controller torna al valore che aveva, quindi il resto della curva non cambia.
 - Ogni tratto si annulla con un solo Ctrl+Z e si rifà con Ctrl+Y.
 - Il pulsante **CC** chiude la corsia e lascia più spazio alle note; un altro clic la riapre.
-- Gli strumenti interni rispondono solo al sustain, e solo Analog Synth e FM Synth. Gli strumenti VST3 ricevono
-  tutti i controller. Se lo strumento della traccia ignora il controller scelto, la corsia lo scrive in grigio.
+- Gli strumenti interni rispondono solo al sustain: Analog Synth, FM Synth, Tonewheel Organ, Plucked String e
+  Sampler tengono le note finché il pedale è giù, il Drum Synth lo ignora. Una nota ripremuta col pedale giù
+  riparte sulla stessa voce e, se il tasto è ancora premuto quando alzi il pedale, suona finché lo rilasci. Gli
+  strumenti VST3 ricevono tutti i controller. Se lo strumento della traccia ignora il controller scelto, la
+  corsia lo scrive in grigio.
 - L'assistente e i client MCP cambiano gli stessi eventi con `replace_cc` (sostituisce un controller in un
   intervallo di beat) e li aggiungono con `add_cc`.
 
