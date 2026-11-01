@@ -807,8 +807,9 @@ impl OndinaApp {
                 Stroke::new(1.0_f32, theme::LANE_LINE),
             );
 
-            // lane interactions (empty area)
-            let lane_resp = ui.interact(lane, ui.id().with(("lane", t.id)), Sense::click());
+            // lane interactions (empty area), cut to the track area: a track scrolled half out of view must not take
+            // the clicks of the ruler and the lanes above it
+            let lane_resp = ui.interact(lane.intersect(track_area), ui.id().with(("lane", t.id)), Sense::click());
             if lane_resp.clicked() {
                 self.selected_track = Some(t.id);
                 self.selected_region = None;
@@ -960,19 +961,6 @@ impl OndinaApp {
                 // corners are rounded only where the region really ends, not where the view cuts it
                 let round = region_rounding(rect, clip);
                 ppainter.rect_filled(clip, round, base.gamma_multiply(if r.muted { 0.22 } else { 0.33 }));
-                let header = Rect::from_min_max(clip.min, pos2(clip.right(), (clip.top() + REGION_HEAD_H).min(clip.bottom())));
-                ppainter.rect_filled(header, Rounding { sw: 0.0, se: 0.0, ..round }, base);
-                // the name field covers the name while it is being edited
-                if !renaming {
-                    let name_clip = header.shrink2(vec2(3.0, 0.0)).intersect(clip);
-                    tpainter.with_clip_rect(name_clip).text(
-                        pos2(clip.left() + 6.0, header.center().y),
-                        Align2::LEFT_CENTER,
-                        &r.name,
-                        FontId::new(11.0, theme::semibold()),
-                        theme::ON_TRACK,
-                    );
-                }
                 // loop separators
                 for k in 1..r.loop_count {
                     let lx = rx0 + (k as f64 * r.length) as f32 * self.px_per_beat;
@@ -1060,6 +1048,21 @@ impl OndinaApp {
                 }
                 if let Some(g) = &fade_geom {
                     region_edit::paint_fades(&ppainter, g, fade_drag.map(|(h, _)| h));
+                }
+                // the name strip last: it stays at the top of a region scrolled half out of view and covers the notes
+                // that scroll under it
+                let header = Rect::from_min_max(clip.min, pos2(clip.right(), (clip.top() + REGION_HEAD_H).min(clip.bottom())));
+                ppainter.rect_filled(header, Rounding { sw: 0.0, se: 0.0, ..round }, base);
+                // the name field covers the name while it is being edited
+                if !renaming {
+                    let name_clip = header.shrink2(vec2(3.0, 0.0)).intersect(clip);
+                    tpainter.with_clip_rect(name_clip).text(
+                        pos2(clip.left() + 6.0, header.center().y),
+                        Align2::LEFT_CENTER,
+                        &r.name,
+                        FontId::new(11.0, theme::semibold()),
+                        theme::ON_TRACK,
+                    );
                 }
                 if selected {
                     // white border and a white ring outside it, readable on every track color
@@ -1596,7 +1599,7 @@ impl OndinaApp {
         // playhead: white, a soft glow around it and a small triangle head under the cycle strip
         let px = self.beat_to_x(pos, timeline_x);
         if px >= timeline_x && px <= full.right() {
-            for (w, a) in [(7.0_f32, 14_u8), (3.5, 34)] {
+            for (w, a) in [(5.0_f32, 7_u8), (3.0, 16)] {
                 painter.line_segment([pos2(px, top), pos2(px, full.bottom())], Stroke::new(w, Color32::from_white_alpha(a)));
             }
             painter.line_segment([pos2(px, top), pos2(px, full.bottom())], Stroke::new(1.0_f32, theme::PLAYHEAD));
@@ -1678,7 +1681,9 @@ impl OndinaApp {
         selected: bool,
     ) -> Option<Rect> {
         // Background first: M/S/R, the volume slider and the rename field are registered after it and sit on top.
-        let resp = ui.interact(rect, ui.id().with(("hdr", t.id)), Sense::click_and_drag());
+        // Cut to the track area, like the lanes, so a header scrolled half out of view leaves the rows above it alone.
+        let visible = rect.intersect(painter.clip_rect());
+        let resp = ui.interact(visible, ui.id().with(("hdr", t.id)), Sense::click_and_drag());
         let bg = if selected {
             theme::SELECTED_BG
         } else if resp.contains_pointer() && self.drag.is_none() {
@@ -1710,8 +1715,9 @@ impl OndinaApp {
         let right = rect.right() - HEADER_METER_W - 6.0;
         let name_y = rect.top() + rows.name_center;
         let buttons = header_buttons(t);
-        // On short tracks the buttons sit at the right end of the name row, so the name stops before them.
-        let buttons_w = buttons.len() as f32 * (HEADER_BUTTON_W + HEADER_BUTTON_GAP) - HEADER_BUTTON_GAP;
+        // On short tracks the buttons sit at the right end of the name row, so the name stops before them. Room for
+        // three buttons is always kept, so buttons and sliders line up on tracks with fewer (a bus has no R).
+        let buttons_w = 3.0 * (HEADER_BUTTON_W + HEADER_BUTTON_GAP) - HEADER_BUTTON_GAP;
         let first_button_x = if rows.compact { right - buttons_w } else { left };
         let kind_label = track_type_label(t);
         let kind_w = if rows.compact {
@@ -1719,7 +1725,8 @@ impl OndinaApp {
         } else {
             painter.layout_no_wrap(kind_label.to_string(), FontId::proportional(11.0), theme::TEXT_3).size().x
         };
-        let name_x = left + 16.0;
+        // room for a two-digit track number before the name
+        let name_x = left + 20.0;
         let name_right = if rows.compact { first_button_x - 6.0 } else { right - kind_w - 8.0 };
         // the name row opens the rename; the rest of the header only selects
         let name_row = Rect::from_min_max(pos2(rect.left(), name_y - 10.0), pos2(name_right, name_y + 10.0));
@@ -1801,7 +1808,7 @@ impl OndinaApp {
                 widgets::StateKind::Rec => (t.record_armed, "Record arm"),
                 widgets::StateKind::Monitor => (false, "Input monitoring"),
             };
-            let b = ui.interact(r, ui.id().with((kind.letter(), tid)), Sense::click()).on_hover_text(tip);
+            let b = ui.interact(r.intersect(visible), ui.id().with((kind.letter(), tid)), Sense::click()).on_hover_text(tip);
             widgets::paint_state_button(painter, r, *kind, on, b.hovered());
             if b.clicked() {
                 match kind {
@@ -1842,7 +1849,7 @@ impl OndinaApp {
             let hit = Rect::from_min_max(pos2(row.left(), row.top()), pos2(rail_x1 + 6.0, row.bottom()));
             let db = t.channel.volume_db;
             let sresp = ui
-                .interact(hit, ui.id().with(("hvol", tid)), Sense::click_and_drag())
+                .interact(hit.intersect(visible), ui.id().with(("hvol", tid)), Sense::click_and_drag())
                 .on_hover_text(format!("Volume {} dB. Drag to change it, double-click for 0 dB.", db_text(db)));
             let new_db = if sresp.double_clicked() {
                 Some(0.0)
@@ -2148,8 +2155,8 @@ fn paint_drum_hits(painter: &egui::Painter, notes: &[Note], g: NoteGeom) {
         return;
     }
     let row_h = g.content.height() / rows.len() as f32;
-    let hit_h = (row_h - 2.0).clamp(1.5, 10.0);
-    let hit_w = (g.px_per_beat * 0.25 * 0.6).clamp(2.0, 4.0);
+    let hit_h = (row_h * 0.7).clamp(1.5, 14.0);
+    let hit_w = (g.px_per_beat * 0.25 * 0.6).clamp(2.0, 5.0);
     for k in 0..g.loops {
         for n in notes.iter().filter(|n| n.start < g.length) {
             let Some(row) = drum_row_index(&rows, n.pitch) else { continue };
