@@ -19,6 +19,33 @@ const TAIL_SILENCE: f32 = 3.2e-5;
 /// The automatic tail ends after this much continuous silence, which is also left at the end of the file.
 const TAIL_QUIET_SEC: f64 = 0.25;
 
+/// Longest range one offline render covers, in seconds of song time (the tail comes on top). An hour of stereo
+/// at 96 kHz is about 2.8 GB of samples; much more and the allocation fails, which aborts the whole process.
+pub const MAX_RENDER_SEC: f64 = 3600.0;
+
+/// Checks a render range before any render starts: both ends finite and at most `MAX_RENDER_SEC` of song time
+/// between them. Returns the length in seconds.
+pub fn check_render_span(tempo: &ondina_core::tempo::TempoMap, start: f64, end: f64) -> Result<f64, String> {
+    if !(start.is_finite() && end.is_finite()) {
+        return Err("start and end must be finite beat positions".into());
+    }
+    let span = tempo.beat_to_sec(end) - tempo.beat_to_sec(start);
+    if span > MAX_RENDER_SEC {
+        return Err(format!(
+            "the range from beat {start} to beat {end} lasts {:.0} minutes: a render covers at most {:.0} minutes",
+            span / 60.0,
+            MAX_RENDER_SEC / 60.0
+        ));
+    }
+    Ok(span.max(0.0))
+}
+
+/// The seconds a render covers: never negative, never more than `MAX_RENDER_SEC` (callers check the range first
+/// with `check_render_span`; this only keeps an unchecked caller from asking for terabytes).
+fn render_span(tempo: &ondina_core::tempo::TempoMap, start: f64, end: f64) -> f64 {
+    (tempo.beat_to_sec(end) - tempo.beat_to_sec(start)).clamp(0.0, MAX_RENDER_SEC)
+}
+
 /// Seconds to frames, rounding up. The small epsilon keeps exact lengths exact: 9.6 s at 44.1 kHz is
 /// 423360.00000000006 in floating point and must stay 423360 frames.
 fn frames(sec: f64, sample_rate: u32) -> usize {
@@ -94,7 +121,7 @@ fn render_offline_body(project: &Project, pool: Arc<AudioPool>, opt: OfflineOpti
     p.cycle.enabled = false;
     p.metronome = false;
     let sr = opt.sample_rate;
-    let span = (p.tempo.beat_to_sec(opt.end) - p.tempo.beat_to_sec(opt.start)).max(0.0);
+    let span = render_span(&p.tempo, opt.start, opt.end);
     let min_total = frames(span + opt.tail_sec, sr);
     let max_total = if opt.auto_tail_max_sec > opt.tail_sec { frames(span + opt.auto_tail_max_sec, sr) } else { min_total };
     let mut gate = if max_total > min_total { Some(TailGate::new(sr)) } else { None };
@@ -200,7 +227,7 @@ pub fn render_surround(project: &Project, pool: Arc<AudioPool>, sample_rate: u32
     let layout = ondina_dsp::spatial::layout(layout_name);
     let names: Vec<&'static str> = layout.iter().map(|s| s.0).collect();
     let n = layout.len();
-    let span = (p.tempo.beat_to_sec(end) - p.tempo.beat_to_sec(start)).max(0.0);
+    let span = render_span(&p.tempo, start, end);
     let min_total = frames(span + BOUNCE_TAIL_SEC, sample_rate);
     let max_total = if auto_tail_max_sec > BOUNCE_TAIL_SEC { frames(span + auto_tail_max_sec, sample_rate) } else { min_total };
     let mut gate = if max_total > min_total { Some(TailGate::new(sample_rate)) } else { None };
@@ -275,7 +302,7 @@ pub fn render_objects(project: &Project, pool: Arc<AudioPool>, sample_rate: u32,
     p.surround = ondina_core::model::SurroundFormat::Immersive714;
     let layout = ondina_dsp::spatial::layout("7.1.2");
     let n = layout.len();
-    let secs = (p.tempo.beat_to_sec(end) - p.tempo.beat_to_sec(start)).max(0.0) + 1.0;
+    let secs = render_span(&p.tempo, start, end) + 1.0;
     let total = (secs * sample_rate as f64).ceil() as usize;
     let object_ids: Vec<Id> = p.tracks.iter().filter(|t| t.channel.surround_pan.object).map(|t| t.id).collect();
     let mut r = Renderer::new(sample_rate as f32, Arc::new(p), pool);

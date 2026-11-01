@@ -666,19 +666,25 @@ impl Renderer {
             if timeline_running {
                 for lane in &track.automation {
                     let Some(v) = lane.value_at(b0) else { continue };
+                    // The commands keep lanes finite and in range; a project built in code may not. inf or NaN
+                    // here would stay in the state of every reverb downstream, so it is skipped, and the channel
+                    // targets are held to the ranges of their commands.
+                    if !v.is_finite() {
+                        continue;
+                    }
                     if lane.target == "surround:azimuth" {
-                        sp.azimuth = v;
+                        sp.azimuth = v.clamp(-180.0, 180.0);
                     } else if lane.target == "surround:elevation" {
-                        sp.elevation = v;
+                        sp.elevation = v.clamp(-30.0, 90.0);
                     } else if lane.target == "surround:spread" {
                         sp.spread = v.clamp(0.0, 1.0);
                     } else if lane.target == "volume" {
-                        vol_db = v;
+                        vol_db = v.clamp(-96.0, 6.0);
                     } else if lane.target == "pan" {
-                        pan = v;
+                        pan = v.clamp(-1.0, 1.0);
                     } else if let Some(i) = lane.target.strip_prefix("send:").and_then(|s| s.parse::<usize>().ok()) {
                         if i < send_levels.len() {
-                            send_levels[i] = v;
+                            send_levels[i] = v.clamp(-96.0, 6.0);
                         }
                     } else if let Some(rest) = lane.target.strip_prefix("plugin:") {
                         if let Some((pid, param)) = rest.split_once(':') {
@@ -890,14 +896,17 @@ impl Renderer {
         let click_on = project.metronome && (self.recording || !project.metronome_only_recording);
         if self.playing && (click_on || counting_in) && self.solo_override.is_none() && self.analyzers.is_none() {
             let click_gain = project.metronome_gain();
-            let beat_len = 4.0 / project.time_signature.denominator as f64;
-            let bar_len = project.time_signature.beats_per_bar();
+            // A time signature the commands refuse (0 beats, denominator 0) can still arrive in a project built in
+            // code: count it as 1 beat of a quarter note rather than divide by zero on the audio thread.
+            let beats_per_bar = i64::from(project.time_signature.numerator.max(1));
+            let beat_len = 4.0 / f64::from(project.time_signature.denominator.max(1));
+            let bar_len = beats_per_bar as f64 * beat_len;
             let start = if counting_in { -self.count_in_beats } else { b0 };
             for i in 0..frames {
                 let b = start + i as f64 * bps;
                 let prev = b - bps;
                 if (b / beat_len).floor() != (prev / beat_len).floor() || (i == 0 && (b / beat_len).fract().abs() < bps / beat_len) {
-                    let down = ((b.rem_euclid(bar_len)) / beat_len).round() as i64 % project.time_signature.numerator as i64 == 0;
+                    let down = ((b.rem_euclid(bar_len)) / beat_len).round() as i64 % beats_per_bar == 0;
                     self.click_env = 1.0;
                     self.click_freq = if down { 1600.0 } else { 1000.0 };
                 }
@@ -970,6 +979,49 @@ mod tests {
             e += l.iter().map(|x| x * x).sum::<f32>();
         }
         e
+    }
+
+    /// A project that skipped the checks at the boundary (built in code, or a file from an older version) must not
+    /// stop the audio thread: the metronome with 0 beats per bar and an empty tempo map used to panic.
+    #[test]
+    fn metronome_and_empty_tempo_map_never_panic_the_renderer() {
+        let mut p = Project::new("t");
+        p.metronome = true;
+        p.count_in_bars = 1;
+        p.time_signature = TimeSignature { numerator: 0, denominator: 0 };
+        p.tempo.points.clear();
+        let mut r = Renderer::new(48000.0, Arc::new(p), Arc::new(AudioPool::new()));
+        r.play();
+        let mut l = vec![0.0; 512];
+        let mut rr = vec![0.0; 512];
+        for _ in 0..(48000 / 512) {
+            r.render(&mut l, &mut rr);
+            assert!(l.iter().chain(&rr).all(|x| x.is_finite()));
+        }
+        assert!(r.beat > 0.0, "the transport did not move");
+    }
+
+    /// Automation that skipped the checks of the commands (values not finite or far out of range) must not put
+    /// inf or NaN into the mix, where a bus reverb would keep it.
+    #[test]
+    fn automation_that_is_not_finite_or_out_of_range_keeps_the_mix_finite() {
+        for bad in [f32::INFINITY, f32::NAN, 1000.0] {
+            let mut p = Project::new("t");
+            let src = add_track(&mut p, TrackKind::Instrument);
+            let held = Note { pitch: 60, velocity: 100, start: 0.0, length: 8.0 };
+            run(&mut p, Command::CreateMidiRegion { track_id: src, start: 0.0, length: 8.0, name: None, notes: Some(vec![held]) });
+            let bus = add_track(&mut p, TrackKind::Bus);
+            run(&mut p, Command::AddEffect { track_id: bus, kind: "reverb".into(), preset: None, index: None });
+            run(&mut p, Command::AddSend { track_id: src, bus_id: bus, level_db: Some(0.0), pre_fader: None });
+            let points = vec![AutomationPoint { beat: 0.0, value: bad }];
+            let t = p.tracks.iter_mut().find(|t| t.id == src).unwrap();
+            for target in ["volume", "pan", "send:0"] {
+                t.automation.push(AutomationLane { target: target.into(), points: points.clone(), enabled: true });
+            }
+            // `energy` asserts that every sample is finite
+            let e = energy(&p);
+            assert!(e.is_finite(), "{bad}: {e}");
+        }
     }
 
     #[test]

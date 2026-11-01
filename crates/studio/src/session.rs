@@ -13,12 +13,12 @@ use ondina_core::ops::{self, Outcome};
 use ondina_core::{load_project_str, midi_io, save_project_string};
 use ondina_dsp::MidiKind;
 use ondina_engine::{load_audio_file, render_offline, write_wav, AudioPool, Engine, OfflineOptions};
-use ondina_engine::offline::{AUTO_TAIL_MAX_SEC, BOUNCE_TAIL_SEC};
+use ondina_engine::offline::{check_render_span, AUTO_TAIL_MAX_SEC, BOUNCE_TAIL_SEC};
 use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::session_ext::{checked_output_path, is_ondina_project_file, MIDI_EXTENSIONS, PROJECT_EXTENSIONS, WAV_EXTENSIONS};
+use crate::session_ext::{audio_file_allowed, checked_input_path, checked_output_path, is_ondina_project_file, MIDI_EXTENSIONS, PROJECT_EXTENSIONS, WAV_EXTENSIONS};
 
 pub type SharedSession = Arc<Mutex<Session>>;
 
@@ -412,8 +412,9 @@ impl Session {
                 self.commit();
                 Ok(json!({"redone": step.label}))
             }
-            NewProject { .. } => {
+            NewProject { discard_unsaved, .. } => {
                 self.refuse_while_recording(source)?;
+                self.refuse_to_drop_unsaved_work(source, discard_unsaved)?;
                 let v = match ops::apply(&mut self.project, &cmd)? {
                     Outcome::Done(v) => v,
                     Outcome::NotHandled => return Err("internal".into()),
@@ -428,9 +429,11 @@ impl Session {
                 self.selected_notes.clear();
                 Ok(v)
             }
-            OpenProject { path } => {
+            OpenProject { path, discard_unsaved } => {
                 self.refuse_while_recording(source)?;
-                self.open(Path::new(&path), source)
+                self.refuse_to_drop_unsaved_work(source, discard_unsaved)?;
+                let file = checked_input_path(source, &path)?;
+                self.open(&file, source)
             }
             SaveProject { path } => {
                 let p = match path {
@@ -481,7 +484,8 @@ impl Session {
 
             // IO-level mutating commands
             ImportAudio { path, track_id, start } => {
-                let file_id = self.load_audio(Path::new(&path))?;
+                let path = checked_input_path(source, &path)?;
+                let file_id = self.load_audio(&path)?;
                 let track_id = match track_id {
                     Some(t) => t,
                     None => ops::add_track(&mut self.project, TrackKind::Audio, None, None, None, None, None)?,
@@ -501,7 +505,8 @@ impl Session {
                 Ok(json!({"track_id": track_id, "region_id": rid, "file_id": file_id, "duration_sec": f.duration_sec, "length_beats": len_beats}))
             }
             SetSamplerSample { plugin_id, path } => {
-                let file_id = self.load_audio(Path::new(&path))?;
+                let path = checked_input_path(source, &path)?;
+                let file_id = self.load_audio(&path)?;
                 let p = self.project.find_plugin_mut(plugin_id).ok_or("plug-in not found")?;
                 if p.kind != "sampler" {
                     return Err("plug-in is not a sampler".into());
@@ -510,7 +515,8 @@ impl Session {
                 Ok(json!({"file_id": file_id}))
             }
             ImportMidi { path, at_beat } => {
-                let bytes = std::fs::read(&path).map_err(|e| format!("cannot read {path}: {e}"))?;
+                let file = checked_input_path(source, &path)?;
+                let bytes = std::fs::read(&file).map_err(|e| format!("cannot read {path}: {e}"))?;
                 let ids = midi_io::import_midi(&mut self.project, &bytes, at_beat.unwrap_or(0.0))?;
                 Ok(json!({"track_ids": ids}))
             }
@@ -539,6 +545,7 @@ impl Session {
                 }
                 let start = start.unwrap_or(0.0);
                 let end = end.unwrap_or_else(|| self.project.content_end()).max(start + 1.0);
+                check_render_span(&self.project.tempo, start, end)?;
                 let sr = self.engine.sample_rate();
                 // An exact tail when asked for one (0 cuts at `end`, for loops); otherwise render until the tails fade.
                 let (tail, auto_max) = match tail_sec {
@@ -611,6 +618,7 @@ impl Session {
                 if end <= 0.0 {
                     return Err("track has no regions".into());
                 }
+                check_render_span(&self.project.tempo, 0.0, end)?;
                 let sr = self.engine.sample_rate();
                 let mut solo_proj = self.engine_project();
                 // render the track pre-master-chain: bypass master inserts and reset master fader
@@ -758,6 +766,16 @@ impl Session {
         Ok(())
     }
 
+    /// Open and New from an MCP client or the assistant keep a project with unsaved changes unless the caller
+    /// says to drop them: they start a new history, so undo cannot bring the work back. The window asks the user
+    /// itself before it gets here (Save / Don't Save / Cancel), and a script started by the user runs as asked.
+    fn refuse_to_drop_unsaved_work(&self, source: Source, discard_unsaved: Option<bool>) -> Result<(), String> {
+        if matches!(source, Source::Mcp | Source::Ai) && self.dirty && !discard_unsaved.unwrap_or(false) {
+            return Err("the project has unsaved changes: save it first with save_project, or ask the user and pass discard_unsaved: true to drop them".into());
+        }
+        Ok(())
+    }
+
     /// Open and New start the new document stopped at the beginning. A recording still running here (only the
     /// GUI gets this far while recording, and it stops first) is stopped and its take dropped: writing it into the
     /// project that replaces the one it was recorded for would put it in the wrong song.
@@ -778,7 +796,12 @@ impl Session {
         let (blocked, untrusted) = crate::session_ext::blocked_plugins_from(&project, roots.as_deref());
         let mut pool = AudioPool::new();
         let mut missing = vec![];
+        let mut blocked_audio = vec![];
         for f in &project.audio_files {
+            if !audio_file_allowed(source, &f.path) {
+                blocked_audio.push(f.path.clone());
+                continue;
+            }
             match load_audio_file(Path::new(&f.path)) {
                 Ok(d) => {
                     pool.insert(f.id, Arc::new(d));
@@ -798,6 +821,9 @@ impl Session {
         let mut v = json!({"opened": path.display().to_string(), "missing_audio_files": missing, "summary": ops::project_summary(&self.project)});
         if !blocked.is_empty() {
             v["blocked_plugins"] = json!(blocked);
+        }
+        if !blocked_audio.is_empty() {
+            v["blocked_audio_files"] = json!(blocked_audio);
         }
         Ok(v)
     }
@@ -969,6 +995,7 @@ impl Session {
         if end <= start {
             return Err("project is empty: nothing to analyze".into());
         }
+        check_render_span(&self.project.tempo, start, end)?;
         let res = render_offline(&self.engine_project(), Arc::new(self.pool.clone()), OfflineOptions { sample_rate: 44100, start, end, tail_sec: 1.0, auto_tail_max_sec: 0.0, solo: None, analyze: true, keep_audio: false });
         let a = res.analysis.unwrap_or_default();
         let master = a.get(&MASTER_ID).cloned();
@@ -1212,7 +1239,7 @@ mod tests {
         let proj = dir.join("song.ondina");
         s.execute(Command::SaveProject { path: Some(proj.display().to_string()) }, Source::Script).unwrap();
         let mut s2 = Session::new(false);
-        s2.execute(Command::OpenProject { path: proj.display().to_string() }, Source::Script).unwrap();
+        s2.execute(Command::OpenProject { path: proj.display().to_string(), discard_unsaved: None }, Source::Script).unwrap();
         assert_eq!(s2.project.tracks.len(), 2);
         // import the bounce as audio
         let imp = s2.execute(Command::ImportAudio { path: wav.display().to_string(), track_id: None, start: Some(0.0) }, Source::Script).unwrap();

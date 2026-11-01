@@ -400,7 +400,19 @@ fn parse_step_string(s: &str, steps: usize) -> Vec<u8> {
 
 /// Resolve chords for generators: chord symbols or roman numerals, from `chords` or the chord track (when `chords`
 /// is None). Roman numerals on the chord track are read in the current project key.
+///
+/// Both sources fill every bar asked for: `chords` repeats as a list, and the chord track repeats as a
+/// progression (from its first chord to the end of its last one) after it ends, so a 4-bar progression under an
+/// 8-bar part plays twice. This is what the drummer does too (it always fills the bars), and a part that went
+/// silent halfway while the answer said `bars: 8` was the surprise to avoid.
 pub fn resolve_chords(project: &Project, start: f64, bars: u32, chords: &Option<Vec<String>>, beats_per_chord: Option<f64>) -> Result<Vec<TimedChord>, String> {
+    check_generated_bars(bars)?;
+    check_generated_start(start)?;
+    if let Some(per) = beats_per_chord {
+        if !per.is_finite() || per < MIN_BEATS_PER_CHORD {
+            return Err(format!("beats_per_chord must be at least {MIN_BEATS_PER_CHORD} beats"));
+        }
+    }
     let bpb = project.time_signature.beats_per_bar();
     let total = bars as f64 * bpb;
     if let Some(list) = chords {
@@ -421,16 +433,36 @@ pub fn resolve_chords(project: &Project, start: f64, bars: u32, chords: &Option<
         return Ok(out);
     }
     let end = start + total;
-    let mut out: Vec<TimedChord> = project
-        .chords
-        .iter()
-        .filter(|c| c.beat < end && c.beat + c.length > start)
-        .filter_map(|c| {
-            let s = c.beat.max(start);
-            let e = (c.beat + c.length).min(end);
-            parse_chord_or_roman(&c.symbol, project.key).ok().map(|ch| TimedChord { start: s - start, length: e - s, chord: ch })
-        })
-        .collect();
+    let track: Vec<&ChordEvent> = project.chords.iter().filter(|c| c.beat.is_finite() && c.length.is_finite() && c.length > 0.0).collect();
+    let first = track.iter().map(|c| c.beat).fold(f64::INFINITY, f64::min);
+    let last_end = track.iter().map(|c| c.beat + c.length).fold(f64::NEG_INFINITY, f64::max);
+    let period = last_end - first;
+    let mut out: Vec<TimedChord> = vec![];
+    if period.is_finite() && period > 0.0 && first.is_finite() {
+        // Pass 0 is the chord track as it is; the passes after it repeat it until `end`. `start` and `end` are
+        // checked above (finite, at most MAX_GENERATOR_START + 512 bars) and the period is at least
+        // MIN_BEATS_PER_CHORD when it repeats, so the pass numbers stay small whole numbers; the integer counter
+        // bounds the loop whatever the chord track holds.
+        let repeats = period >= MIN_BEATS_PER_CHORD;
+        let first_pass = if repeats { ((start - first) / period).floor().max(0.0) as u64 } else { 0 };
+        let passes = if repeats { (((end - start) / period).ceil() as u64).saturating_add(2).min(MAX_CHORD_PASSES) } else { 1 };
+        for k in 0..passes {
+            let shift = (first_pass + k) as f64 * period;
+            if first + shift >= end || out.len() >= MAX_RESOLVED_CHORDS {
+                break;
+            }
+            for c in &track {
+                let (b0, b1) = (c.beat + shift, c.beat + c.length + shift);
+                if b0 >= end || b1 <= start {
+                    continue;
+                }
+                let (s, e) = (b0.max(start), b1.min(end));
+                if let Ok(ch) = parse_chord_or_roman(&c.symbol, project.key) {
+                    out.push(TimedChord { start: s - start, length: e - s, chord: ch });
+                }
+            }
+        }
+    }
     if out.is_empty() {
         // fall back to the tonic chord of the project key
         let tonic = theory::NOTE_NAMES[project.key.root as usize];
@@ -467,6 +499,33 @@ pub fn resolve_chord_symbol(sym: &str, key: Key) -> Result<String, String> {
         }
     }
     err(format!("cannot parse chord '{s}'"))
+}
+
+/// Most chords `resolve_chords` hands to a generator (a chord track of tiny chords repeated over 512 bars).
+const MAX_RESOLVED_CHORDS: usize = 65_536;
+/// Most passes of the chord track `resolve_chords` makes (512 bars of the longest bar over the shortest period).
+const MAX_CHORD_PASSES: u64 = 1 << 22;
+/// Latest beat a generator may start at (about 140 hours at 120 BPM): far enough for any song, small enough that
+/// beat arithmetic stays exact.
+pub const MAX_GENERATOR_START: f64 = 1_000_000.0;
+
+fn check_generated_start(start: f64) -> Result<(), String> {
+    if !start.is_finite() || !(0.0..=MAX_GENERATOR_START).contains(&start) {
+        return Err(format!("start must be a beat position between 0 and {MAX_GENERATOR_START} (got {start})"));
+    }
+    Ok(())
+}
+
+/// Most bars one generator call writes.
+pub const MAX_GENERATED_BARS: u32 = 512;
+/// Shortest chord a generator follows (a sixteenth note): shorter ones would only multiply the work.
+pub const MIN_BEATS_PER_CHORD: f64 = 0.25;
+
+fn check_generated_bars(bars: u32) -> Result<(), String> {
+    if bars > MAX_GENERATED_BARS {
+        return Err(format!("bars must be at most {MAX_GENERATED_BARS} (got {bars}): generate a long part in pieces"));
+    }
+    Ok(())
 }
 
 fn put_generated_region(project: &mut Project, track_id: Id, start: f64, bars: u32, name: &str, notes: Vec<Note>) -> Result<Id, String> {
@@ -818,7 +877,7 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
     match cmd {
         GetProject {} => ok(project_summary(project)),
         GetProjectJson {} => ok(serde_json::to_value(&*project).map_err(|e| e.to_string())?),
-        NewProject { name, tempo, time_signature, key } => {
+        NewProject { name, tempo, time_signature, key, .. } => {
             let mut p = Project::new(name.as_deref().unwrap_or("Untitled"));
             if let Some(t) = tempo {
                 p.tempo.set_initial_bpm(*t);
@@ -826,6 +885,9 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             if let Some(ts) = time_signature {
                 let (a, b) = ts.split_once('/').ok_or("time signature like 4/4")?;
                 p.time_signature = TimeSignature { numerator: a.trim().parse().map_err(|_| "bad numerator")?, denominator: b.trim().parse().map_err(|_| "bad denominator")? };
+                if !p.time_signature.is_valid() {
+                    return err(format!("invalid time signature {ts}: at least 1 beat per bar, denominator 1, 2, 4, 8 or 16"));
+                }
             }
             if let Some(k) = key {
                 p.key = parse_key(k)?;
@@ -854,10 +916,11 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             ok(json!({"ok": true}))
         }
         SetTimeSignature { numerator, denominator } => {
-            if *numerator == 0 || !matches!(denominator, 1 | 2 | 4 | 8 | 16) {
+            let ts = TimeSignature { numerator: *numerator, denominator: *denominator };
+            if !ts.is_valid() {
                 return err("invalid time signature");
             }
-            project.time_signature = TimeSignature { numerator: *numerator, denominator: *denominator };
+            project.time_signature = ts;
             ok(json!({"ok": true}))
         }
         SetKey { key } => {
@@ -1203,7 +1266,16 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             ok(json!({"ok": true}))
         }
         ResizeRegion { region_id, length } => {
+            if !length.is_finite() {
+                return err("length must be a finite number of beats");
+            }
             let r = region_mut(project, *region_id)?;
+            if let RegionContent::Pattern(p) = &r.content {
+                let steps = (length.max(0.0625) / p.step_length).round();
+                if steps > f64::from(MAX_PATTERN_STEPS) {
+                    return Err(format!("a pattern can have at most {MAX_PATTERN_STEPS} steps: {length} beats would need {steps} steps of {} beats", p.step_length));
+                }
+            }
             r.length = length.max(0.0625);
             if let RegionContent::Pattern(p) = &mut r.content {
                 let steps = (r.length / p.step_length).round().max(1.0) as u32;
@@ -1525,6 +1597,10 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             let p = pattern_mut(project, *region_id)?;
             let steps = p.steps as usize;
             let r = p.rows.get_mut(*row).ok_or("row not found")?;
+            let given = pattern.chars().filter(|c| !c.is_whitespace() && *c != '|').count();
+            if given != steps {
+                return err(format!("the pattern has {steps} steps but the string gives {given}: pass one character per step ('x', 'o', 'g' or '.'; spaces and '|' are ignored)"));
+            }
             r.steps = parse_step_string(pattern, steps);
             ok(json!({"ok": true}))
         }
@@ -1570,8 +1646,11 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             ok(json!({"removed": {"name": removed.name, "pitch": removed.pitch}, "rows": p.rows.len()}))
         }
         SetPatternSwing { region_id, swing } => {
-            pattern_mut(project, *region_id)?.swing = swing.clamp(0.0, 1.0);
-            ok(json!({"ok": true}))
+            if !(0.0..=1.0).contains(swing) {
+                return err(format!("swing must be between 0 and 1 (got {swing})"));
+            }
+            pattern_mut(project, *region_id)?.swing = *swing;
+            ok(json!({"ok": true, "swing": swing}))
         }
         ConvertPatternToMidi { region_id } => {
             let r = region_mut(project, *region_id)?;
@@ -1585,9 +1664,11 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
 
         // generators
         GenerateDrums { track_id, start, bars, style, intensity, fill, seed } => {
+            check_generated_bars(*bars)?;
+            check_generated_start(*start)?;
             let bpb = project.time_signature.beats_per_bar();
             let seed = seed_or_random(*seed);
-            let notes = generate::drums(*style, (*bars).clamp(1, 512), bpb, intensity.unwrap_or(0.5).clamp(0.0, 1.0), fill.unwrap_or(true), seed);
+            let notes = generate::drums(*style, (*bars).max(1), bpb, intensity.unwrap_or(0.5).clamp(0.0, 1.0), fill.unwrap_or(true), seed);
             let bars = (*bars).max(1);
             let id = put_generated_region(project, *track_id, *start, bars, &format!("Drums ({style:?})"), notes)?;
             ok(generated(id, seed, *start, bars))
@@ -1684,16 +1765,26 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
 
         // automation
         SetAutomation { track_id, target, points } => {
-            validate_target(project, *track_id, target)?;
+            let range = validate_target(project, *track_id, target)?;
+            if points.iter().any(|p| !p.beat.is_finite() || !p.value.is_finite()) {
+                return err("automation beats and values must be finite numbers");
+            }
             let lanes = automation_lanes_mut(project, *track_id)?;
             let mut pts = points.clone();
-            pts.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
+            for p in &mut pts {
+                p.value = range.clamp(p.value);
+            }
+            pts.sort_by(|a, b| a.beat.total_cmp(&b.beat));
             lanes.retain(|l| l.target != *target);
-            lanes.push(AutomationLane { target: target.clone(), points: pts, enabled: true });
-            ok(json!({"ok": true}))
+            lanes.push(AutomationLane { target: target.clone(), points: pts.clone(), enabled: true });
+            ok(json!({"ok": true, "points": pts}))
         }
         AddAutomationPoint { track_id, target, beat, value } => {
-            validate_target(project, *track_id, target)?;
+            let range = validate_target(project, *track_id, target)?;
+            if !beat.is_finite() || !value.is_finite() {
+                return err("automation beat and value must be finite numbers");
+            }
+            let value = range.clamp(*value);
             let lanes = automation_lanes_mut(project, *track_id)?;
             let lane = match lanes.iter_mut().position(|l| l.target == *target) {
                 Some(i) => &mut lanes[i],
@@ -1703,9 +1794,9 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
                 }
             };
             lane.points.retain(|p| (p.beat - beat).abs() > 1e-6);
-            lane.points.push(AutomationPoint { beat: *beat, value: *value });
-            lane.points.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
-            ok(json!({"points": lane.points.len()}))
+            lane.points.push(AutomationPoint { beat: *beat, value });
+            lane.points.sort_by(|a, b| a.beat.total_cmp(&b.beat));
+            ok(json!({"points": lane.points.len(), "value": value}))
         }
         ClearAutomation { track_id, target } => {
             let lanes = automation_lanes_mut(project, *track_id)?;
@@ -1797,21 +1888,55 @@ fn automation_lanes_mut(project: &mut Project, track_id: Id) -> Result<&mut Vec<
     Ok(&mut project.track_mut(track_id).ok_or("track not found")?.automation)
 }
 
-fn validate_target(project: &Project, track_id: Id, target: &str) -> Result<(), String> {
-    if matches!(target, "volume" | "pan" | "surround:azimuth" | "surround:elevation" | "surround:spread") {
-        return Ok(());
+/// The values an automation lane may hold: the same ranges the commands that set the parameter directly use
+/// (set_volume, set_pan, set_send_level, set_surround_pan, set_plugin_param).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AutomationRange {
+    pub min: f32,
+    pub max: f32,
+    /// A selector parameter: values are whole numbers.
+    pub stepped: bool,
+}
+
+impl AutomationRange {
+    const fn new(min: f32, max: f32) -> Self {
+        Self { min, max, stepped: false }
+    }
+
+    /// `v` in range (rounded for a selector). `v` must be finite.
+    pub fn clamp(&self, v: f32) -> f32 {
+        let v = v.clamp(self.min, self.max);
+        if self.stepped { v.round() } else { v }
+    }
+}
+
+/// Fader and send levels in dB, as set_volume and set_send_level keep them.
+const LEVEL_RANGE: AutomationRange = AutomationRange::new(-96.0, 6.0);
+
+/// Checks an automation target of a track and returns the range of its values.
+pub fn validate_target(project: &Project, track_id: Id, target: &str) -> Result<AutomationRange, String> {
+    match target {
+        "volume" => return Ok(LEVEL_RANGE),
+        "pan" => return Ok(AutomationRange::new(-1.0, 1.0)),
+        "surround:azimuth" => return Ok(AutomationRange::new(-180.0, 180.0)),
+        "surround:elevation" => return Ok(AutomationRange::new(-30.0, 90.0)),
+        "surround:spread" => return Ok(AutomationRange::new(0.0, 1.0)),
+        _ => {}
     }
     if let Some(rest) = target.strip_prefix("send:") {
         let idx: usize = rest.parse().map_err(|_| "send target must be send:<index>")?;
         let t = project.track(track_id).ok_or("track not found")?;
-        return if idx < t.channel.sends.len() { Ok(()) } else { err("send index out of range") };
+        return if idx < t.channel.sends.len() { Ok(LEVEL_RANGE) } else { err("send index out of range") };
     }
     if let Some(rest) = target.strip_prefix("plugin:") {
         let (pid, param) = rest.split_once(':').ok_or("plugin target must be plugin:<id>:<param>")?;
         let pid: Id = pid.parse().map_err(|_| "invalid plugin id")?;
         let p = project.find_plugin(pid).ok_or("plug-in not found")?;
         let info = plugins::find(&p.kind).ok_or("unknown plug-in")?;
-        return if info.params.iter().any(|x| x.id == param) { Ok(()) } else { err(format!("{} has no parameter {param}", p.kind)) };
+        return match info.params.iter().find(|x| x.id == param) {
+            Some(x) => Ok(AutomationRange { min: x.min, max: x.max, stepped: !x.choices.is_empty() }),
+            None => err(format!("{} has no parameter {param}", p.kind)),
+        };
     }
     err("target must be volume, pan, surround:azimuth, surround:elevation, surround:spread, send:<i> or plugin:<id>:<param>")
 }

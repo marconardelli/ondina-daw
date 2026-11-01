@@ -64,6 +64,7 @@ fn main() -> eframe::Result<()> {
         if let Err(e) = session.lock().execute(
             ondina_core::Command::OpenProject {
                 path: project.clone(),
+                discard_unsaved: None,
             },
             Source::Script,
         ) {

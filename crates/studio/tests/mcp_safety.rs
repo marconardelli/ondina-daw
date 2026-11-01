@@ -1,0 +1,154 @@
+//! What an MCP client can do to the process and to the user's work: renders are bounded, unsaved work is not
+//! dropped silently, network paths are refused and the tool annotations tell a client which tools change things.
+
+use std::path::PathBuf;
+
+use ondina_core::command::Command;
+use ondina_studio::{Session, Source};
+use serde_json::{json, Value};
+
+fn call(s: &mut Session, name: &str, args: Value) -> Result<Value, String> {
+    let cmd = Command::from_tool_call(name, &args)?;
+    s.execute(cmd, Source::Mcp)
+}
+
+fn ok(s: &mut Session, name: &str, args: Value) -> Value {
+    call(s, name, args.clone()).unwrap_or_else(|e| panic!("{name} {args} failed: {e}"))
+}
+
+fn tmp(name: &str) -> PathBuf {
+    let d = std::env::temp_dir().join("ondina_mcp_safety");
+    std::fs::create_dir_all(&d).unwrap();
+    d.join(name)
+}
+
+fn song(s: &mut Session) -> u64 {
+    let t = ok(s, "add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();
+    ok(s, "create_midi_region", json!({"track_id": t, "start": 0.0, "length": 4.0, "notes": [{"pitch": 60, "velocity": 100, "start": 0.0, "length": 1.0}]}))["region_id"].as_u64().unwrap()
+}
+
+// ---------------------------------------------------------------- renders
+
+#[test]
+fn bounce_refuses_a_range_longer_than_the_render_limit() {
+    let mut s = Session::new(false);
+    song(&mut s);
+    let out = tmp("too-long.wav");
+    let _ = std::fs::remove_file(&out);
+    let err = call(&mut s, "bounce", json!({"path": out.display().to_string(), "end": 1e7})).unwrap_err();
+    assert!(err.contains("60 minutes"), "{err}");
+    assert!(!out.exists());
+}
+
+#[test]
+fn analyze_mix_refuses_a_range_longer_than_the_render_limit() {
+    let mut s = Session::new(false);
+    song(&mut s);
+    let err = call(&mut s, "analyze_mix", json!({"end": 1e7})).unwrap_err();
+    assert!(err.contains("60 minutes"), "{err}");
+}
+
+#[test]
+fn renders_of_the_whole_song_refuse_a_song_longer_than_the_render_limit() {
+    let mut s = Session::new(false);
+    let rid = song(&mut s);
+    // a region moved far away makes the song end there
+    ok(&mut s, "move_region", json!({"region_id": rid, "start": 1e8}));
+    for (tool, file) in [("bounce_surround", "far-51.wav"), ("bounce_binaural", "far-bin.wav"), ("export_adm", "far-adm.wav")] {
+        let out = tmp(file);
+        let err = call(&mut s, tool, json!({"path": out.display().to_string()})).unwrap_err();
+        assert!(err.contains("60 minutes"), "{tool}: {err}");
+    }
+    let t = s.project.tracks[0].id;
+    let err = call(&mut s, "bounce_in_place", json!({"track_id": t})).unwrap_err();
+    assert!(err.contains("60 minutes"), "bounce_in_place: {err}");
+}
+
+// ---------------------------------------------------------------- unsaved work
+
+#[test]
+fn new_and_open_project_refuse_to_drop_unsaved_changes_unless_asked() {
+    let saved = tmp("unsaved-other.ondina");
+    {
+        let mut other = Session::new(false);
+        ok(&mut other, "save_project", json!({"path": saved.display().to_string()}));
+    }
+    let mut s = Session::new(false);
+    ok(&mut s, "set_tempo", json!({"bpm": 101.0}));
+    let before = ok(&mut s, "get_project_json", json!({}));
+    for (tool, args) in [("new_project", json!({})), ("open_project", json!({"path": saved.display().to_string()}))] {
+        let err = call(&mut s, tool, args.clone()).unwrap_err();
+        assert!(err.contains("unsaved changes") && err.contains("discard_unsaved"), "{tool}: {err}");
+        assert_eq!(ok(&mut s, "get_project_json", json!({})), before, "{tool}: the project must stay as it was");
+        assert!(s.dirty);
+        let err = call(&mut s, tool, {
+            let mut a = args.clone();
+            a["discard_unsaved"] = json!(false);
+            a
+        })
+        .unwrap_err();
+        assert!(err.contains("unsaved changes"), "{tool}: {err}");
+    }
+    ok(&mut s, "open_project", json!({"path": saved.display().to_string(), "discard_unsaved": true}));
+    assert_eq!(s.project.tempo.initial_bpm(), 120.0);
+    assert!(!s.dirty);
+    // nothing unsaved now: no flag needed
+    ok(&mut s, "new_project", json!({"name": "Fresh"}));
+    ok(&mut s, "set_tempo", json!({"bpm": 90.0}));
+    ok(&mut s, "new_project", json!({"name": "Dropped", "discard_unsaved": true}));
+    assert_eq!(s.project.name, "Dropped");
+    // after a save the work is safe
+    ok(&mut s, "set_tempo", json!({"bpm": 95.0}));
+    ok(&mut s, "save_project", json!({"path": tmp("unsaved-mine.ondina").display().to_string()}));
+    ok(&mut s, "open_project", json!({"path": saved.display().to_string()}));
+}
+
+#[test]
+fn the_window_still_replaces_the_project_after_asking_the_user_itself() {
+    let mut s = Session::new(false);
+    ok(&mut s, "set_tempo", json!({"bpm": 101.0}));
+    let cmd = Command::from_tool_call("new_project", &json!({})).unwrap();
+    s.execute(cmd, Source::Gui).unwrap();
+    assert_eq!(s.project.tempo.initial_bpm(), 120.0);
+}
+
+// ---------------------------------------------------------------- network paths
+
+const NETWORK_PATHS: [&str; 4] = [r"\\server\share\in.wav", "//server/share/in.wav", r"\\?\UNC\server\share\in.wav", r"\\.\pipe\in.wav"];
+const NETWORK_AUDIO: &str = r"\\server\share\loop.wav";
+
+#[test]
+fn incoming_files_on_network_shares_are_refused_before_they_are_opened() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "instrument": "sampler"}))["track_id"].as_u64().unwrap();
+    let sampler = s.project.track(t).unwrap().instrument.as_ref().unwrap().id;
+    let before = ok(&mut s, "get_project_json", json!({}));
+    for p in NETWORK_PATHS {
+        let mid = p.replace("in.wav", "in.mid");
+        let proj = p.replace("in.wav", "in.ondina");
+        for (tool, args) in [
+            ("import_audio", json!({"path": p})),
+            ("set_sampler_sample", json!({"plugin_id": sampler, "path": p})),
+            ("import_midi", json!({"path": mid})),
+            ("open_project", json!({"path": proj, "discard_unsaved": true})),
+        ] {
+            let err = call(&mut s, tool, args).unwrap_err();
+            assert!(err.contains("input path refused") && err.contains("local drive"), "{tool} {p}: {err}");
+        }
+    }
+    assert_eq!(ok(&mut s, "get_project_json", json!({})), before);
+}
+
+#[test]
+fn a_project_opened_from_mcp_does_not_read_audio_files_on_network_shares() {
+    let mut s = Session::new(false);
+    let mut doc: Value = serde_json::from_str(&ondina_core::save_project_string(&s.project).unwrap()).unwrap();
+    doc["project"]["audio_files"] = json!([{"id": 900, "path": NETWORK_AUDIO, "name": "loop", "sample_rate": 48000, "channels": 2, "duration_sec": 1.0}]);
+    let file = tmp("network-audio.ondina");
+    std::fs::write(&file, doc.to_string()).unwrap();
+    let v = ok(&mut s, "open_project", json!({"path": file.display().to_string()}));
+    assert_eq!(v["blocked_audio_files"], json!([NETWORK_AUDIO]), "{v}");
+    assert_eq!(v["missing_audio_files"], json!([]), "{v}");
+    // the reference stays in the project, as blocked plug-ins do
+    assert_eq!(s.project.audio_files.len(), 1);
+}

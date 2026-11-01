@@ -135,6 +135,9 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
         // ---------------------------------------------------------------- live loops (grid editing)
         AddScene { name } => {
             let n = project.live.scenes.len();
+            if n >= MAX_SCENES {
+                return Err(format!("the Live Loops grid already has the most scenes it can have ({MAX_SCENES})"));
+            }
             project.live.scenes.push(name.clone().unwrap_or_else(|| format!("Scene {}", n + 1)));
             ok(json!({"scene": n}))
         }
@@ -159,6 +162,9 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             let tkind = project.track(*track_id).ok_or("track not found")?.kind;
             if tkind == TrackKind::Bus {
                 return Err("cells need an instrument or audio track".into());
+            }
+            if *scene >= MAX_SCENES {
+                return Err(format!("scene {scene} is out of range: the Live Loops grid has at most {MAX_SCENES} scenes (0..{})", MAX_SCENES - 1));
             }
             while project.live.scenes.len() <= *scene {
                 let n = project.live.scenes.len();
@@ -287,6 +293,85 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
     }
 }
 
+/// Checks a project read from a file before anything plays it. What the commands refuse is refused here (a time
+/// signature with 0 beats per bar or an odd denominator, a tempo map without points, a pattern with more than
+/// `MAX_PATTERN_STEPS` steps, numbers that are not numbers); what has an obvious safe form is put back in range
+/// (tempos, the order of tempo points, a cycle of no length, region lengths and loop counts, pattern rows of the
+/// wrong length).
+pub fn check_loaded_project(p: &mut Project) -> Result<(), String> {
+    let ts = p.time_signature;
+    if !ts.is_valid() {
+        return Err(format!("invalid time signature {}/{}: at least 1 beat per bar, denominator 1, 2, 4, 8 or 16", ts.numerator, ts.denominator));
+    }
+    p.tempo.repair_loaded()?;
+    if !(p.cycle.start.is_finite() && p.cycle.end.is_finite()) {
+        return Err("the cycle range is not a number".into());
+    }
+    p.cycle.start = p.cycle.start.max(0.0);
+    if p.cycle.end <= p.cycle.start {
+        p.cycle.end = p.cycle.start + ts.beats_per_bar();
+    }
+    if !p.frame_rate.is_finite() || p.frame_rate <= 0.0 {
+        p.frame_rate = 25.0;
+    }
+    for t in &mut p.tracks {
+        for r in &mut t.regions {
+            if !(r.start.is_finite() && r.length.is_finite()) {
+                return Err(format!("region {} has a position or length that is not a number", r.id));
+            }
+            r.start = r.start.max(0.0);
+            r.length = r.length.max(0.0625);
+            r.loop_count = r.loop_count.clamp(1, 1024);
+            if let RegionContent::Pattern(pc) = &mut r.content {
+                check_loaded_pattern(pc).map_err(|e| format!("region {}: {e}", r.id))?;
+            }
+        }
+    }
+    // Automation values go to the mix as they are: keep them in the range the commands keep them in. A lane
+    // whose target is no longer valid stays as it is (it plays nothing), and a value that is not a number is
+    // dropped (the renderer skips it too).
+    let ranges: Vec<Vec<Option<crate::ops::AutomationRange>>> = p
+        .tracks
+        .iter()
+        .map(|t| t.automation.iter().map(|l| crate::ops::validate_target(p, t.id, &l.target).ok()).collect())
+        .collect();
+    for (t, lane_ranges) in p.tracks.iter_mut().zip(ranges) {
+        for (lane, range) in t.automation.iter_mut().zip(lane_ranges) {
+            lane.points.retain(|pt| pt.beat.is_finite() && pt.value.is_finite());
+            if let Some(range) = range {
+                lane.points.iter_mut().for_each(|pt| pt.value = range.clamp(pt.value));
+            }
+            lane.points.sort_by(|a, b| a.beat.total_cmp(&b.beat));
+        }
+    }
+    for c in &mut p.live.cells {
+        if !c.length.is_finite() {
+            return Err(format!("Live Loops cell {} has a length that is not a number", c.id));
+        }
+        c.length = c.length.max(0.0625);
+        if let RegionContent::Pattern(pc) = &mut c.content {
+            check_loaded_pattern(pc).map_err(|e| format!("Live Loops cell {}: {e}", c.id))?;
+        }
+    }
+    Ok(())
+}
+
+fn check_loaded_pattern(p: &mut PatternContent) -> Result<(), String> {
+    if p.steps > MAX_PATTERN_STEPS {
+        return Err(format!("a pattern can have at most {MAX_PATTERN_STEPS} steps"));
+    }
+    if !p.step_length.is_finite() || !p.swing.is_finite() {
+        return Err("pattern step length or swing is not a number".into());
+    }
+    p.steps = p.steps.max(1);
+    p.step_length = p.step_length.max(0.03125);
+    p.swing = p.swing.clamp(0.0, 1.0);
+    for row in &mut p.rows {
+        row.steps.resize(p.steps as usize, 0);
+    }
+    Ok(())
+}
+
 /// The copy `paste_region` adds, without its id: `region` checked against the destination track and the project,
 /// its numbers kept in the ranges the other region commands keep. JSON numbers are always finite; the checks cover
 /// a region built in code.
@@ -347,10 +432,9 @@ fn pasted_region(project: &Project, track_id: Id, start: f64, region: &Region) -
             if !p.step_length.is_finite() {
                 return Err("pattern step length must be a finite number".into());
             }
-            // resize_region has no step limit, so a valid pattern keeps all its steps; the bound only stops a
-            // huge allocation from a hand-written region.
-            if p.steps > 65_536 {
-                return Err("a pattern can have at most 65536 steps".into());
+            // the same bound as resize_region: a pattern made in Ondina always fits
+            if p.steps > MAX_PATTERN_STEPS {
+                return Err(format!("a pattern can have at most {MAX_PATTERN_STEPS} steps"));
             }
             p.steps = p.steps.max(1);
             p.step_length = p.step_length.max(0.03125);

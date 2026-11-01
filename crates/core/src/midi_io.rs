@@ -123,7 +123,11 @@ pub fn import_midi(project: &mut Project, bytes: &[u8], at_beat: f64) -> Result<
                     }
                 }
                 TrackEventKind::Meta(MetaMessage::TimeSignature(n, d, _, _)) if empty_project && tick == 0 => {
-                    project.time_signature = TimeSignature { numerator: n, denominator: 1 << d };
+                    // a file can say 0 beats per bar or a beat shorter than a 1/16 note: keep the project's then
+                    let ts = TimeSignature { numerator: n, denominator: 1u8.checked_shl(u32::from(d)).unwrap_or(0) };
+                    if ts.is_valid() {
+                        project.time_signature = ts;
+                    }
                 }
                 TrackEventKind::Midi { channel, message } => {
                     let ch = channel.as_int();

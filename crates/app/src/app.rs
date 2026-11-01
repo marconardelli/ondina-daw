@@ -764,6 +764,7 @@ impl OndinaApp {
             tempo: None,
             time_signature: None,
             key: None,
+            discard_unsaved: None,
         });
         self.selected_track = None;
         self.selected_region = None;
@@ -781,7 +782,7 @@ impl OndinaApp {
     }
 
     fn open_path_now(&mut self, path: String) {
-        if let Some(v) = self.exec(Command::OpenProject { path: path.clone() }) {
+        if let Some(v) = self.exec(Command::OpenProject { path: path.clone(), discard_unsaved: None }) {
             self.settings.add_recent(&path);
             self.settings.save();
             self.waveforms.clear();
