@@ -303,7 +303,7 @@ pub enum Command {
     // ------------------------------------------------------------------ step sequencer
     /// Set one step of a pattern region: velocity 0 = off.
     SetPatternStep { region_id: Id, row: usize, step: usize, velocity: u8 },
-    /// Set a whole pattern row from a string: 'x' accent, 'o' normal, 'g' ghost, '.' off. E.g. "x...x...x...x...".
+    /// Set a whole pattern row from a string: 'x' accent, 'o' normal, 'g' ghost, '.' off. E.g. "x...x...x...x...". One character per step of the pattern (spaces and '|' are ignored): a string with more or fewer steps is refused.
     SetPatternRow { region_id: Id, row: usize, pattern: String },
     /// Add a row to a pattern region.
     AddPatternRow { region_id: Id, name: String, pitch: u8 },
@@ -321,7 +321,7 @@ pub enum Command {
     },
     /// Delete a row of a pattern region together with its steps. The rows after it move up one index, so read get_region again before the next edit by row index. Deleting the last row leaves an empty pattern that add_pattern_row can fill again.
     RemovePatternRow { region_id: Id, row: usize },
-    /// Set pattern swing 0..1.
+    /// Set pattern swing 0..1 (applied to every second step). A value outside 0..1 is refused. Returns the swing.
     SetPatternSwing { region_id: Id, swing: f32 },
     /// Convert a pattern region into a regular MIDI region.
     ConvertPatternToMidi { region_id: Id },
@@ -329,13 +329,13 @@ pub enum Command {
     // ------------------------------------------------------------------ session players (generators)
     /// Session drummer: generate a drum groove as a MIDI region on a (drum) instrument track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512.
     GenerateDrums { track_id: Id, start: f64, bars: u32, style: DrumStyle, intensity: Option<f32>, fill: Option<bool>, seed: Option<u64> },
-    /// Session bassist: generate a bass line following `chords` (one symbol per `beats_per_chord`, default one bar) or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512. beats_per_chord is at least 0.25.
+    /// Session bassist: generate a bass line following `chords` (one symbol per `beats_per_chord`, default one bar) or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512. beats_per_chord is at least 0.25. The chord track repeats after its last chord, so every bar asked for is filled.
     GenerateBass { track_id: Id, start: f64, bars: u32, style: BassStyle, chords: Option<Vec<String>>, beats_per_chord: Option<f64>, octave: Option<i32>, seed: Option<u64> },
-    /// Session keyboard player: generate chord comping following `chords` or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512. beats_per_chord is at least 0.25.
+    /// Session keyboard player: generate chord comping following `chords` or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512. beats_per_chord is at least 0.25. The chord track repeats after its last chord, so every bar asked for is filled.
     GenerateChords { track_id: Id, start: f64, bars: u32, style: CompStyle, chords: Option<Vec<String>>, beats_per_chord: Option<f64>, center_pitch: Option<u8>, seed: Option<u64> },
-    /// Generate an arpeggio following `chords` or the chord track. rate in beats (0.25 = 1/16). Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512. beats_per_chord is at least 0.25.
+    /// Generate an arpeggio following `chords` or the chord track. rate in beats (0.25 = 1/16). Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512. beats_per_chord is at least 0.25. The chord track repeats after its last chord, so every bar asked for is filled.
     GenerateArpeggio { track_id: Id, start: f64, bars: u32, mode: ArpMode, rate: Option<f64>, octaves: Option<u32>, chords: Option<Vec<String>>, beats_per_chord: Option<f64>, center_pitch: Option<u8>, seed: Option<u64> },
-    /// Generate a melody in the project key over `chords` or the chord track. density 0..1. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512. beats_per_chord is at least 0.25.
+    /// Generate a melody in the project key over `chords` or the chord track. density 0..1. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512. beats_per_chord is at least 0.25. The chord track repeats after its last chord, so every bar asked for is filled.
     GenerateMelody { track_id: Id, start: f64, bars: u32, density: Option<f32>, octave: Option<i32>, chords: Option<Vec<String>>, beats_per_chord: Option<f64>, seed: Option<u64> },
 
     // ------------------------------------------------------------------ chord track

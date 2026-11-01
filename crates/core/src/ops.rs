@@ -400,6 +400,11 @@ fn parse_step_string(s: &str, steps: usize) -> Vec<u8> {
 
 /// Resolve chords for generators: chord symbols or roman numerals, from `chords` or the chord track (when `chords`
 /// is None). Roman numerals on the chord track are read in the current project key.
+///
+/// Both sources fill every bar asked for: `chords` repeats as a list, and the chord track repeats as a
+/// progression (from its first chord to the end of its last one) after it ends, so a 4-bar progression under an
+/// 8-bar part plays twice. This is what the drummer does too (it always fills the bars), and a part that went
+/// silent halfway while the answer said `bars: 8` was the surprise to avoid.
 pub fn resolve_chords(project: &Project, start: f64, bars: u32, chords: &Option<Vec<String>>, beats_per_chord: Option<f64>) -> Result<Vec<TimedChord>, String> {
     check_generated_bars(bars)?;
     if let Some(per) = beats_per_chord {
@@ -427,16 +432,33 @@ pub fn resolve_chords(project: &Project, start: f64, bars: u32, chords: &Option<
         return Ok(out);
     }
     let end = start + total;
-    let mut out: Vec<TimedChord> = project
-        .chords
-        .iter()
-        .filter(|c| c.beat < end && c.beat + c.length > start)
-        .filter_map(|c| {
-            let s = c.beat.max(start);
-            let e = (c.beat + c.length).min(end);
-            parse_chord_or_roman(&c.symbol, project.key).ok().map(|ch| TimedChord { start: s - start, length: e - s, chord: ch })
-        })
-        .collect();
+    let track: Vec<&ChordEvent> = project.chords.iter().filter(|c| c.beat.is_finite() && c.length.is_finite() && c.length > 0.0).collect();
+    let first = track.iter().map(|c| c.beat).fold(f64::INFINITY, f64::min);
+    let last_end = track.iter().map(|c| c.beat + c.length).fold(f64::NEG_INFINITY, f64::max);
+    let period = last_end - first;
+    let mut out: Vec<TimedChord> = vec![];
+    if period.is_finite() && period > 0.0 {
+        // pass 0 is the chord track as it is; the passes after it repeat it until `end`
+        let repeats = period >= MIN_BEATS_PER_CHORD;
+        let mut pass = if repeats { ((start - first) / period).floor().max(0.0) } else { 0.0 };
+        while first + pass * period < end && out.len() < MAX_RESOLVED_CHORDS {
+            let shift = pass * period;
+            for c in &track {
+                let (b0, b1) = (c.beat + shift, c.beat + c.length + shift);
+                if b0 >= end || b1 <= start {
+                    continue;
+                }
+                let (s, e) = (b0.max(start), b1.min(end));
+                if let Ok(ch) = parse_chord_or_roman(&c.symbol, project.key) {
+                    out.push(TimedChord { start: s - start, length: e - s, chord: ch });
+                }
+            }
+            if !repeats {
+                break;
+            }
+            pass += 1.0;
+        }
+    }
     if out.is_empty() {
         // fall back to the tonic chord of the project key
         let tonic = theory::NOTE_NAMES[project.key.root as usize];
@@ -475,6 +497,8 @@ pub fn resolve_chord_symbol(sym: &str, key: Key) -> Result<String, String> {
     err(format!("cannot parse chord '{s}'"))
 }
 
+/// Most chords `resolve_chords` hands to a generator (a chord track of tiny chords repeated over 512 bars).
+const MAX_RESOLVED_CHORDS: usize = 65_536;
 /// Most bars one generator call writes.
 pub const MAX_GENERATED_BARS: u32 = 512;
 /// Shortest chord a generator follows (a sixteenth note): shorter ones would only multiply the work.
@@ -1556,6 +1580,10 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             let p = pattern_mut(project, *region_id)?;
             let steps = p.steps as usize;
             let r = p.rows.get_mut(*row).ok_or("row not found")?;
+            let given = pattern.chars().filter(|c| !c.is_whitespace() && *c != '|').count();
+            if given != steps {
+                return err(format!("the pattern has {steps} steps but the string gives {given}: pass one character per step ('x', 'o', 'g' or '.'; spaces and '|' are ignored)"));
+            }
             r.steps = parse_step_string(pattern, steps);
             ok(json!({"ok": true}))
         }
@@ -1601,8 +1629,11 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             ok(json!({"removed": {"name": removed.name, "pitch": removed.pitch}, "rows": p.rows.len()}))
         }
         SetPatternSwing { region_id, swing } => {
-            pattern_mut(project, *region_id)?.swing = swing.clamp(0.0, 1.0);
-            ok(json!({"ok": true}))
+            if !(0.0..=1.0).contains(swing) {
+                return err(format!("swing must be between 0 and 1 (got {swing})"));
+            }
+            pattern_mut(project, *region_id)?.swing = *swing;
+            ok(json!({"ok": true, "swing": swing}))
         }
         ConvertPatternToMidi { region_id } => {
             let r = region_mut(project, *region_id)?;
