@@ -255,6 +255,8 @@ pub struct OndinaApp {
     /// Region the note selection was made in; when `selected_region` changes the indices mean nothing.
     notes_region: Option<Id>,
     pub note_len: f64,
+    /// Value of the number field in the piano roll's Velocity menu.
+    pub pr_velocity: u8,
     /// Notes copied or cut in the piano roll (Ctrl+C / Ctrl+X); lives for the whole app session.
     pub note_clipboard: Option<crate::note_clipboard::NoteClip>,
     /// Region copied or cut in the arrangement (Ctrl+C / Ctrl+X); lives for the whole app session.
@@ -354,6 +356,7 @@ impl OndinaApp {
             selected_notes: HashSet::new(),
             notes_region: None,
             note_len: 0.25,
+            pr_velocity: 100,
             note_clipboard: None,
             region_clipboard: None,
             cc_lane: Default::default(),

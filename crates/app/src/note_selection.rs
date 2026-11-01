@@ -65,6 +65,7 @@ pub fn reindex_command(c: &mut Command, old: &Project, new: &Project) {
         | Command::QuantizeNotes { region_id, indices, .. }
         | Command::HumanizeNotes { region_id, indices, .. }
         | Command::SetNoteVelocities { region_id, indices, .. }
+        | Command::SetNoteLengths { region_id, indices, .. }
         | Command::SnapNotesToKey { region_id, indices, .. }
         | Command::AddHarmony { region_id, indices, .. }
         | Command::TransformNotes { region_id, select: Some(NoteFilter { indices, .. }), .. } => {
@@ -440,6 +441,7 @@ mod tests {
             | Command::SetNoteVelocities { indices, .. }
             | Command::SnapNotesToKey { indices, .. }
             | Command::AddHarmony { indices, .. }
+            | Command::SetNoteLengths { indices, .. }
             | Command::TransformNotes { select: Some(NoteFilter { indices, .. }), .. } => indices.clone(),
             _ => None,
         }
@@ -699,6 +701,24 @@ mod tests {
         reindex_command(&mut c, &old, &new);
         assert_eq!(indices_of(&c), Some(vec![1, 3]));
         let mut all = harmony(None);
+        reindex_command(&mut all, &old, &new);
+        assert_eq!(indices_of(&all), None);
+    }
+
+    #[test]
+    fn reindex_translates_set_note_lengths() {
+        use ondina_core::command::NoteLengthMode;
+        let (mut s, rid) = session_with(&four());
+        let old = s.project.clone();
+        let mut shuffled = four();
+        shuffled.insert(0, n(59, 0.0, 0.5));
+        run(&mut s, "replace_notes", json!({"region_id": rid, "notes": notes_json(&shuffled)}), Source::Mcp);
+        let new = s.project.clone();
+        let legato = |indices| Command::SetNoteLengths { region_id: rid, mode: NoteLengthMode::Legato, length: None, factor: None, indices };
+        let mut c = legato(Some(vec![0, 2]));
+        reindex_command(&mut c, &old, &new);
+        assert_eq!(indices_of(&c), Some(vec![1, 3]));
+        let mut all = legato(None);
         reindex_command(&mut all, &old, &new);
         assert_eq!(indices_of(&all), None);
     }
