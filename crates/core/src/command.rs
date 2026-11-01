@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::generate::{ArpMode, BassStyle, CompStyle, DrumStyle};
 use crate::model::{AutomationPoint, CcEvent, Id, LyricEvent, MidiRoute, Note, PatternRow, Region, SurroundFormat, TrackKind};
+use crate::theory::HarmonyInterval;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "command", rename_all = "snake_case")]
@@ -74,7 +75,7 @@ pub enum Command {
     SetCountIn { bars: u32 },
     /// Get transport state: playing, recording, playhead position (beats, bar.beat.tick, seconds), cycle, metronome, sample rate, dsp_load (share of the audio block time the last block used) and dsp_overloads (audio blocks since the last Play that took longer than the audio device allows; each one can be heard as a click).
     GetTransport {},
-    /// Get what the user has selected in the Ondina window: the selected track, the selected region and up to 256 selected notes of that region (each with its index, pitch, name, start and length in beats from the region start, velocity), plus the playhead and the cycle range. To act on "the notes I selected", pass the note index values as `indices` to quantize_notes, transpose_notes, humanize_notes, set_note_velocities, snap_notes_to_key or remove_notes. Indices refer to the region as it is now: read the selection again after editing the region, and compare pitch and start if in doubt. selected_note_count is the real number of selected notes and can be larger than the list. A headless session has no window: track and region are null and notes is empty.
+    /// Get what the user has selected in the Ondina window: the selected track, the selected region and up to 256 selected notes of that region (each with its index, pitch, name, start and length in beats from the region start, velocity), plus the playhead and the cycle range. To act on "the notes I selected", pass the note index values as `indices` to quantize_notes, transpose_notes, humanize_notes, set_note_velocities, snap_notes_to_key, add_harmony or remove_notes. Indices refer to the region as it is now: read the selection again after editing the region, and compare pitch and start if in doubt. selected_note_count is the real number of selected notes and can be larger than the list. A headless session has no window: track and region are null and notes is empty.
     GetSelection {},
     /// Get what happened in this Ondina session since you last looked, newest last: the edits the user made in the Ondina window (source "gui"), the tools called by MCP clients ("mcp"), the built-in assistant's tool calls ("ai") and scripts ("script"). Each entry has seq, source, command (the tool name), ok, mutating (whether the command changes the project), message (a short summary of the result or the error; it can contain file paths that the user or a client chose), count (how many steps of one continuous gesture, such as a fader drag, the entry stands for) and seconds_ago. Save latest_seq and pass it as `since` next time to get only newer entries; without `since` you get the latest `limit` entries. truncated is true when entries after `since` are missing from the list (the session keeps the last 500, `limit` cut the list, or `since` is larger than latest_seq because Ondina was restarted): read get_project again. revision grows with every change to the project, also changes that leave no entry (knob moves in native plug-in windows); document changes when open_project or new_project replaced the project and session_id changes when Ondina restarts: if either differs from what you saw, ids you remembered may no longer exist. Calls to get_activity are not listed. The selection and the playhead are not listed: read them with get_selection and get_transport.
     GetActivity {
@@ -243,6 +244,15 @@ pub enum Command {
     SetNoteVelocities { region_id: Id, velocity: Option<u8>, scale: Option<f32>, indices: Option<Vec<usize>> },
     /// Move notes of a region (all, or the given indices) to the nearest pitch in the project key. Indices past the last note are ignored.
     SnapNotesToKey { region_id: Id, indices: Option<Vec<usize>> },
+    /// Add a harmony voice to notes of a MIDI region (all, or the given indices): each note gets a copy with the same start and length and 85% of its velocity, `interval` above it (below with below=true) in the project key. In a seven-note key "3rd", "5th" and "6th" count scale steps, so the voice stays in the key (C major, 3rd above: C->E, E->G, B->D); a note outside the key starts from the nearest scale note. In pentatonic, blues and chromatic keys the copy goes to the scale note nearest to the major interval. "octave" is always 12 semitones. A copy identical to a note already there (same pitch and start) is not added (already_present), nor one outside MIDI 0..127 (out_of_range). Notes are re-sorted by time afterwards; the result's `indices` lists where the added notes ended up (ascending), ready to pass to transpose_notes, set_note_velocities or remove_notes. Indices past the last note are ignored.
+    AddHarmony {
+        region_id: Id,
+        /// "3rd", "5th", "6th" or "octave", counted in the project key.
+        interval: HarmonyInterval,
+        /// Put the voice below the notes (default false: above).
+        below: Option<bool>,
+        indices: Option<Vec<usize>>,
+    },
     /// Insert a voiced chord (symbol like "Cmaj7", "F#m", "G/B") into a MIDI region.
     InsertChord { region_id: Id, symbol: String, start: f64, length: f64, octave: Option<i32>, inversion: Option<u8>, velocity: Option<u8>, with_bass: Option<bool> },
     /// Add MIDI controller events (64 sustain, 1 mod wheel, 7 volume...) to a region.

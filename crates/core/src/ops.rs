@@ -237,6 +237,9 @@ fn clamp_note(n: &mut Note) {
     n.length = n.length.max(0.01);
 }
 
+/// Share of the original velocity a harmony copy gets: a second voice sits a little behind the line it doubles.
+const HARMONY_VELOCITY: f32 = 0.85;
+
 fn note_order(a: &Note, b: &Note) -> std::cmp::Ordering {
     a.start.partial_cmp(&b.start).unwrap().then(a.pitch.cmp(&b.pitch))
 }
@@ -1352,6 +1355,30 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
             let kept: Vec<usize> = (0..mask.len()).filter(|&i| mask[i]).collect();
             ok(with_indices(json!({"changed": changed}), indices.is_some(), kept))
         }
+        AddHarmony { region_id, interval, below, indices } => {
+            let key = project.key;
+            let m = midi_mut(project, *region_id)?;
+            let mask = note_mask(m.notes.len(), indices.as_deref());
+            let (mut copies, mut already, mut out_of_range) = (Vec::<Note>::new(), 0, 0);
+            for (n, _) in m.notes.iter().zip(&mask).filter(|(_, s)| **s) {
+                let Some(pitch) = key.harmony(n.pitch, *interval, below.unwrap_or(false)) else {
+                    out_of_range += 1;
+                    continue;
+                };
+                let same = |o: &Note| o.pitch == pitch && (o.start - n.start).abs() < 1e-9;
+                if m.notes.iter().any(same) || copies.iter().any(same) {
+                    already += 1;
+                    continue;
+                }
+                let velocity = (n.velocity as f32 * HARMONY_VELOCITY).round().clamp(1.0, 127.0) as u8;
+                copies.push(Note { pitch, velocity, start: n.start, length: n.length });
+            }
+            let before = m.notes.len();
+            m.notes.extend(copies);
+            let added: Vec<bool> = (0..m.notes.len()).map(|i| i >= before).collect();
+            let indices = sanitize_notes_tracked(&mut m.notes, &added);
+            ok(json!({"added": indices.len(), "indices": indices, "already_present": already, "out_of_range": out_of_range, "note_count": m.notes.len()}))
+        }
         InsertChord { region_id, symbol, start, length, octave, inversion, velocity, with_bass } => {
             let chord = parse_chord_or_roman(symbol, project.key)?;
             let center = ((octave.unwrap_or(4) + 1) * 12 + 4).clamp(12, 115) as u8;
@@ -1945,6 +1972,98 @@ mod tests {
         assert_eq!(v["indices"], json!([0, 1]));
         let pitches: Vec<u8> = notes_of(&p, rid).iter().map(|n| n.pitch).collect();
         assert_eq!(pitches, vec![60, 62, 63, 66]);
+    }
+
+    fn harmony(region_id: Id, interval: theory::HarmonyInterval, below: Option<bool>, indices: Option<Vec<usize>>) -> Command {
+        Command::AddHarmony { region_id, interval, below, indices }
+    }
+
+    fn pitch_starts(p: &Project, rid: Id) -> Vec<(u8, f64)> {
+        notes_of(p, rid).iter().map(|n| (n.pitch, n.start)).collect()
+    }
+
+    #[test]
+    fn add_harmony_adds_thirds_in_c_major() {
+        use theory::HarmonyInterval::Third;
+        let start = [n(60, 0.0), n(64, 1.0), n(71, 2.0)];
+        let (mut p, rid) = midi_region(&start);
+        let v = run(&mut p, harmony(rid, Third, None, None));
+        assert_eq!(v["added"], json!(3));
+        assert_eq!(v["indices"], json!([1, 3, 5]));
+        assert_eq!(v["note_count"], json!(6));
+        assert_eq!(v["already_present"], json!(0));
+        assert_eq!(v["out_of_range"], json!(0));
+        let after = notes_of(&p, rid);
+        for (i, (pitch, at)) in [(1, (64, 0.0)), (3, (67, 1.0)), (5, (74, 2.0))] {
+            assert_eq!(after[i], Note { pitch, velocity: 85, start: at, length: 0.5 });
+        }
+        assert_eq!(vec![after[0], after[2], after[4]], start.to_vec());
+    }
+
+    #[test]
+    fn add_harmony_below_and_octaves_stay_in_the_midi_range() {
+        use theory::HarmonyInterval::{Octave, Sixth};
+        let start = [n(2, 0.0), n(60, 1.0), n(127, 2.0)];
+        let (mut p, rid) = midi_region(&start);
+        let v = run(&mut p, harmony(rid, Sixth, Some(true), None));
+        assert_eq!(v["added"], json!(2));
+        assert_eq!(v["out_of_range"], json!(1));
+        // G9 minus a sixth in C major is B8
+        assert_eq!(pitch_starts(&p, rid), vec![(2, 0.0), (52, 1.0), (60, 1.0), (119, 2.0), (127, 2.0)]);
+
+        let (mut p, rid) = midi_region(&start);
+        let v = run(&mut p, harmony(rid, Octave, None, None));
+        assert_eq!(v["added"], json!(2));
+        assert_eq!(v["out_of_range"], json!(1));
+        assert_eq!(pitch_starts(&p, rid), vec![(2, 0.0), (14, 0.0), (60, 1.0), (72, 1.0), (127, 2.0)]);
+
+        let (mut p, rid) = midi_region(&start);
+        let v = run(&mut p, harmony(rid, Octave, Some(true), None));
+        assert_eq!(v["added"], json!(2));
+        assert_eq!(v["out_of_range"], json!(1));
+        assert_eq!(pitch_starts(&p, rid), vec![(2, 0.0), (48, 1.0), (60, 1.0), (115, 2.0), (127, 2.0)]);
+    }
+
+    #[test]
+    fn add_harmony_in_a_minor_starts_off_key_notes_from_the_nearest_degree() {
+        let (mut p, rid) = midi_region(&[n(69, 0.0), n(68, 1.0)]);
+        p.key = parse_key("A minor").unwrap();
+        let v = run(&mut p, harmony(rid, theory::HarmonyInterval::Third, None, None));
+        assert_eq!(v["indices"], json!([1, 3]));
+        // G#4 is outside A minor and starts from G4
+        assert_eq!(pitch_starts(&p, rid), vec![(69, 0.0), (72, 0.0), (68, 1.0), (71, 1.0)]);
+    }
+
+    #[test]
+    fn add_harmony_limits_to_indices_and_skips_existing_notes() {
+        use theory::HarmonyInterval::Third;
+        let (mut p, rid) = midi_region(&[n(60, 0.0), n(64, 0.0), n(62, 1.0)]);
+        let v = run(&mut p, harmony(rid, Third, None, Some(vec![0, 1, 99])));
+        // the copy of 60 is 64@0, which is already there; 62 is not among the indices
+        assert_eq!(v["added"], json!(1));
+        assert_eq!(v["already_present"], json!(1));
+        assert_eq!(v["indices"], json!([2]));
+        assert_eq!(v["note_count"], json!(4));
+        assert_eq!(pitch_starts(&p, rid), vec![(60, 0.0), (64, 0.0), (67, 0.0), (62, 1.0)]);
+        let before = notes_of(&p, rid);
+        let v = run(&mut p, harmony(rid, Third, None, Some(vec![0, 1, 99])));
+        assert_eq!(v["added"], json!(0));
+        assert_eq!(v["indices"], json!([]));
+        assert_eq!(v["already_present"], json!(2));
+        assert_eq!(notes_of(&p, rid), before);
+        // two notes whose copies coincide: C# starts from C in C major, so both give 64@0
+        let (mut q, rid2) = midi_region(&[n(60, 0.0), n(61, 0.0)]);
+        let v = run(&mut q, harmony(rid2, Third, None, None));
+        assert_eq!(v["added"], json!(1));
+        assert_eq!(v["already_present"], json!(1));
+        let v = run(&mut q, harmony(rid2, Third, Some(true), Some(vec![])));
+        assert_eq!(v["added"], json!(0));
+        assert_eq!(v["indices"], json!([]));
+        // not a MIDI region, or no such region
+        let tid = q.tracks.iter().find(|t| t.kind == TrackKind::Instrument).unwrap().id;
+        let pr = run(&mut q, Command::CreatePatternRegion { track_id: tid, start: 8.0, steps: None, step_length: None, rows: None, name: None });
+        assert!(apply(&mut q, &harmony(pr["region_id"].as_u64().unwrap(), Third, None, None)).is_err());
+        assert!(apply(&mut q, &harmony(9999, Third, None, None)).is_err());
     }
 
     #[test]
