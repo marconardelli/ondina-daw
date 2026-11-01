@@ -1026,7 +1026,7 @@ pub fn stereo_meter(ui: &mut Ui, size: Vec2, levels: [f32; 2], holds: &mut [Peak
 }
 
 /// The lit part of a meter bar as a vertical gradient mesh.
-fn paint_meter_fill(p: &Painter, bar: Rect, fill: f32) {
+pub fn paint_meter_fill(p: &Painter, bar: Rect, fill: f32) {
     if fill <= 0.0 {
         return;
     }
@@ -1102,25 +1102,37 @@ pub fn state_toggle(ui: &mut Ui, on: &mut bool, kind: StateKind) -> Response {
         resp.mark_changed();
     }
     if ui.is_rect_visible(rect) {
-        let (fill, border, text) = if *on {
-            let (bg, fg) = kind.colors();
-            (bg, bg, fg)
-        } else if resp.hovered() {
-            (theme::HOVER, theme::BORDER_HOVER, theme::TEXT)
-        } else {
-            (theme::RAISED, Color32::from_rgb(0x2E, 0x32, 0x38), theme::TEXT_3)
-        };
-        let p = ui.painter();
-        p.rect(rect, Rounding::same(theme::R_SM), fill, Stroke::new(1.0_f32, border));
-        p.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            kind.letter(),
-            egui::FontId::new(theme::SIZE_LABEL, theme::semibold()),
-            text,
-        );
+        paint_state_button(ui.painter(), rect, kind, *on, resp.hovered());
     }
     resp
+}
+
+/// (fill, border, text) of a state button: the state's own color when lit, a raised neutral at rest.
+pub fn state_button_colors(kind: StateKind, on: bool, hovered: bool) -> (Color32, Color32, Color32) {
+    if on {
+        let (bg, fg) = kind.colors();
+        (bg, bg, fg)
+    } else if hovered {
+        (theme::HOVER, theme::BORDER_HOVER, theme::TEXT)
+    } else {
+        (theme::RAISED, STATE_OFF_BORDER, theme::TEXT_2)
+    }
+}
+
+/// Border of a state button at rest.
+const STATE_OFF_BORDER: Color32 = Color32::from_rgb(0x2E, 0x32, 0x38);
+
+/// Paints a state button in `rect`, for views that place their own buttons (the track headers).
+pub fn paint_state_button(painter: &Painter, rect: Rect, kind: StateKind, on: bool, hovered: bool) {
+    let (fill, border, text) = state_button_colors(kind, on, hovered);
+    painter.rect(rect, Rounding::same(theme::R_SM), fill, Stroke::new(1.0_f32, border));
+    painter.text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        kind.letter(),
+        egui::FontId::new(theme::SIZE_LABEL, theme::semibold()),
+        text,
+    );
 }
 
 // ===================================================================================== segmented control
