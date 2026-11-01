@@ -13,6 +13,7 @@ mod arrange_view;
 mod assistant;
 mod automation_lane;
 mod autosave;
+mod bounce_menu;
 mod cc_lane;
 mod doc_guard;
 mod drag_cancel;
