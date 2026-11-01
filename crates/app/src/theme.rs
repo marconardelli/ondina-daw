@@ -203,7 +203,7 @@ pub const SIZE_LCD: f32 = 18.0;
 
 // ---- menus and tooltips ----
 /// Least width of a menu, so the shortcut column lines up.
-pub const MENU_WIDTH: f32 = 200.0;
+pub const MENU_WIDTH: f32 = 240.0;
 /// Width at which a tooltip wraps.
 pub const TOOLTIP_WIDTH: f32 = 300.0;
 /// Seconds the pointer rests before a tooltip shows.

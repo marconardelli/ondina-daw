@@ -1383,7 +1383,7 @@ impl OndinaApp {
                         });
                     }
                 }
-                if ui.button("Bounce Surround (5.1/7.1/7.1.4)…").clicked() {
+                if ui.button("Bounce Surround…").on_hover_text("A 5.1, 7.1 or 7.1.4 WAV in the project's surround format").clicked() {
                     ui.close_menu();
                     if let Some(p) = rfd::FileDialog::new()
                         .add_filter("WAV", &["wav"])
@@ -1397,7 +1397,8 @@ impl OndinaApp {
                     }
                 }
                 if ui
-                    .button("Export ADM BWF (object-based / Atmos master)…")
+                    .button("Export ADM BWF…")
+                    .on_hover_text("An object-based master (ADM BWF) for Atmos delivery: 7.1.2 bed plus objects")
                     .clicked()
                 {
                     ui.close_menu();
@@ -1418,7 +1419,7 @@ impl OndinaApp {
                         }
                     }
                 }
-                if ui.button("Bounce Binaural (headphones)…").clicked() {
+                if ui.button("Bounce Binaural…").on_hover_text("A stereo mix of the surround scene for headphones").clicked() {
                     ui.close_menu();
                     if let Some(p) = rfd::FileDialog::new()
                         .add_filter("WAV", &["wav"])
@@ -1616,7 +1617,7 @@ impl OndinaApp {
                     self.add_track(TrackKind::Bus, None);
                     ui.close_menu();
                 }
-                if ui.button("MIDI Environment (splits/layers)…").clicked() {
+                if ui.button("MIDI Environment…").on_hover_text("Keyboard splits and layers: route note ranges of the MIDI input to tracks").clicked() {
                     self.extra.show_routes = true;
                     ui.close_menu();
                 }
@@ -1682,7 +1683,7 @@ impl OndinaApp {
             });
             ui.menu_button("Mix", |ui| {
                 if ui
-                    .button("Analyze Mix (loudness, spectrum, advice)")
+                    .button("Analyze Mix").on_hover_text("Loudness, spectrum and advice for the mix")
                     .clicked()
                 {
                     ui.close_menu();

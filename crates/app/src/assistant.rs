@@ -122,6 +122,10 @@ fn bundled_local() -> bool {
     *FOUND.get_or_init(|| ondina_studio::local_ai::bundled_llm().is_some())
 }
 
+/// Width the assistant's header needs after its title, besides the pill's label, to show the engine pill next to
+/// New chat and its two buttons.
+const ASSISTANT_PILL_ROOM: f32 = 150.0;
+
 impl OndinaApp {
     /// The engine the assistant would use now.
     pub fn ai_engine(&self) -> AiEngine {
@@ -213,7 +217,15 @@ impl OndinaApp {
                 AiEngine::Local => "Answered by the local model on this computer".to_string(),
                 AiEngine::Claude => format!("Answered by {}", self.settings.model()),
             };
-            chrome::status_pill(ui, engine.label(), dot, fill, fg).on_hover_text(tip);
+            // on a narrow panel the pill would slide under the header buttons: the empty state says it anyway
+            let label_w = ui
+                .painter()
+                .layout_no_wrap(engine.label().to_owned(), egui::FontId::proportional(theme::SIZE_NUMBER), fg)
+                .size()
+                .x;
+            if ui.available_width() > label_w + ASSISTANT_PILL_ROOM {
+                chrome::status_pill(ui, engine.label(), dot, fill, fg).on_hover_text(tip);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if chrome::header_button(ui, Icon::Close, "Hide the assistant").clicked() {
                     self.show_assistant = false;
