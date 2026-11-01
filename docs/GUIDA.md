@@ -83,11 +83,13 @@ R (registrazione), lo slider del volume e il meter.
 
 - Clic sull'intestazione: seleziona la traccia. Clic destro: **Duplicate track**, **Bounce in place**,
   **Delete track**.
-- Trascinamento dell'intestazione in alto o in basso: sposta la traccia. Una linea mostra dove andrà.
-  Se arrivi al bordo alto o basso dell'area delle tracce, la vista scorre. Rilascia per spostarla,
-  Esc annulla. Se la rilasci dov'era non cambia niente. Il mixer segue lo stesso ordine.
+- Trascinamento dell'intestazione **col tasto sinistro** in alto o in basso: sposta la traccia. Una
+  linea mostra dove andrà. Se arrivi al bordo alto o basso dell'area delle tracce, la vista scorre.
+  Rilascia per spostarla, Esc annulla. Se la rilasci dov'era non cambia niente. Il mixer segue lo stesso ordine.
 - Il trascinamento parte anche da M, S e R (un clic senza trascinare li attiva come sempre), non dallo
   slider del volume, che resta per il volume.
+- Il clic destro apre solo il menu: un clic destro tenuto a lungo o trascinato, o un trascinamento col
+  tasto centrale, non sposta la traccia.
 - Doppio clic sul nome: apre un campo di testo per rinominare la traccia. Invio o un clic fuori
   confermano, Esc annulla. Un nome vuoto o uguale a prima non cambia niente. Mentre scrivi, le
   scorciatoie da tastiera sono spente.

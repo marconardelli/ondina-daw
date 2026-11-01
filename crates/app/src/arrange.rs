@@ -1504,7 +1504,8 @@ impl OndinaApp {
         if resp.clicked() {
             self.selected_track = Some(t.id);
         }
-        if resp.drag_started() && self.drag.is_none() {
+        // Only the left button reorders: egui turns a slow or moving right or middle press into a drag too.
+        if resp.drag_started_by(egui::PointerButton::Primary) && self.drag.is_none() {
             self.selected_track = Some(t.id);
             self.drag = Some(Drag::MoveTrack { id: t.id, gap: index });
         }
