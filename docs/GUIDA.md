@@ -30,6 +30,8 @@ Questa guida spiega come usare gli editor di Ondina con mouse, tastiera e menu.
   (altezza dei tasti) attorno alla nota sotto il puntatore.
 - In riproduzione la linea del playhead segue le ripetizioni di una regione in loop e, con **Follow playhead**
   attivo, la vista la segue.
+- Nello step sequencer, durante la riproduzione, un bordo bianco segna lo step che suona, anche nelle
+  ripetizioni di una regione in loop.
 
 ### Corsia dei controller
 
@@ -301,6 +303,10 @@ o scegli un file recente, Ondina ti chiede prima se vuoi salvare.
 
 Invio equivale a Save. Se stai registrando, la registrazione si ferma prima della domanda e la
 take resta nel progetto.
+
+Un campo di testo aperto (rinomina di marker, tracce o regioni, nome della regione nell'inspector,
+accordo) si chiude senza applicare nulla quando apri o crei un altro progetto, anche se lo fanno
+l'assistente o un client MCP.
 
 ## Scorciatoie principali
 
