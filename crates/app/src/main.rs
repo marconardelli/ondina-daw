@@ -15,6 +15,7 @@ mod cc_lane;
 mod doc_guard;
 mod drag_cancel;
 mod editors;
+mod file_drop;
 mod extra_ui;
 mod inspector;
 mod mixer;
