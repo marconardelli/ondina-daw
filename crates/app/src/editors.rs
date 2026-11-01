@@ -24,9 +24,17 @@ use crate::piano_roll_view::{
 };
 use crate::step_paint::{self, cell_at, RowFill, RowRename, StepCell, StepStroke, DRUM_SOUNDS, PAINT_VELOCITY};
 use crate::theme;
+use crate::widgets::{self, StateKind};
 
 /// Mouse and keyboard help of the piano roll (hover on the help entry of its "⋯" menu and on the editor header's
 /// name).
+/// Mouse help of the step sequencer (hover on "Help" in its toolbar).
+const STEP_HELP: &str = "Click: on/off · Drag: paint · Right-click a step: accent → normal → ghost → off · M: mute the row · Click a name: preview · Right-click a name or ⋯: row menu · The number next to M: the row's sound";
+/// Step cell size and the row name's width.
+const STEP_W: f32 = 22.0;
+const STEP_H: f32 = 20.0;
+const ROW_NAME_W: f32 = 108.0;
+
 pub(crate) const PIANO_ROLL_HELP: &str = "Click on empty grid: add a note and select it (Ctrl/Shift: add it to the selection) · Wheel: scroll pitch · Shift+wheel: scroll time · Ctrl+wheel: zoom time · Ctrl+Shift+wheel: zoom pitch · Ctrl+C/X/V: copy/cut/paste · Ctrl+A: select all · Ctrl+D: repeat the selection · ←/→: move by the snap step · ↑/↓: semitone · Shift+↑/↓: octave · Alt+←/→: shorten/lengthen by the snap step · Alt+drag: copy the notes · Controller lane: drag to draw, right-drag to erase";
 /// The piano roll's Harmony menu: label, interval and whether the voice goes below the notes.
 pub(crate) const HARMONY_MENU: [(&str, HarmonyInterval, bool); 7] = [
@@ -988,12 +996,8 @@ impl OndinaApp {
             if self.ai_button(ui, RichText::new("✨ AI: write a groove").color(theme::AI)) {
                 self.ask_ai(ondina_studio::prompts::WRITE_GROOVE.into());
             }
+            ui.label(RichText::new("Help").color(theme::TEXT_3)).on_hover_text(STEP_HELP);
         });
-        ui.label(
-            RichText::new("Click: on/off · Drag: paint · Right-click: accent → normal → ghost · M: mute row · Right-click a name: row menu")
-                .small()
-                .color(theme::TEXT_DIM),
-        );
         // the step under the playhead, in whichever repeat of a looped pattern it is
         let playing_step = if self.playing() {
             playing_pattern_step(self.position() - region.start, region.length, region.loop_count, pt.step_length)
@@ -1013,88 +1017,75 @@ impl OndinaApp {
             let mut name_rects: Vec<Rect> = Vec::with_capacity(pt.rows.len());
             let mut cells: Vec<StepCell> = Vec::with_capacity(pt.rows.iter().map(|r| r.steps.len()).sum());
             let mut started: Option<(usize, usize)> = None;
+            let base = theme::rgb(region.color.unwrap_or(track.color));
             egui::Grid::new(("steps", rid))
                 .spacing(vec2(3.0, 3.0))
                 .show(ui, |ui| {
+                    // step numbers over the cells; the playing one lights up
+                    for _ in 0..4 {
+                        ui.label("");
+                    }
+                    for si in 0..steps {
+                        let gap = step_paint::group_gap(si);
+                        let (rect, _) = ui.allocate_exact_size(vec2(STEP_W + gap, 14.0), Sense::hover());
+                        let cell = Rect::from_min_size(rect.min + vec2(gap, 0.0), vec2(STEP_W, rect.height()));
+                        let color = if playing_step == Some(si) {
+                            theme::ACCENT
+                        } else if si % 4 == 0 {
+                            theme::TEXT_2
+                        } else {
+                            theme::TEXT_DISABLED
+                        };
+                        ui.painter().text(cell.center(), Align2::CENTER_CENTER, format!("{}", si + 1), FontId::monospace(9.5), color);
+                    }
+                    ui.end_row();
                     for (ri, row) in pt.rows.iter().enumerate() {
-                        let mut label = RichText::new(format!("{:<11}", row.name)).monospace();
-                        if row.muted {
-                            label = label.color(theme::TEXT_DIM).italics();
-                        }
-                        let name = ui
-                            .add(egui::Button::new(label).min_size(vec2(100.0, 20.0)))
-                            .on_hover_text(format!(
-                                "pitch {} ({}){} · right-click for the row menu",
-                                row.pitch,
-                                note_name(row.pitch),
-                                if row.muted { " · muted" } else { "" }
-                            ));
-                        name_rects.push(name.rect);
+                        // name: click previews the sound, right-click opens the row menu
+                        let (rect, name) = ui.allocate_exact_size(vec2(ROW_NAME_W, STEP_H), Sense::click());
+                        let fill = if name.hovered() { theme::HOVER } else { theme::RAISED };
+                        ui.painter().rect_filled(rect, Rounding::same(theme::R_SM), fill);
+                        let color = if row.muted { theme::TEXT_DISABLED } else { theme::TEXT };
+                        ui.painter().with_clip_rect(rect.shrink(2.0)).text(
+                            rect.left_center() + vec2(theme::SP_3, 0.0),
+                            Align2::LEFT_CENTER,
+                            &row.name,
+                            theme::body_font(),
+                            color,
+                        );
+                        let name = name.on_hover_text(format!(
+                            "{} · pitch {} ({}){} · click: preview · right-click: row menu",
+                            row.name,
+                            row.pitch,
+                            note_name(row.pitch),
+                            if row.muted { " · muted" } else { "" }
+                        ));
+                        name_rects.push(rect);
                         if name.clicked() {
                             self.preview_row(track.id, row.pitch);
                         }
                         crate::drag_cancel::menu_unless_dragging(&name, self.drag.is_some(), |ui| {
-                            ui.label(RichText::new(format!("{} · {} {}", row.name, row.pitch, note_name(row.pitch))).strong());
-                            ui.separator();
-                            if ui.button("Preview").clicked() {
-                                self.preview_row(track.id, row.pitch);
-                                ui.close_menu();
-                            }
-                            if ui.button(step_paint::mute_label(row.muted)).clicked() {
-                                self.cmd(step_paint::mute_command(rid, ri, row));
-                                ui.close_menu();
-                            }
-                            if ui.button("Rename…").clicked() {
-                                self.edits.row_rename = RowRename::open(rid, ri, &pt.rows);
-                                ui.close_menu();
-                            }
-                            ui.menu_button("Sound", |ui| {
-                                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-                                    for (sname, spitch) in DRUM_SOUNDS {
-                                        if ui.selectable_label(row.pitch == spitch, step_paint::sound_label(sname, spitch)).clicked() {
-                                            if let Some(c) = step_paint::sound_command(rid, ri, row, (sname, spitch)) {
-                                                self.cmd(c);
-                                            }
-                                            ui.close_menu();
-                                        }
-                                    }
-                                });
-                            });
-                            ui.separator();
-                            for fill in RowFill::ALL {
-                                if ui.button(fill.label()).clicked() {
-                                    if row.steps != fill.velocities(steps, pt.step_length) {
-                                        self.cmd(Command::SetPatternRow {
-                                            region_id: rid,
-                                            row: ri,
-                                            pattern: fill.pattern(steps, pt.step_length),
-                                        });
-                                    }
-                                    ui.close_menu();
-                                }
-                            }
-                            ui.separator();
-                            if ui.button(RichText::new("Delete row").color(theme::REC)).clicked() {
-                                self.cmd(Command::RemovePatternRow { region_id: rid, row: ri });
-                                ui.close_menu();
-                            }
+                            self.row_menu(ui, track.id, rid, ri, row, pt);
                         });
-                        let m = ui
-                            .add(
-                                egui::Button::new(
-                                    RichText::new("M").small().color(if row.muted { Color32::BLACK } else { theme::TEXT_DIM }),
-                                )
-                                .fill(if row.muted { theme::MUTE } else { theme::LANE })
-                                .min_size(vec2(18.0, 20.0)),
-                            )
-                            .on_hover_text(if row.muted { "Unmute this row" } else { "Mute this row" });
-                        if m.clicked() {
+                        // mute, sound (its pitch) and the row menu
+                        let (mrect, m) = ui.allocate_exact_size(widgets::STATE_BUTTON, Sense::click());
+                        widgets::paint_state_button(ui.painter(), mrect, StateKind::Mute, row.muted, m.hovered());
+                        if m.on_hover_text(if row.muted { "Unmute this row" } else { "Mute this row" }).clicked() {
                             self.cmd(step_paint::mute_command(rid, ri, row));
                         }
+                        let sound = egui::Button::new(RichText::new(format!("{}", row.pitch)).font(theme::number_font()).color(theme::TEXT_2))
+                            .min_size(vec2(30.0, STEP_H));
+                        egui::menu::menu_custom_button(ui, sound, |ui| self.sound_items(ui, rid, ri, row))
+                            .response
+                            .on_hover_text(format!("Sound: {} ({}) · click to choose another", row.pitch, note_name(row.pitch)));
+                        let more = egui::Button::new(RichText::new("\u{22EF}").color(theme::TEXT_2)).min_size(vec2(22.0, STEP_H));
+                        egui::menu::menu_custom_button(ui, more, |ui| self.row_menu(ui, track.id, rid, ri, row, pt))
+                            .response
+                            .on_hover_text("Row menu");
                         for (si, v) in row.steps.iter().enumerate() {
                             let on = *v > 0;
-                            let (rect, resp) =
-                                ui.allocate_exact_size(vec2(22.0, 20.0), Sense::click_and_drag());
+                            let gap = step_paint::group_gap(si);
+                            let (alloc, resp) = ui.allocate_exact_size(vec2(STEP_W + gap, STEP_H), Sense::click_and_drag());
+                            let rect = Rect::from_min_size(alloc.min + vec2(gap, 0.0), vec2(STEP_W, STEP_H));
                             cells.push(StepCell { row: ri, step: si, rect });
                             if resp.clicked() {
                                 self.cmd(Command::SetPatternStep {
@@ -1105,17 +1096,11 @@ impl OndinaApp {
                                 });
                             }
                             if resp.secondary_clicked() && self.drag.is_none() {
-                                let nv = match *v {
-                                    0 => 120,
-                                    101..=127 => 90,
-                                    61..=100 => 45,
-                                    _ => 0,
-                                };
                                 self.cmd(Command::SetPatternStep {
                                     region_id: rid,
                                     row: ri,
                                     step: si,
-                                    velocity: nv,
+                                    velocity: step_paint::cycle_velocity(*v),
                                 });
                             }
                             if resp.drag_started_by(PointerButton::Primary) {
@@ -1146,7 +1131,7 @@ impl OndinaApp {
                 Some(Drag::StepPaint { region, stroke }) if *region == rid => Some(stroke.clone()),
                 _ => None,
             };
-            paint_step_cells(ui, &cells, pt, stroke.as_ref(), playing_step);
+            paint_step_cells(ui, &cells, pt, stroke.as_ref(), playing_step, base);
             ui.menu_button("+ Row", |ui| {
                 egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                     for (name, pitch) in DRUM_SOUNDS {
@@ -1166,7 +1151,7 @@ impl OndinaApp {
             });
             if let Some((mut ren, r)) = target {
                 let edit_id = ui.id().with(("row-rename", rid, ren.row));
-                match rename_field(ui, edit_id, r, FontId::monospace(12.0), &mut ren.text, &mut ren.focus) {
+                match rename_field(ui, edit_id, r, theme::body_font(), &mut ren.text, &mut ren.focus) {
                     RenameEdit::Editing => self.edits.row_rename = Some(ren),
                     RenameEdit::Commit => {
                         if let Some(c) = ren.command(rid, &pt.rows) {
@@ -1190,6 +1175,58 @@ impl OndinaApp {
                 other => self.drag = other,
             }
         }
+    }
+
+    /// The row menu, on a right click on a row's name and on its "⋯" button.
+    fn row_menu(&mut self, ui: &mut egui::Ui, track_id: Id, rid: Id, ri: usize, row: &PatternRow, pt: &PatternContent) {
+        let steps = pt.steps as usize;
+        ui.label(RichText::new(format!("{} · {} {}", row.name, row.pitch, note_name(row.pitch))).strong());
+        ui.separator();
+        if ui.button("Preview").clicked() {
+            self.preview_row(track_id, row.pitch);
+            ui.close_menu();
+        }
+        if ui.button(step_paint::mute_label(row.muted)).clicked() {
+            self.cmd(step_paint::mute_command(rid, ri, row));
+            ui.close_menu();
+        }
+        if ui.button("Rename…").clicked() {
+            self.edits.row_rename = RowRename::open(rid, ri, &pt.rows);
+            ui.close_menu();
+        }
+        ui.menu_button("Sound", |ui| self.sound_items(ui, rid, ri, row));
+        ui.separator();
+        for fill in RowFill::ALL {
+            if ui.button(fill.label()).clicked() {
+                if row.steps != fill.velocities(steps, pt.step_length) {
+                    self.cmd(Command::SetPatternRow {
+                        region_id: rid,
+                        row: ri,
+                        pattern: fill.pattern(steps, pt.step_length),
+                    });
+                }
+                ui.close_menu();
+            }
+        }
+        ui.separator();
+        if ui.button(RichText::new("Delete row").color(theme::REC)).clicked() {
+            self.cmd(Command::RemovePatternRow { region_id: rid, row: ri });
+            ui.close_menu();
+        }
+    }
+
+    /// The drum sounds a row can play; the row's own is checked.
+    fn sound_items(&mut self, ui: &mut egui::Ui, rid: Id, ri: usize, row: &PatternRow) {
+        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+            for (sname, spitch) in DRUM_SOUNDS {
+                if ui.selectable_label(row.pitch == spitch, step_paint::sound_label(sname, spitch)).clicked() {
+                    if let Some(c) = step_paint::sound_command(rid, ri, row, (sname, spitch)) {
+                        self.cmd(c);
+                    }
+                    ui.close_menu();
+                }
+            }
+        });
     }
 
     /// Plays a pattern row's sound once.
@@ -1306,19 +1343,35 @@ pub(crate) fn len_label(l: f64) -> &'static str {
 }
 
 /// Paints the step sequencer's cells after the grid laid them out: a paint stroke in progress shows its value
-/// in the cells it touched, and the playing step gets a white border.
+/// in the cells it touched, accents get a light bar on top, and the playing step's column is lit with a white
+/// border on its cells.
 fn paint_step_cells(
     ui: &egui::Ui,
     cells: &[StepCell],
     pt: &PatternContent,
     stroke: Option<&StepStroke>,
     playing_step: Option<usize>,
+    track: Color32,
 ) {
+    let column = cells
+        .iter()
+        .filter(|c| playing_step == Some(c.step))
+        .map(|c| c.rect)
+        .reduce(|a, b| a.union(b));
+    if let Some(col) = column {
+        ui.painter().rect_filled(col.expand2(vec2(2.0, 3.0)), Rounding::same(theme::R_SM), Color32::from_white_alpha(28));
+    }
     for c in cells {
         let stored = pt.rows[c.row].steps[c.step];
         let v = stroke.map_or(stored, |st| st.shown(c.row, c.step, stored));
-        let col = step_paint::cell_color(v, c.step, pt.rows[c.row].muted);
+        let muted = pt.rows[c.row].muted;
+        let col = step_paint::cell_color(v, c.step, muted, track);
         ui.painter().rect_filled(c.rect, Rounding::same(3.0_f32), col);
+        if step_paint::step_level(v) == step_paint::StepLevel::Accent {
+            let bar = Rect::from_min_size(c.rect.min + vec2(3.0, 2.0), vec2(c.rect.width() - 6.0, 2.0));
+            let ink = if muted { theme::TEXT_DISABLED } else { Color32::WHITE };
+            ui.painter().rect_filled(bar, Rounding::same(1.0_f32), ink);
+        }
         if playing_step == Some(c.step) {
             ui.painter().rect_stroke(c.rect, Rounding::same(3.0_f32), Stroke::new(1.5_f32, Color32::WHITE));
         }

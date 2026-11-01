@@ -243,20 +243,70 @@ impl RowRename {
     }
 }
 
-/// Colour of a step cell holding velocity `v` (0 = off) at `step`. A muted row's on cells are drawn darker, so the
-/// row still shows its steps but reads as silent.
-pub fn cell_color(v: u8, step: usize, muted: bool) -> Color32 {
-    if v > 0 {
-        let c = theme::velocity_color(theme::ACCENT, v);
-        if muted {
-            theme::darker(c, 0.4)
-        } else {
-            c
-        }
-    } else if (step / 4).is_multiple_of(2) {
-        theme::LANE
+/// How loud a step plays, as the cells show it. The right-click cycle sets 120 (accent), 90 (normal) and 45 (ghost).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepLevel {
+    Off,
+    Ghost,
+    Normal,
+    Accent,
+}
+
+/// The level of a step holding velocity `v`.
+pub fn step_level(v: u8) -> StepLevel {
+    match v {
+        0 => StepLevel::Off,
+        1..=60 => StepLevel::Ghost,
+        61..=100 => StepLevel::Normal,
+        _ => StepLevel::Accent,
+    }
+}
+
+/// The velocity a right click gives a step: off → accent → normal → ghost → off.
+pub fn cycle_velocity(v: u8) -> u8 {
+    match step_level(v) {
+        StepLevel::Off => 120,
+        StepLevel::Accent => 90,
+        StepLevel::Normal => 45,
+        StepLevel::Ghost => 0,
+    }
+}
+
+/// Whether `step` falls in the shaded half of the groups of four (steps 5-8, 13-16...).
+pub fn shaded_group(step: usize) -> bool {
+    !(step / 4).is_multiple_of(2)
+}
+
+/// Extra space before a step that starts a group of four, so the groups stand apart.
+pub const GROUP_GAP: f32 = 4.0;
+
+pub fn group_gap(step: usize) -> f32 {
+    if step > 0 && step.is_multiple_of(4) {
+        GROUP_GAP
     } else {
-        theme::LANE_ALT
+        0.0
+    }
+}
+
+/// An off cell in a plain and in a shaded group of four.
+pub const OFF_CELL: Color32 = Color32::from_rgb(0x26, 0x2A, 0x30);
+pub const OFF_CELL_SHADED: Color32 = Color32::from_rgb(0x30, 0x35, 0x3C);
+
+/// Colour of a step cell holding velocity `v` (0 = off) at `step`, for a track drawn in `track`: off cells clearly
+/// visible and lighter in every other group of four; ghost steps a dim tint, normal ones the track color, accents
+/// lighter still. A muted row's on cells are drawn darker, so the row still shows its steps but reads as silent.
+pub fn cell_color(v: u8, step: usize, muted: bool, track: Color32) -> Color32 {
+    let off = if shaded_group(step) { OFF_CELL_SHADED } else { OFF_CELL };
+    let c = match step_level(v) {
+        StepLevel::Off => return off,
+        StepLevel::Ghost => off.lerp_to_gamma(track, 0.4),
+        StepLevel::Normal => track,
+        StepLevel::Accent => track.lerp_to_gamma(Color32::WHITE, 0.4),
+    };
+    if muted {
+        theme::darker(c, 0.45)
+    } else {
+        c
     }
 }
 
@@ -605,17 +655,62 @@ mod tests {
         }
     }
 
+    const TRACK: Color32 = Color32::from_rgb(0xD4, 0x6B, 0xA3);
+
+    fn lum(c: Color32) -> u32 {
+        u32::from(c.r()) + u32::from(c.g()) + u32::from(c.b())
+    }
+
     #[test]
     fn muted_rows_are_drawn_darker() {
         for v in [45, 90, 127] {
-            let (m, n) = (cell_color(v, 0, true), cell_color(v, 0, false));
+            let (m, n) = (cell_color(v, 0, true, TRACK), cell_color(v, 0, false, TRACK));
             assert!(m.r() <= n.r() && m.g() <= n.g() && m.b() <= n.b(), "velocity {v}");
             assert!(m.r() < n.r(), "velocity {v}");
         }
         for s in 0..8 {
-            assert_eq!(cell_color(0, s, true), cell_color(0, s, false));
+            assert_eq!(cell_color(0, s, true, TRACK), cell_color(0, s, false, TRACK));
         }
-        assert_eq!(cell_color(0, 0, false), theme::LANE);
-        assert_eq!(cell_color(0, 4, false), theme::LANE_ALT);
+        assert_eq!(cell_color(0, 0, false, TRACK), OFF_CELL);
+        assert_eq!(cell_color(0, 4, false, TRACK), OFF_CELL_SHADED);
+    }
+
+    #[test]
+    fn levels_follow_the_right_click_cycle() {
+        assert_eq!(step_level(0), StepLevel::Off);
+        assert_eq!(step_level(45), StepLevel::Ghost);
+        assert_eq!(step_level(PAINT_VELOCITY), StepLevel::Normal);
+        assert_eq!(step_level(NORMAL), StepLevel::Normal);
+        assert_eq!(step_level(120), StepLevel::Accent);
+        // off → accent → normal → ghost → off, each landing on the next level
+        let mut v = 0;
+        let mut seen = vec![];
+        for _ in 0..4 {
+            v = cycle_velocity(v);
+            seen.push(step_level(v));
+        }
+        assert_eq!(seen, [StepLevel::Accent, StepLevel::Normal, StepLevel::Ghost, StepLevel::Off]);
+        assert_eq!(cycle_velocity(127), 90);
+        assert_eq!(cycle_velocity(PAINT_VELOCITY), 45);
+        assert_eq!(cycle_velocity(1), 0);
+    }
+
+    #[test]
+    fn each_level_has_its_own_intensity() {
+        for step in [0, 4] {
+            let [off, ghost, normal, accent] = [0, 45, 90, 120].map(|v| lum(cell_color(v, step, false, TRACK)));
+            assert!(off < ghost && ghost < normal && normal < accent, "step {step}: {off} {ghost} {normal} {accent}");
+        }
+        // off cells stand out from the panel behind them
+        assert!(lum(OFF_CELL) >= lum(theme::PANEL_BG) + 30);
+    }
+
+    #[test]
+    fn groups_of_four_are_shaded_and_spaced() {
+        let shaded: Vec<usize> = (0..16).filter(|s| shaded_group(*s)).collect();
+        assert_eq!(shaded, [4, 5, 6, 7, 12, 13, 14, 15]);
+        let gaps: Vec<usize> = (0..16).filter(|s| group_gap(*s) > 0.0).collect();
+        assert_eq!(gaps, [4, 8, 12]);
+        assert_ne!(OFF_CELL, OFF_CELL_SHADED);
     }
 }
