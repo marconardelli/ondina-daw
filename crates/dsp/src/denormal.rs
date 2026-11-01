@@ -60,21 +60,19 @@ pub fn enable_flush_to_zero() -> FpControl {
 }
 
 /// Put back a state saved on this same thread by `fp_control` or `enable_flush_to_zero`.
+#[cfg(target_arch = "x86_64")]
 pub fn restore_fp_control(saved: FpControl) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if read_mxcsr() != saved.0 {
-            write_mxcsr(saved.0);
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let _ = saved;
+    if read_mxcsr() != saved.0 {
+        write_mxcsr(saved.0);
     }
 }
 
+/// Put back a state saved on this same thread by `fp_control` or `enable_flush_to_zero`.
+#[cfg(not(target_arch = "x86_64"))]
+pub fn restore_fp_control(_saved: FpControl) {}
+
 /// Flush-to-zero on the current thread for as long as the guard lives; dropping it (also while unwinding from a
-/// panic) gives the thread back the state it had. Bind it to a named variable: `let _ = ...` drops it at once.
+/// panic) gives the thread back the state it had. Bind it to a named variable such as `_ftz`: bound to `_` alone it drops at once.
 #[must_use = "flush-to-zero ends when the guard is dropped"]
 pub struct FlushToZero {
     saved: FpControl,
@@ -98,7 +96,7 @@ impl Drop for FlushToZero {
 fn read_mxcsr() -> u32 {
     let mut csr: u32 = 0;
     // SAFETY: stmxcsr only stores the 32-bit SSE control register into `csr`, a live, aligned u32 on our stack.
-    // The deprecated _mm_getcsr does the same thing; inline asm avoids the deprecation.
+    // The deprecated SSE getcsr intrinsic does the same thing; inline asm avoids the deprecation.
     unsafe {
         core::arch::asm!("stmxcsr dword ptr [{p}]", p = in(reg) &raw mut csr, options(nostack, preserves_flags));
     }
