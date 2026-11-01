@@ -719,8 +719,9 @@ impl OndinaApp {
             }
             self.drag = Some(Drag::Velocity { region: rid, stroke });
         }
-        if vresp.dragged() {
-            if let (Some(pp), Some(Drag::Velocity { stroke, .. })) = (pointer, self.drag.as_mut()) {
+        // follows the app's drag, not egui's: a right click in the middle ends egui's drag but not the stroke
+        if let (Some(pp), Some(Drag::Velocity { region, stroke })) = (pointer, self.drag.as_mut()) {
+            if *region == rid {
                 stroke.add(x_to_beat(pp.x), vel_at(pp.y), vel_tol, &self.selected_notes);
             }
         }
