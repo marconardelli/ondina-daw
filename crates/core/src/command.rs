@@ -34,7 +34,7 @@ pub enum Command {
         /// Key like "C major", "A minor", "F# dorian".
         key: Option<String>,
     },
-    /// Open a project file (.ondina JSON). The transport stops and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). VST3 plug-ins whose path is not a .vst3 bundle on a local drive are not loaded and are listed in blocked_plugins.
+    /// Open a project file (.ondina JSON). The transport stops and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). VST3 plug-ins whose path is not a .vst3 bundle on a local drive are not loaded and are listed in blocked_plugins. When an MCP client or the assistant opens the project, VST3 plug-ins outside the standard VST3 folders and the folders the user added in Ondina's VST3 library are not loaded either: they stay in the project and in the saved file, are listed in blocked_plugins, stay silent in playback and bounces, and load only when the user opens the project from the app.
     OpenProject { path: String },
     /// Save the project. Without a path saves to the current file (or fails if never saved). The path must be a .ondina file (or an older .aurora one) on a local drive (no network shares); .ondina is added when the path has no extension. An existing file is overwritten only if it is an Ondina project.
     SaveProject { path: Option<String> },
@@ -448,7 +448,7 @@ pub enum Command {
     /// Load a VST3 plug-in (path to a .vst3 bundle on a local drive) as instrument or insert effect on a track (track_id 0 = master). Network shares, device paths, URLs and files that are not .vst3 are refused. From MCP clients and the assistant the bundle must also be inside a standard VST3 folder (Common Files\VST3, %LOCALAPPDATA%\Programs\Common\VST3) or a folder the user added in Ondina's VST3 library (Add folder…): if it is refused, ask the user to add its folder. Its parameters are then addressable as "p<id>" (normalized 0..1) with set_plugin_param.
     AddVst3 { track_id: Id, path: String, as_instrument: Option<bool>, index: Option<usize> },
 
-    /// Open the native editor window of a VST3 plug-in. Knob moves in the window are applied to the project (undoable) and to the playing instance.
+    /// Open the native editor window of a VST3 plug-in. Knob moves in the window are applied to the project (undoable) and to the playing instance. Refused for a plug-in that open_project listed in blocked_plugins.
     OpenPluginEditor { plugin_id: Id },
     /// Close a plug-in editor window.
     ClosePluginEditor { plugin_id: Id },

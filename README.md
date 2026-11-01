@@ -74,7 +74,7 @@ Every row is available both in the GUI and as MCP tools (full list in [`MCP_TOOL
 | Video | linked movie (local file) with offset, movie audio, SMPTE timecode, video window, export with soundtrack (.mp4, .mov, .mkv, .m4v) | `load_movie` `set_frame_rate` `extract_movie_frame` `export_movie` |
 | Built-in instruments | Analog Synth, FM Synth, Drum Synth, Sampler, Tonewheel Organ, Plucked String | `set_instrument` `set_plugin_params` |
 | Built-in effects | 16 audio effects (EQ, dynamics, delay, reverb, modulation, distortion, filters, utility) + 4 MIDI effects | `add_effect` `add_midi_effect` |
-| VST3 plug-ins | scan and host third-party VST3 instruments and effects (`.vst3` bundles on local drives only; MCP clients and the assistant load them only from the standard VST3 folders and the folders added in the library), native editor windows, automatable parameters, state saved in the project | `scan_vst3` `add_vst3` `open_plugin_editor` `set_plugin_param` |
+| VST3 plug-ins | scan and host third-party VST3 instruments and effects (`.vst3` bundles on local drives only; MCP clients and the assistant load them, also from projects they open, only from the standard VST3 folders and the folders added in the library), native editor windows, automatable parameters, state saved in the project | `scan_vst3` `add_vst3` `open_plugin_editor` `set_plugin_param` |
 | Mastering and loudness | integrated LUFS, true peak, LRA, spectrum, correlation, advice; automatic mastering | `analyze_mix` `auto_master` |
 | Bounce and export | WAV 16/24/32-float with dither, reverb and delay tails rendered until they fade (or an exact length with tail_sec), MIDI, bounce in place, multichannel surround | `bounce` `export_midi` `bounce_in_place` |
 

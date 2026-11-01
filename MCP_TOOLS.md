@@ -18,7 +18,7 @@ Create a new empty project, replacing the current one. The transport stops (Live
 Parameters: `key, name, tempo, time_signature`
 
 ### `open_project`
-Open a project file (.ondina JSON). The transport stops and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). VST3 plug-ins whose path is not a .vst3 bundle on a local drive are not loaded and are listed in blocked_plugins.
+Open a project file (.ondina JSON). The transport stops and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). VST3 plug-ins whose path is not a .vst3 bundle on a local drive are not loaded and are listed in blocked_plugins. When an MCP client or the assistant opens the project, VST3 plug-ins outside the standard VST3 folders and the folders the user added in Ondina's VST3 library are not loaded either: they stay in the project and in the saved file, are listed in blocked_plugins, stay silent in playback and bounces, and load only when the user opens the project from the app.
 
 Parameters: `path`
 
@@ -783,7 +783,7 @@ Load a VST3 plug-in (path to a .vst3 bundle on a local drive) as instrument or i
 Parameters: `as_instrument, index, path, track_id`
 
 ### `open_plugin_editor` · read-only
-Open the native editor window of a VST3 plug-in. Knob moves in the window are applied to the project (undoable) and to the playing instance.
+Open the native editor window of a VST3 plug-in. Knob moves in the window are applied to the project (undoable) and to the playing instance. Refused for a plug-in that open_project listed in blocked_plugins.
 
 Parameters: `plugin_id`
 
