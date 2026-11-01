@@ -1050,3 +1050,74 @@ impl Effect for Exciter {
         }
     }
 }
+
+#[cfg(all(test, target_arch = "x86_64"))]
+mod tests {
+    use super::*;
+    use crate::denormal::FlushToZero;
+
+    const SR: f32 = 48000.0;
+    const BLOCK: usize = 512;
+
+    /// Every number the comb filters keep between samples.
+    fn comb_states(rev: &Reverb) -> impl Iterator<Item = f32> + '_ {
+        rev.combs_l.iter().chain(&rev.combs_r).flat_map(|c| c.buf.iter().copied().chain(std::iter::once(c.store)))
+    }
+
+    fn allpass_states(rev: &Reverb) -> impl Iterator<Item = f32> + '_ {
+        rev.ap_l.iter().chain(&rev.ap_r).flat_map(|a| a.buf.iter().copied())
+    }
+
+    /// One block with an impulse, then `silent_blocks` blocks of silence; `each` sees the output and the reverb after
+    /// every silent block with its index.
+    fn impulse_then_silence(rev: &mut Reverb, silent_blocks: usize, mut each: impl FnMut(usize, &[f32], &[f32], &Reverb)) {
+        let ctx = ProcessContext::idle(SR);
+        let mut l = vec![0.0f32; BLOCK];
+        let mut r = vec![0.0f32; BLOCK];
+        l[0] = 1.0;
+        r[0] = 1.0;
+        rev.process(&mut l, &mut r, &ctx);
+        for block in 0..silent_blocks {
+            l.iter_mut().chain(r.iter_mut()).for_each(|x| *x = 0.0);
+            rev.process(&mut l, &mut r, &ctx);
+            each(block, &l, &r, rev);
+        }
+    }
+
+    #[test]
+    fn reverb_tail_reaches_exact_zero_with_flush_to_zero() {
+        std::thread::spawn(|| {
+            let _ftz = FlushToZero::enable();
+            let mut rev = Reverb::new(SR);
+            let silent_blocks = 60 * 48000 / BLOCK;
+            let last_second = silent_blocks - 94;
+            impulse_then_silence(&mut rev, silent_blocks, |block, l, r, _| {
+                if block >= last_second {
+                    for (i, (a, b)) in l.iter().zip(r).enumerate() {
+                        assert!(*a == 0.0 && *b == 0.0, "block {block} sample {i}: {a:e} {b:e}");
+                    }
+                }
+            });
+            let comb = comb_states(&rev).find(|x| x.is_subnormal());
+            assert_eq!(comb, None, "subnormal comb state");
+            let allpass = allpass_states(&rev).find(|x| x.is_subnormal());
+            assert_eq!(allpass, None, "subnormal allpass state");
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn reverb_tail_goes_subnormal_without_flush_to_zero() {
+        std::thread::spawn(|| {
+            let mut rev = Reverb::new(SR);
+            let mut seen_subnormal = false;
+            impulse_then_silence(&mut rev, 30 * 48000 / BLOCK, |_, _, _, rev| {
+                seen_subnormal |= comb_states(rev).any(|x| x.is_subnormal());
+            });
+            assert!(seen_subnormal, "the comb filters never reached subnormal numbers");
+        })
+        .join()
+        .unwrap();
+    }
+}
