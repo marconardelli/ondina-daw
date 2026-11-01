@@ -1005,7 +1005,7 @@ impl OndinaApp {
             None
         };
         let steps = pt.steps as usize;
-        egui::ScrollArea::both().drag_to_scroll(false).show(ui, |ui| {
+        egui::ScrollArea::both().drag_to_scroll(false).auto_shrink([false, false]).show(ui, |ui| {
             // a row added or removed elsewhere shifts the indices: drop what was aimed at the old rows
             if matches!(&self.drag, Some(Drag::StepPaint { region, stroke }) if *region == rid && !stroke.fits(pt.rows.len())) {
                 self.drag = None;
@@ -1018,8 +1018,10 @@ impl OndinaApp {
             let mut cells: Vec<StepCell> = Vec::with_capacity(pt.rows.iter().map(|r| r.steps.len()).sum());
             let mut started: Option<(usize, usize)> = None;
             let base = theme::rgb(region.color.unwrap_or(track.color));
+            // min_col_width 0: egui's default (the interact width, 40) would spread the 22-point cells apart
             egui::Grid::new(("steps", rid))
                 .spacing(vec2(3.0, 3.0))
+                .min_col_width(0.0)
                 .show(ui, |ui| {
                     // step numbers over the cells; the playing one lights up
                     for _ in 0..4 {
@@ -1343,7 +1345,7 @@ pub(crate) fn len_label(l: f64) -> &'static str {
 }
 
 /// Paints the step sequencer's cells after the grid laid them out: a paint stroke in progress shows its value
-/// in the cells it touched, accents get a light bar on top, and the playing step's column is lit with a white
+/// in the cells it touched, accents get a dark bar on top, and the playing step's column is lit with a white
 /// border on its cells.
 fn paint_step_cells(
     ui: &egui::Ui,
@@ -1368,8 +1370,8 @@ fn paint_step_cells(
         let col = step_paint::cell_color(v, c.step, muted, track);
         ui.painter().rect_filled(c.rect, Rounding::same(3.0_f32), col);
         if step_paint::step_level(v) == step_paint::StepLevel::Accent {
-            let bar = Rect::from_min_size(c.rect.min + vec2(3.0, 2.0), vec2(c.rect.width() - 6.0, 2.0));
-            let ink = if muted { theme::TEXT_DISABLED } else { Color32::WHITE };
+            let bar = Rect::from_min_size(c.rect.min + vec2(4.0, 3.0), vec2(c.rect.width() - 8.0, 3.0));
+            let ink = theme::darker(col, 0.5);
             ui.painter().rect_filled(bar, Rounding::same(1.0_f32), ink);
         }
         if playing_step == Some(c.step) {
