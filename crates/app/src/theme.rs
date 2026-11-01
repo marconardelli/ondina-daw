@@ -439,10 +439,11 @@ mod tests {
         }
     }
 
+    // a short pause, and tooltips at least as wide as menus
+    const _: () = assert!(TOOLTIP_DELAY > 0.1 && TOOLTIP_DELAY < 1.0 && TOOLTIP_WIDTH >= MENU_WIDTH);
+
     #[test]
     fn menus_and_tooltips_have_one_size_and_a_short_delay() {
-        assert!(TOOLTIP_DELAY > 0.1 && TOOLTIP_DELAY < 1.0);
-        assert!(TOOLTIP_WIDTH >= MENU_WIDTH);
         // separators are drawn with the noninteractive stroke: a visible hairline, not the panel fill
         assert_eq!(visuals().widgets.noninteractive.bg_stroke.color, BORDER);
     }
