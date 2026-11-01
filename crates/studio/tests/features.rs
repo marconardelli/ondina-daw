@@ -2199,6 +2199,30 @@ fn paste_region_copies_pattern_and_audio_regions_and_drops_the_take() {
 }
 
 #[test]
+fn pattern_steps_sent_under_one_key_are_one_undo_step_and_keep_the_other_velocities() {
+    let mut s = Session::new(false);
+    let tid = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Pop Drum Kit"}))["track_id"].as_u64().unwrap();
+    let rid = ok(&mut s, "create_pattern_region", json!({"track_id": tid, "start": 0, "steps": 16}))["region_id"].as_u64().unwrap();
+    for (row, step, velocity) in [(3, 0, 120), (3, 10, 100), (3, 12, 77), (1, 4, 45)] {
+        ok(&mut s, "set_pattern_step", json!({"region_id": rid, "row": row, "step": step, "velocity": velocity}));
+    }
+    let before = ok(&mut s, "get_project_json", json!({}));
+
+    // a paint stroke over steps 1-8 of row 3, sent the way the editor sends it: one key for the whole gesture
+    for step in 1..=8 {
+        let c = Command::SetPatternStep { region_id: rid, row: 3, step, velocity: 100 };
+        s.execute_coalesced(c, "step-paint-1").unwrap();
+    }
+    let rows = region_object(&mut s, rid)["content"]["rows"].clone();
+    let row3: Vec<u64> = rows[3]["steps"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    assert_eq!(row3, [120, 100, 100, 100, 100, 100, 100, 100, 100, 0, 100, 0, 77, 0, 0, 0]);
+    assert_eq!(rows[1]["steps"][4].as_u64(), Some(45));
+
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(ok(&mut s, "get_project_json", json!({})), before);
+}
+
+#[test]
 fn paste_region_refuses_a_region_that_does_not_fit_and_keeps_the_project() {
     let mut s = Session::new(false);
     let inst = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
