@@ -1051,6 +1051,148 @@ impl Effect for Exciter {
     }
 }
 
+// ============================================================================ De-Esser
+
+/// Detection envelope: a fast attack catches the start of an "s", the release lets go between syllables.
+const DE_ESS_ATTACK_MS: f32 = 1.0;
+const DE_ESS_RELEASE_MS: f32 = 60.0;
+/// The Split shelf has its midpoint below `freq`, so the reduction is full from `freq` up while the voice an
+/// octave lower is barely touched.
+const DE_ESS_SHELF_RATIO: f32 = 0.6;
+const DE_ESS_SHELF_Q: f32 = 0.8;
+/// The shelf coefficients are recomputed at most once every this many samples, and only when the reduction moved.
+const DE_ESS_SHELF_STEP: usize = 16;
+const DE_ESS_SHELF_EPS_DB: f32 = 0.05;
+
+pub struct DeEsser {
+    sr: f32,
+    freq: f32,
+    threshold: f32,
+    range: f32,
+    split: bool,
+    listen: bool,
+    att: f32,
+    rel: f32,
+    /// High-pass at `freq`, one per channel: the detector input, and what Listen plays.
+    detect: [Biquad; 2],
+    /// Dynamic high shelf, one per channel; at 0 dB its coefficients make it an exact identity.
+    shelf: [Biquad; 2],
+    env: f32,
+    /// Reduction the shelf coefficients hold now (dB, >= 0).
+    applied_db: f32,
+    since_update: usize,
+    dirty: bool,
+    /// Largest reduction of the last block, in dB (<= 0), like the compressor's.
+    pub gain_reduction_db: f32,
+}
+
+impl DeEsser {
+    pub fn new(sr: f32) -> Self {
+        let coef = |ms: f32| 1.0 - (-1.0 / (ms * 0.001 * sr)).exp();
+        let mut d = DeEsser {
+            sr,
+            freq: 6000.0,
+            threshold: -24.0,
+            range: 8.0,
+            split: true,
+            listen: false,
+            att: coef(DE_ESS_ATTACK_MS),
+            rel: coef(DE_ESS_RELEASE_MS),
+            detect: [Biquad::default(); 2],
+            shelf: [Biquad::default(); 2],
+            env: 0.0,
+            applied_db: 0.0,
+            since_update: 0,
+            dirty: false,
+            gain_reduction_db: 0.0,
+        };
+        d.update_filters();
+        d
+    }
+    fn update_filters(&mut self) {
+        for b in self.detect.iter_mut() {
+            b.set(BiquadKind::HighPass, self.freq, 0.707, 0.0, self.sr);
+        }
+        self.set_shelf(self.applied_db);
+        self.dirty = false;
+    }
+    fn set_shelf(&mut self, red: f32) {
+        for b in self.shelf.iter_mut() {
+            b.set(BiquadKind::HighShelf, self.freq * DE_ESS_SHELF_RATIO, DE_ESS_SHELF_Q, -red, self.sr);
+        }
+        self.applied_db = red;
+    }
+}
+
+impl Effect for DeEsser {
+    fn set_param(&mut self, id: &str, v: f32) {
+        if !v.is_finite() {
+            return;
+        }
+        match id {
+            "freq" => {
+                let f = v.clamp(2000.0, 12000.0);
+                if f != self.freq {
+                    self.freq = f;
+                    self.dirty = true;
+                }
+            }
+            "threshold" => self.threshold = v.clamp(-60.0, 0.0),
+            "range" => self.range = v.clamp(0.0, 24.0),
+            "mode" => self.split = v < 0.5,
+            "listen" => self.listen = v >= 0.5,
+            _ => {}
+        }
+    }
+    fn process(&mut self, l: &mut [f32], r: &mut [f32], _ctx: &ProcessContext) {
+        if self.dirty {
+            self.update_filters();
+        }
+        let mut max_red: f32 = 0.0;
+        for (a, b) in l.iter_mut().zip(r.iter_mut()) {
+            let (xl, xr) = (*a, *b);
+            let hl = self.detect[0].process(xl);
+            let hr = self.detect[1].process(xr);
+            let level = hl.abs().max(hr.abs());
+            let coef = if level > self.env { self.att } else { self.rel };
+            self.env += (level - self.env) * coef;
+            if self.env < 1e-9 {
+                self.env = 0.0;
+            }
+            let over = gain_to_db(self.env) - self.threshold;
+            let red = if over > 0.0 { over.min(self.range) } else { 0.0 };
+            max_red = max_red.max(red);
+            self.since_update += 1;
+            if self.since_update >= DE_ESS_SHELF_STEP {
+                self.since_update = 0;
+                if (red - self.applied_db).abs() >= DE_ESS_SHELF_EPS_DB || (red == 0.0 && self.applied_db != 0.0) {
+                    self.set_shelf(red);
+                }
+            }
+            let sl = self.shelf[0].process(xl);
+            let sr = self.shelf[1].process(xr);
+            (*a, *b) = if self.listen {
+                (hl, hr)
+            } else if self.split {
+                (sl, sr)
+            } else {
+                let g = if red > 0.0 { db_to_gain(-red) } else { 1.0 };
+                (xl * g, xr * g)
+            };
+        }
+        self.gain_reduction_db = -max_red;
+    }
+    fn reset(&mut self) {
+        for b in self.detect.iter_mut().chain(self.shelf.iter_mut()) {
+            b.reset();
+        }
+        self.env = 0.0;
+        self.since_update = 0;
+        self.gain_reduction_db = 0.0;
+        self.set_shelf(0.0);
+    }
+}
+
 #[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
     use super::*;
@@ -1119,5 +1261,226 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod de_esser_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    const SR: f32 = 48000.0;
+    /// Half a second at 48 kHz.
+    const LEN: usize = 24000;
+    /// The window the tone levels are measured on: 20 periods of 200 Hz and 700 of 7 kHz, so no leakage.
+    const WIN: usize = 4800;
+    const MINUS_90_DB: f32 = 3.162e-5;
+
+    fn tone(freq: f64, amp: f32, len: usize) -> Vec<f32> {
+        (0..len).map(|n| amp * (2.0 * std::f64::consts::PI * freq * n as f64 / SR as f64).sin() as f32).collect()
+    }
+
+    fn sum(a: &[f32], b: &[f32]) -> Vec<f32> {
+        a.iter().zip(b).map(|(x, y)| x + y).collect()
+    }
+
+    /// A de-esser set up the way the engine does it: registry defaults, then `params`.
+    fn de_esser(params: &[(&str, f32)]) -> DeEsser {
+        let mut d = DeEsser::new(SR);
+        let map: BTreeMap<String, f32> = params.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        crate::configure("de_esser", &map, |k, v| d.set_param(k, v));
+        d
+    }
+
+    /// Copies `input` to both channels and processes it in blocks of 512.
+    fn run(d: &mut DeEsser, input: &[f32]) -> (Vec<f32>, Vec<f32>) {
+        let mut l = input.to_vec();
+        let mut r = input.to_vec();
+        let ctx = ProcessContext::idle(SR);
+        for (a, b) in l.chunks_mut(512).zip(r.chunks_mut(512)) {
+            d.process(a, b, &ctx);
+        }
+        (l, r)
+    }
+
+    /// Amplitude of the `freq` component over the last `WIN` samples (single-bin DFT).
+    fn level(x: &[f32], freq: f64) -> f32 {
+        let w = &x[x.len() - WIN..];
+        let (mut re, mut im) = (0.0f64, 0.0f64);
+        for (n, v) in w.iter().enumerate() {
+            let ph = 2.0 * std::f64::consts::PI * freq * n as f64 / SR as f64;
+            re += *v as f64 * ph.cos();
+            im -= *v as f64 * ph.sin();
+        }
+        (2.0 / WIN as f64 * (re * re + im * im).sqrt()) as f32
+    }
+
+    fn db(a: f32, b: f32) -> f32 {
+        20.0 * (a / b).log10()
+    }
+
+    fn max_diff(a: &[f32], b: &[f32]) -> f32 {
+        a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn split_turns_down_the_sibilant_band_by_range_and_leaves_the_voice_alone() {
+        let input = sum(&tone(200.0, 0.3, LEN), &tone(7000.0, 0.5, LEN));
+        let mut d = de_esser(&[]);
+        let (l, r) = run(&mut d, &input);
+        for out in [&l, &r] {
+            let hi = db(level(out, 7000.0), level(&input, 7000.0));
+            let lo = db(level(out, 200.0), level(&input, 200.0));
+            assert!((-9.0..=-7.0).contains(&hi), "7 kHz changed by {hi} dB");
+            assert!(lo.abs() < 0.5, "200 Hz changed by {lo} dB");
+        }
+        assert!((d.gain_reduction_db + 8.0).abs() < 1e-3, "gain reduction {}", d.gain_reduction_db);
+    }
+
+    #[test]
+    fn wideband_turns_down_the_whole_signal() {
+        let input = sum(&tone(200.0, 0.3, LEN), &tone(7000.0, 0.5, LEN));
+        let mut d = de_esser(&[("mode", 1.0)]);
+        let (l, r) = run(&mut d, &input);
+        for out in [&l, &r] {
+            for f in [200.0, 7000.0] {
+                let change = db(level(out, f), level(&input, f));
+                assert!((-9.0..=-7.0).contains(&change), "{f} Hz changed by {change} dB");
+            }
+        }
+    }
+
+    #[test]
+    fn below_threshold_the_output_is_the_input() {
+        let input = sum(&tone(200.0, 0.5, LEN), &tone(7000.0, 0.02, LEN));
+        for mode in [0.0, 1.0] {
+            let mut d = de_esser(&[("mode", mode)]);
+            let (l, r) = run(&mut d, &input);
+            assert!(max_diff(&l, &input) < MINUS_90_DB, "mode {mode}: left differs by {}", max_diff(&l, &input));
+            assert!(max_diff(&r, &input) < MINUS_90_DB, "mode {mode}: right differs by {}", max_diff(&r, &input));
+            assert_eq!(d.gain_reduction_db, 0.0);
+        }
+    }
+
+    #[test]
+    fn zero_range_is_transparent_even_above_threshold() {
+        let input = sum(&tone(200.0, 0.3, LEN), &tone(7000.0, 0.5, LEN));
+        for mode in [0.0, 1.0] {
+            let mut d = de_esser(&[("range", 0.0), ("mode", mode)]);
+            let (l, r) = run(&mut d, &input);
+            assert!(max_diff(&l, &input) < MINUS_90_DB, "mode {mode}: left differs by {}", max_diff(&l, &input));
+            assert!(max_diff(&r, &input) < MINUS_90_DB, "mode {mode}: right differs by {}", max_diff(&r, &input));
+        }
+    }
+
+    #[test]
+    fn a_loud_low_tone_does_not_trigger_it() {
+        let input = tone(200.0, 0.9, LEN);
+        let mut d = de_esser(&[]);
+        let (l, r) = run(&mut d, &input);
+        assert_eq!(d.gain_reduction_db, 0.0);
+        assert!(max_diff(&l, &input) < MINUS_90_DB);
+        assert!(max_diff(&r, &input) < MINUS_90_DB);
+    }
+
+    #[test]
+    fn listen_plays_only_the_detection_band() {
+        let input = sum(&tone(200.0, 0.3, LEN), &tone(7000.0, 0.3, LEN));
+        let mut d = de_esser(&[("listen", 1.0)]);
+        let (l, r) = run(&mut d, &input);
+        for out in [&l, &r] {
+            assert!(level(out, 7000.0) > 0.7 * 0.3, "7 kHz at {}", level(out, 7000.0));
+            assert!(level(out, 200.0) < 0.01 * 0.3, "200 Hz at {}", level(out, 200.0));
+        }
+    }
+
+    #[test]
+    fn silence_and_subnormals_stay_finite() {
+        let ctx = ProcessContext::idle(SR);
+        // Silence in, silence out.
+        let mut d = de_esser(&[]);
+        for _ in 0..200 {
+            let mut l = [0.0f32; 512];
+            let mut r = [0.0f32; 512];
+            d.process(&mut l, &mut r, &ctx);
+            assert!(l.iter().chain(r.iter()).all(|x| *x == 0.0));
+        }
+        // Subnormal input, with alternating sign.
+        let tiny = [f32::from_bits(1), f32::MIN_POSITIVE * 0.5];
+        for mode in [0.0, 1.0] {
+            let mut d = de_esser(&[("mode", mode)]);
+            for _ in 0..100 {
+                let mut l: [f32; 512] = std::array::from_fn(|i| if i % 4 < 2 { tiny[i % 2] } else { -tiny[i % 2] });
+                let mut r = l;
+                d.process(&mut l, &mut r, &ctx);
+                assert!(l.iter().chain(r.iter()).all(|x| x.is_finite() && x.abs() < 1e-30));
+                assert!(!d.env.is_subnormal(), "envelope {}", d.env);
+            }
+        }
+        // A loud "s", then five seconds of silence: the envelope settles to zero, not into subnormals.
+        let mut d = de_esser(&[]);
+        let s = tone(7000.0, 0.9, 512);
+        let (mut l, mut r) = (s.clone(), s);
+        d.process(&mut l, &mut r, &ctx);
+        assert!(d.gain_reduction_db < 0.0);
+        for _ in 0..(5 * 48000 / 512) {
+            let mut l = [0.0f32; 512];
+            let mut r = [0.0f32; 512];
+            d.process(&mut l, &mut r, &ctx);
+            assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()));
+        }
+        assert!(d.env == 0.0 || d.env.is_normal(), "envelope {}", d.env);
+        assert_eq!(d.gain_reduction_db, 0.0);
+    }
+
+    #[test]
+    fn reset_clears_the_envelope_and_the_shelf() {
+        let mut d = de_esser(&[]);
+        let s = tone(7000.0, 0.5, 512);
+        let ctx = ProcessContext::idle(SR);
+        let mut blocks = 0;
+        while d.gain_reduction_db >= -7.0 {
+            let (mut l, mut r) = (s.clone(), s.clone());
+            d.process(&mut l, &mut r, &ctx);
+            blocks += 1;
+            assert!(blocks < 100, "the de-esser never kicked in");
+        }
+        d.reset();
+        assert_eq!(d.gain_reduction_db, 0.0);
+        let input = sum(&tone(200.0, 0.5, LEN), &tone(7000.0, 0.02, LEN));
+        let (l, r) = run(&mut d, &input);
+        assert!(max_diff(&l, &input) < MINUS_90_DB, "left differs by {}", max_diff(&l, &input));
+        assert!(max_diff(&r, &input) < MINUS_90_DB, "right differs by {}", max_diff(&r, &input));
+    }
+
+    #[test]
+    fn reacts_within_a_few_milliseconds_and_lets_go_after_the_s() {
+        let mut d = de_esser(&[]);
+        let ctx = ProcessContext::idle(SR);
+        // One block is one millisecond.
+        const MS: usize = 48;
+        for _ in 0..100 {
+            let mut l = [0.0f32; MS];
+            let mut r = [0.0f32; MS];
+            d.process(&mut l, &mut r, &ctx);
+            assert_eq!(d.gain_reduction_db, 0.0);
+        }
+        let s = tone(7000.0, 0.5, 200 * MS);
+        let mut reacted_at = None;
+        for (i, chunk) in s.chunks(MS).enumerate() {
+            let (mut l, mut r) = (chunk.to_vec(), chunk.to_vec());
+            d.process(&mut l, &mut r, &ctx);
+            if reacted_at.is_none() && d.gain_reduction_db <= -7.0 {
+                reacted_at = Some(i);
+            }
+        }
+        let reacted_at = reacted_at.expect("the de-esser never reached range - 1 dB");
+        assert!(reacted_at < 5, "reacted only after {} ms", reacted_at + 1);
+        for _ in 0..500 {
+            let mut l = [0.0f32; MS];
+            let mut r = [0.0f32; MS];
+            d.process(&mut l, &mut r, &ctx);
+        }
+        assert_eq!(d.gain_reduction_db, 0.0);
     }
 }
