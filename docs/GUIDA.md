@@ -247,6 +247,19 @@ percorso non ha estensione, Ondina la aggiunge.
 - Dai menu e dalle finestre di salvataggio dell'app puoi continuare a scegliere qualsiasi cartella,
   anche su un NAS. Un progetto aperto da una cartella di rete si risalva con Ctrl+S, non dall'assistente.
 
+## Plug-in VST3
+
+Ondina carica i plug-in VST3 solo da un bundle `.vst3` su un disco locale, per esempio
+`C:\Program Files\Common Files\VST3`. Il controllo vale per **Add from file…**, per l'assistente, per i
+client MCP e per i progetti che apri.
+
+- Un plug-in su una cartella di rete (`\\server\cartella`) o un file che non è `.vst3` viene rifiutato
+  con un messaggio.
+- Se apri un progetto che usa un plug-in rifiutato, il progetto si apre lo stesso: il plug-in resta al
+  suo posto ma non suona, e la barra di stato dice quanti plug-in non sono stati caricati. Nella stessa
+  riga compare anche il numero dei file audio mancanti.
+- Se tieni i plug-in su un NAS, copiali in una cartella locale e aggiungili di nuovo.
+
 ## Assistente con modello locale
 
 Senza chiave Anthropic l'assistente usa un modello che gira sul computer, attraverso un server

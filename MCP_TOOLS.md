@@ -18,7 +18,7 @@ Create a new empty project, replacing the current one.
 Parameters: `key, name, tempo, time_signature`
 
 ### `open_project`
-Open a project file (.ondina JSON).
+Open a project file (.ondina JSON). VST3 plug-ins whose path is not a .vst3 bundle on a local drive are not loaded and are listed in blocked_plugins.
 
 Parameters: `path`
 
@@ -768,12 +768,12 @@ Get the MIDI input routing.
 Parameters: none
 
 ### `scan_vst3` · read-only
-Scan standard VST3 folders (plus extra_paths) for third-party plug-ins.
+Scan standard VST3 folders (plus extra_paths) for third-party plug-ins. extra_paths must be folders on a local drive: network shares, device paths and URLs are skipped and listed in skipped_paths.
 
 Parameters: `extra_paths`
 
 ### `add_vst3`
-Load a VST3 plug-in (path to a .vst3 bundle) as instrument or insert effect on a track (track_id 0 = master). Its parameters are then addressable as "p<id>" (normalized 0..1) with set_plugin_param.
+Load a VST3 plug-in (path to a .vst3 bundle on a local drive) as instrument or insert effect on a track (track_id 0 = master). Network shares, device paths, URLs and files that are not .vst3 are refused. Its parameters are then addressable as "p<id>" (normalized 0..1) with set_plugin_param.
 
 Parameters: `as_instrument, index, path, track_id`
 

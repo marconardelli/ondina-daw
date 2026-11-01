@@ -34,7 +34,7 @@ pub enum Command {
         /// Key like "C major", "A minor", "F# dorian".
         key: Option<String>,
     },
-    /// Open a project file (.ondina JSON).
+    /// Open a project file (.ondina JSON). VST3 plug-ins whose path is not a .vst3 bundle on a local drive are not loaded and are listed in blocked_plugins.
     OpenProject { path: String },
     /// Save the project. Without a path saves to the current file (or fails if never saved). The path must be a .ondina file (or an older .aurora one) on a local drive (no network shares); .ondina is added when the path has no extension. An existing file is overwritten only if it is an Ondina project.
     SaveProject { path: Option<String> },
@@ -436,9 +436,9 @@ pub enum Command {
     GetMidiRoutes {},
 
     // ------------------------------------------------------------------ third-party plug-ins (VST3)
-    /// Scan standard VST3 folders (plus extra_paths) for third-party plug-ins.
+    /// Scan standard VST3 folders (plus extra_paths) for third-party plug-ins. extra_paths must be folders on a local drive: network shares, device paths and URLs are skipped and listed in skipped_paths.
     ScanVst3 { extra_paths: Option<Vec<String>> },
-    /// Load a VST3 plug-in (path to a .vst3 bundle) as instrument or insert effect on a track (track_id 0 = master). Its parameters are then addressable as "p<id>" (normalized 0..1) with set_plugin_param.
+    /// Load a VST3 plug-in (path to a .vst3 bundle on a local drive) as instrument or insert effect on a track (track_id 0 = master). Network shares, device paths, URLs and files that are not .vst3 are refused. Its parameters are then addressable as "p<id>" (normalized 0..1) with set_plugin_param.
     AddVst3 { track_id: Id, path: String, as_instrument: Option<bool>, index: Option<usize> },
 
     /// Open the native editor window of a VST3 plug-in. Knob moves in the window are applied to the project (undoable) and to the playing instance.

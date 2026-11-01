@@ -36,14 +36,21 @@ remain: a drive letter mapped to a network share counts as a local drive, and a 
 file of its own type (for example a `.wav`). The app's own menus and dialogs are not restricted, so you can still save
 or bounce to a NAS from the Save dialog.
 
+VST3 plug-ins are native code, so Ondina loads them only from a `.vst3` bundle on a local drive. `add_vst3`, projects
+that reference plug-ins, the native editor windows and the extra folders of `scan_vst3` all go through the same
+check: network shares, `\\?\` and `\\.\` device paths, URLs, NTFS streams and files that are not `.vst3` are refused
+before anything is loaded, and the path is checked again after Windows resolves links and junctions. A project that
+references a refused plug-in still opens: the plug-in stays in the project but is not loaded (its track is silent
+there), and `open_project` lists it in `blocked_plugins`. This applies to the app's own menus too, because the risk
+comes from the project file: plug-ins kept on a NAS must be copied to a local folder.
+
 ## Known issues being worked on
 
 This was found in an automated review of the first release and is tracked for fixing:
 
-- **Native plug-in loading from any path.** `add_vst3` (and projects that reference VST3 plug-ins) can load a plug-in
-  from an arbitrary path, including network paths. A VST3 plug-in is native code, so a malicious project file or an
-  untrusted MCP client could run code. Planned fix: only load plug-ins found by the scanner in standard or
-  user-configured folders, reject UNC/network paths, and ask the user before loading a plug-in requested by MCP/AI or
-  referenced by an opened project.
+- **Native plug-ins from any local folder.** A `.vst3` bundle in any folder of a local drive can still be loaded by
+  `add_vst3` or by an opened project, without asking the user, and the path check may not recognise a drive letter
+  mapped to a network share. Planned: only load plug-ins found by the scanner in standard or user-configured folders,
+  and ask before loading a plug-in requested by MCP/AI or referenced by an opened project.
 
 Until these are fixed, only open projects you trust and only connect MCP clients you trust.
