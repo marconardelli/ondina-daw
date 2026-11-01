@@ -212,7 +212,7 @@ impl OndinaApp {
         let parts = strip_parts(t.kind);
         if parts.instrument {
             chrome::section_label(ui, "Instrument");
-            self.instrument_slot(ui, p, t);
+            self.instrument_slot(ui, p, t, 26.0);
         }
         if parts.midi_fx {
             chrome::section_label(ui, "MIDI FX");
@@ -246,7 +246,7 @@ impl OndinaApp {
             });
         }
         chrome::section_label(ui, "Effects");
-        self.insert_slots(ui, tid, &t.channel.inserts);
+        self.insert_slots(ui, tid, &t.channel.inserts, chrome::ROW_H);
         chrome::section_label(ui, "Sends");
         for (si, s) in t.channel.sends.iter().enumerate() {
             self.send_row(ui, p, tid, si, s);
@@ -262,23 +262,26 @@ impl OndinaApp {
             self.output_items(ui, tid, &buses)
         });
         ui.add_space(theme::SP_3);
-        ui.vertical_centered(|ui| {
-            let mut pan = t.channel.pan;
-            let text = pan_label(pan);
-            let resp = ui
-                .add(Knob::new(&mut pan, -1.0..=1.0).bipolar(true).default_value(0.0).diameter(40.0).text(text))
-                .on_hover_text("Pan · drag up or down (Shift: fine) · double-click: center");
-            if resp.double_clicked() {
-                self.cmd(Command::SetPan { track_id: tid, pan: 0.0 });
-            } else if resp.changed() {
-                self.cmd_merge(Command::SetPan { track_id: tid, pan }, format!("pan{tid}"));
-            }
-        });
+        ui.vertical_centered(|ui| self.pan_knob(ui, tid, t.channel.pan, 40.0));
+    }
+
+    /// The pan knob of channel `id` with its "C" / "L n" / "R n" label; double-click centers it.
+    pub(crate) fn pan_knob(&mut self, ui: &mut egui::Ui, id: Id, pan: f32, diameter: f32) {
+        let mut pan = pan;
+        let text = pan_label(pan);
+        let resp = ui
+            .add(Knob::new(&mut pan, -1.0..=1.0).bipolar(true).default_value(0.0).diameter(diameter).text(text))
+            .on_hover_text("Pan · drag up or down (Shift: fine) · double-click: center");
+        if resp.double_clicked() {
+            self.cmd(Command::SetPan { track_id: id, pan: 0.0 });
+        } else if resp.changed() {
+            self.cmd_merge(Command::SetPan { track_id: id, pan }, format!("pan{id}"));
+        }
     }
 
     /// The instrument slot: a menu with the parameters, the plug-in window, the instrument list, presets and the
     /// sampler's sample.
-    fn instrument_slot(&mut self, ui: &mut egui::Ui, p: &Project, t: &Track) {
+    pub(crate) fn instrument_slot(&mut self, ui: &mut egui::Ui, p: &Project, t: &Track, height: f32) {
         let tid = t.id;
         let not_loaded = t.instrument.as_ref().and_then(|i| self.view.unloaded_vst3.get(&i.id).cloned());
         let label = match &t.instrument {
@@ -290,7 +293,7 @@ impl OndinaApp {
         if not_loaded.is_some() {
             text = text.strikethrough();
         }
-        let ir = chrome::slot_menu(ui, SlotLook::INSTRUMENT, 26.0, text, |ui| {
+        let ir = chrome::slot_menu(ui, SlotLook::INSTRUMENT, height, text, |ui| {
             if let Some(inst) = &t.instrument {
                 let iid = inst.id;
                 if ui.selectable_label(self.selected_plugin == Some(iid), "Edit parameters").clicked() {
@@ -362,8 +365,8 @@ impl OndinaApp {
         ir.response.on_hover_text(tip);
     }
 
-    /// The audio effect slots of `owner` (a track or the master) and the "+ Add" slot.
-    pub(crate) fn insert_slots(&mut self, ui: &mut egui::Ui, owner: Id, inserts: &[PluginInstance]) {
+    /// The audio effect slots of `owner` (a track or the master) and the "+ Add" slot, `add_h` tall.
+    pub(crate) fn insert_slots(&mut self, ui: &mut egui::Ui, owner: Id, inserts: &[PluginInstance], add_h: f32) {
         for (i, fx) in inserts.iter().enumerate() {
             let name = plugins::plugin_label(fx);
             let label = match &fx.preset {
@@ -420,7 +423,7 @@ impl OndinaApp {
                 }
             });
         }
-        chrome::add_slot_menu(ui, "+ Add", |ui| {
+        chrome::add_slot_menu_sized(ui, "+ Add", add_h, |ui| {
             effect_menu(ui, |kind| self.pending_effect(owner, kind));
         });
     }
@@ -433,7 +436,7 @@ impl OndinaApp {
     }
 
     /// A send: the bus name and its level (drag or type), right-click to remove.
-    fn send_row(&mut self, ui: &mut egui::Ui, p: &Project, tid: Id, si: usize, s: &Send) {
+    pub(crate) fn send_row(&mut self, ui: &mut egui::Ui, p: &Project, tid: Id, si: usize, s: &Send) {
         let bus = p.track(s.bus_id).map(|b| b.name.clone()).unwrap_or("?".into());
         let w = ui.available_width();
         let resp = egui::Frame::none()
@@ -475,23 +478,7 @@ impl OndinaApp {
     fn strip_fader(&mut self, ui: &mut egui::Ui, id: Id, ch: &Channel, height: f32) {
         chrome::section_label(ui, "Volume");
         ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            let mut db = ch.volume_db;
-            let resp = ui.add(Fader::new(&mut db).height(height).scale(true)).on_hover_text(
-                "Volume · drag the cap (Shift: fine) · double-click: 0 dB",
-            );
-            if resp.double_clicked() {
-                self.cmd(Command::SetVolume { track_id: id, db: 0.0 });
-            } else if resp.changed() {
-                self.cmd_merge(Command::SetVolume { track_id: id, db: fader_command_db(db) }, format!("vol{id}"));
-            }
-            let m = self.meters.get(&id).copied().unwrap_or([0.0; 2]);
-            let levels = [widgets::gain_to_db(m[0]), widgets::gain_to_db(m[1])];
-            let hold_id = egui::Id::new(("inspector-holds", id));
-            let mut holds: [PeakHold; 2] = ui.data(|d| d.get_temp(hold_id)).unwrap_or_default();
-            widgets::stereo_meter(ui, vec2(12.0, height), levels, &mut holds)
-                .on_hover_text("Click to clear the clip lights");
-            ui.data_mut(|d| d.insert_temp(hold_id, holds));
+            self.fader_and_meter(ui, id, ch, height, 12.0, "inspector-holds");
         });
         chrome::lcd_value(ui, &db_text(ch.volume_db));
         ui.horizontal(|ui| {
@@ -508,6 +495,47 @@ impl OndinaApp {
             }
         });
     }
+}
+
+impl OndinaApp {
+    /// The volume fader with its dB scale and the stereo meter beside it, laid out left to right in `ui`. The meter's
+    /// peak holds live in the egui memory under `(holds_key, id)`; they are returned for the peak readout.
+    pub(crate) fn fader_and_meter(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: Id,
+        ch: &Channel,
+        height: f32,
+        meter_w: f32,
+        holds_key: &'static str,
+    ) -> [PeakHold; 2] {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let mut db = ch.volume_db;
+        let resp = ui
+            .add(Fader::new(&mut db).height(height).scale(true))
+            .on_hover_text("Volume · drag the cap (Shift: fine) · double-click: 0 dB");
+        if resp.double_clicked() {
+            self.cmd(Command::SetVolume { track_id: id, db: 0.0 });
+        } else if resp.changed() {
+            self.cmd_merge(Command::SetVolume { track_id: id, db: fader_command_db(db) }, format!("vol{id}"));
+        }
+        let m = self.meters.get(&id).copied().unwrap_or([0.0; 2]);
+        let levels = [widgets::gain_to_db(m[0]), widgets::gain_to_db(m[1])];
+        let hold_id = egui::Id::new((holds_key, id));
+        let mut holds: [PeakHold; 2] = ui.data(|d| d.get_temp(hold_id)).unwrap_or_default();
+        widgets::stereo_meter(ui, vec2(meter_w, height), levels, &mut holds)
+            .on_hover_text("Click to clear the clip lights");
+        ui.data_mut(|d| d.insert_temp(hold_id, holds));
+        holds
+    }
+}
+
+/// Clears the clip lights of the meter whose holds live under `(holds_key, id)`.
+pub fn clear_clip(ctx: &egui::Context, holds_key: &'static str, id: Id) {
+    let hold_id = egui::Id::new((holds_key, id));
+    ctx.data_mut(|d| {
+        d.get_temp_mut_or_default::<[PeakHold; 2]>(hold_id).iter_mut().for_each(PeakHold::reset_clip);
+    });
 }
 
 #[cfg(test)]

@@ -131,10 +131,20 @@ pub fn slot_menu<R>(
 
 /// The dashed empty slot ("+ Add") that opens a menu on click.
 pub fn add_slot_menu<R>(ui: &mut Ui, label: &str, add_contents: impl FnOnce(&mut Ui) -> R) -> InnerResponse<Option<R>> {
+    add_slot_menu_sized(ui, label, ROW_H, add_contents)
+}
+
+/// [`add_slot_menu`] `height` tall (the mixer's slots are shorter than the Inspector's rows).
+pub fn add_slot_menu_sized<R>(
+    ui: &mut Ui,
+    label: &str,
+    height: f32,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> InnerResponse<Option<R>> {
     let width = ui.available_width();
     let button = egui::Button::new(RichText::new(label).color(theme::TEXT_3))
         .frame(false)
-        .min_size(vec2(width, ROW_H));
+        .min_size(vec2(width, height));
     let ir = ui
         .with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
             egui::menu::menu_custom_button(ui, button, add_contents)

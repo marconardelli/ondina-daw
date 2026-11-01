@@ -355,7 +355,7 @@ impl OndinaApp {
                 self.cmd_merge(Command::SetVolume { track_id: MASTER_ID, db: vol }, "volmaster");
             }
             chrome::section_label(ui, "Effects");
-            self.insert_slots(ui, MASTER_ID, &p.master.inserts.clone());
+            self.insert_slots(ui, MASTER_ID, &p.master.inserts.clone(), crate::chrome::ROW_H);
             if ui.button("Mastering Assistant").clicked() {
                 if let Some(v) = self.exec(Command::AutoMaster { target_lufs: Some(-14.0), character: None }) {
                     self.status = format!("Mastered to {:.1} LUFS", v["measured_lufs"].as_f64().unwrap_or(0.0));
