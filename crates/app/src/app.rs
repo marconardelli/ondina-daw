@@ -23,6 +23,7 @@ use serde_json::Value;
 use crate::theme;
 use crate::doc_guard::{self, Answer, CloseStep, DocAction, Step};
 use crate::note_selection;
+use crate::transport_keys as tk;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BottomTab {
@@ -902,6 +903,7 @@ impl OndinaApp {
             }
         });
         self.piano_roll_keys(ctx);
+        self.transport_keys(ctx);
         let (space, del, home, r, c, k, d_ctrl, s_ctrl, n_ctrl, o_ctrl, b_ctrl, enter) =
             ctx.input(|i| {
                 (
@@ -991,6 +993,52 @@ impl OndinaApp {
         }
         if b_ctrl {
             self.bounce_dialog();
+        }
+    }
+
+    /// `,` `.` move the playhead by a bar, with Shift to the previous or next marker; Ctrl+T splits the selected
+    /// region at the playhead. Runs from `handle_keys` after the piano roll keys.
+    fn transport_keys(&mut self, ctx: &egui::Context) {
+        if !tk::keys_on(ctx.wants_keyboard_input(), self.musical_typing, self.drag.is_some()) {
+            return;
+        }
+        let (jump, split) = ctx.input_mut(|i| {
+            let (mut jump, mut split) = (None, false);
+            i.events.retain(|e| {
+                let egui::Event::Key { key, physical_key, pressed: true, repeat, modifiers } = e else {
+                    return true;
+                };
+                if jump.is_none() {
+                    if let Some(j) = tk::jump_from_key(*key, *physical_key, *modifiers) {
+                        jump = Some(j);
+                        return false;
+                    }
+                }
+                if !split && tk::split_key(*key, *repeat, *modifiers) {
+                    split = true;
+                    return false;
+                }
+                true
+            });
+            (jump, split)
+        });
+        if let Some(j) = jump {
+            let pos = self.position();
+            let to = tk::jump_target(&self.view.project, pos, j, self.playing());
+            if (to - pos).abs() > tk::EPS {
+                self.exec(Command::SetPlayhead { beat: Some(to), bar: None });
+            }
+        }
+        if split {
+            match tk::split_command(&self.view.project, self.selected_region, self.position()) {
+                Ok(c) => {
+                    let at = self.view.project.bar_beat_string(self.position());
+                    if self.exec(c).is_some() {
+                        self.status = format!("Split region at {at}");
+                    }
+                }
+                Err(msg) => self.status = msg.into(),
+            }
         }
     }
 
@@ -1168,7 +1216,7 @@ impl OndinaApp {
                 if ui
                     .add_enabled(
                         self.selected_region.is_some(),
-                        egui::Button::new("Split Region at Playhead"),
+                        egui::Button::new("Split Region at Playhead   Ctrl+T"),
                     )
                     .clicked()
                 {
@@ -1840,9 +1888,12 @@ impl OndinaApp {
                     ("C", "Cycle on/off"),
                     ("K", "Metronome"),
                     ("Home / Enter", "Go to start"),
+                    (", / .", "Playhead to previous / next bar"),
+                    ("Shift+, / Shift+.", "Playhead to previous / next marker"),
                     ("Ctrl+Z / Ctrl+Y", "Undo / Redo"),
                     ("Del", "Delete region or selected notes"),
                     ("Ctrl+D", "Duplicate region"),
+                    ("Ctrl+T", "Split selected region at playhead"),
                     ("Ctrl+S / Ctrl+O / Ctrl+N", "Save / Open / New"),
                     ("Ctrl+B", "Bounce"),
                     ("Double-click track lane", "New MIDI region"),
