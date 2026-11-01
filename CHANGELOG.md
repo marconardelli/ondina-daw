@@ -7,6 +7,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-11-01
+
+### Changed
+
+- The metronome click now has its own level: right-click the metronome button in the transport bar to set it
+  (-60 to 0 dB, -9.1 dB by default) or reset it. The level changes right away, even during playback, and a whole
+  slider drag is undone with a single Ctrl+Z.
+- New *Only while recording* option in the same menu: the click plays only while you record, not during normal
+  playback. The count-in always clicks, at the same level. The button turns dark blue while the click is waiting
+  for a recording.
+- The assistant and MCP clients can set the click level and the recording-only mode with `set_metronome`;
+  `get_transport` and `get_project` report them. Projects saved before this version click at the usual level.
+- Saving never writes over a file that is not Ondina's: the temporary file used during a save always has a new,
+  unique name, and stale temporary files from an interrupted save are cleaned up at a later save.
+- A file or folder called `<name>.ondina.bak` that is not an Ondina project is left alone: the project is still
+  saved and the status bar says the backup copy was not written.
+- If Windows does not let Ondina read `settings.json` at startup (for example an antivirus or a cloud sync is
+  holding it), Ondina starts with the defaults but no longer writes over your settings file until you press
+  *Save settings*; the Settings window points this out.
+
 ## [0.15.1] - 2026-11-01
 
 ### Changed
@@ -464,7 +484,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.15.2...HEAD
+[0.15.2]: https://github.com/marconardelli/ondina-daw/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/marconardelli/ondina-daw/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/marconardelli/ondina-daw/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/marconardelli/ondina-daw/compare/v0.13.0...v0.14.0
