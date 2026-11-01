@@ -362,7 +362,7 @@ pub fn leftover_copies(dir: &Path, own: &str) -> Vec<Leftover> {
     for lock in locks {
         let _ = std::fs::remove_file(lock);
     }
-    found.sort_by(|a, b| b.meta.saved_at.cmp(&a.meta.saved_at));
+    found.sort_by_key(|l| std::cmp::Reverse(l.meta.saved_at));
     found
 }
 

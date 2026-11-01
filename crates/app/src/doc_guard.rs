@@ -10,6 +10,8 @@ pub enum DocAction {
     New,
     /// File > Open: `None` shows the file picker, `Some(path)` opens that file (recent projects).
     Open(Option<String>),
+    /// Recovery window: open this autosave copy as unsaved work.
+    Recover(String),
 }
 
 /// The user's answer to the prompt.
@@ -76,6 +78,7 @@ pub fn prompt_question(project_name: &str, action: &DocAction) -> String {
         DocAction::Close => "closing",
         DocAction::New => "creating a new project",
         DocAction::Open(_) => "opening another project",
+        DocAction::Recover(_) => "recovering autosaved work",
     };
     format!("Save changes to '{name}' before {what}?")
 }
@@ -106,6 +109,7 @@ mod tests {
             DocAction::New,
             DocAction::Open(None),
             DocAction::Open(Some("C:/songs/old.ondina".into())),
+            DocAction::Recover("C:/x/autosave.ondina".into()),
         ]
     }
 
@@ -170,6 +174,14 @@ mod tests {
             "Save changes to 'Lofi Beat' before opening another project?"
         );
         assert_eq!(prompt_question("  ", &DocAction::Open(None)), "Save changes to 'Untitled' before opening another project?");
+    }
+
+    #[test]
+    fn prompt_question_for_recover() {
+        assert_eq!(
+            prompt_question("Night Drive", &DocAction::Recover("x".into())),
+            "Save changes to 'Night Drive' before recovering autosaved work?"
+        );
     }
 
     #[test]
