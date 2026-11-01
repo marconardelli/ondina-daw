@@ -191,7 +191,7 @@ request is a single undo step, and **↶ Undo AI edit** reverts it only when the
 2. **Offline assistant** — the ✨ AI Assistant panel uses a **local language model** through an OpenAI-compatible
    server (llama.cpp, Ollama, LM Studio…). Ondina starts the bundled llama.cpp server automatically when it finds a
    `.gguf` model in `tools\llm` and stops it when Ondina closes. No account, nothing leaves your machine; small
-   models get a curated subset of 43 tools, enough for the ✨ buttons of the piano roll, step sequencer, plug-in
+   models get a curated subset of 45 tools, enough for the ✨ buttons of the piano roll, step sequencer, plug-in
    editors and Live Loops.
 3. **Claude (optional)** — with an Anthropic API key (Settings ⚙ or `ANTHROPIC_API_KEY`) the panel uses Claude with
    all tools.
@@ -202,7 +202,9 @@ actions, and can "listen" to the mix through `analyze_mix`. MCP clients read the
 `get_selection`. With `get_activity` they see what happened since they last looked: the edits made in the window, the
 assistant's and other clients' tool calls, and whether the project was replaced or Ondina restarted. Contextual AI
 buttons live in the piano roll, step
-sequencer, plug-in editors and region menus. The local model edits just the selected notes by passing their indices.
+sequencer, plug-in editors and region menus. The local model edits just the selected notes by passing their indices:
+it can quantize, humanize, transpose them or snap them to the project key. The line under the panel title shows which
+engine answers and how many tools it gets.
 
 ## Controlling Ondina over MCP
 

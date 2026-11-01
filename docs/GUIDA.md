@@ -372,11 +372,14 @@ compatibile OpenAI all'indirizzo scelto in **Settings ⚙** (di default `http://
 - Se nessun server risponde, Ondina avvia il server llama.cpp incluso in `tools\llm` e lo chiude
   quando chiudi Ondina. Un server già acceso prima (Ollama, LM Studio, un `llama-server` avviato a
   mano) viene usato così com'è e resta acceso.
-- Il modello locale riceve 43 tool, scelti perché stiano nel suo contesto. Bastano per i pulsanti ✨
+- Il modello locale riceve 45 tool, scelti perché stiano nel suo contesto. Bastano per i pulsanti ✨
   del piano roll (*continue / improve*), dello step sequencer (*write a groove*), degli editor dei
   plug-in (*design a sound*), di Live Loops (*fill the grid*), del report del mix e dei menu della
   finestra di arrangiamento. Se nel piano roll hai selezionato delle note, il modello modifica solo
-  quelle. Claude riceve tutti i tool.
+  quelle: può quantizzarle, umanizzarle, trasporle o portarle nella tonalità del progetto (per
+  esempio "umanizza le note selezionate"). Claude riceve tutti i tool.
+- Sotto il titolo del pannello compaiono il motore e quanti tool riceve: col modello locale
+  `local model (offline) · 45 tools`.
 - La conversazione tiene le richieste più recenti entro il contesto del modello. Quando si allunga,
   le richieste più vecchie vengono dimenticate; **New chat** ricomincia da capo.
 - **⏹ Stop** interrompe subito l'attesa. Le modifiche già fatte restano e si annullano tutte insieme
