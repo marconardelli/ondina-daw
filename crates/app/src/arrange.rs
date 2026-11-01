@@ -1572,6 +1572,18 @@ impl OndinaApp {
         // drop target highlight for move between tracks
         let _ = hovered_track;
 
+        // files dragged in from Explorer: drawn over the tracks, under the playhead
+        let drop_geom = crate::file_drop::DropGeom {
+            rect: full,
+            timeline_x,
+            tracks_top,
+            track_h: th,
+            scroll_y: self.scroll_y,
+            scroll_beat: self.scroll_beat,
+            px_per_beat: self.px_per_beat,
+        };
+        self.file_drop_ui(ui, drop_geom, &p);
+
         // playhead
         let px = self.beat_to_x(pos, timeline_x);
         if px >= timeline_x && px <= full.right() {

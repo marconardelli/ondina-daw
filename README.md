@@ -143,6 +143,12 @@ extension: Ondina opens both.
 - **Unsaved changes**: when the project has unsaved changes (the • in the title bar), closing the window, New,
   Open or a recent project first asks *Save*, *Don't Save* or *Cancel*. Esc cancels, Enter saves. A recording in
   progress is stopped and kept before the question.
+- **Drag and drop**: drag audio files (wav, aiff, flac, mp3, ogg, m4a, caf) from Explorer onto an audio track to
+  place them at that point (snapped to the grid); below the last track or on an instrument track they go on a new
+  audio track. While you drag, a line and the file name show where they land. Several files go one after the
+  other, up to 8 per drop, and one Ctrl+Z removes the whole drop. A MIDI file is imported at the beat under the
+  pointer; a project file opens (asking to save unsaved changes first). Dropped outside the arrangement, files go
+  to the playhead.
 - **DSP meter**: the transport bar shows the DSP load of the last audio block and how many blocks since the last
   Play took longer than the audio device allows (red when there are any; each one can be heard as a click).
   `get_transport` reports the same numbers as `dsp_load` and `dsp_overloads`. Ondina flushes denormal numbers to

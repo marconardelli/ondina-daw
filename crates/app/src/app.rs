@@ -423,6 +423,22 @@ impl OndinaApp {
         }
     }
 
+    /// Runs `f` with the session locked, like `exec`, and refreshes the view once afterwards: for a GUI action made of
+    /// several commands that need each other's results (the files of one drop).
+    pub fn exec_with<R>(&mut self, f: impl FnOnce(&mut ondina_studio::Session) -> R) -> Option<R> {
+        let Some(mut s) = self.session.try_lock_for(Duration::from_millis(300)) else {
+            self.status = "Session busy (AI/MCP running) — try again".into();
+            return None;
+        };
+        let r = f(&mut s);
+        let v = Self::make_view(&s);
+        drop(s);
+        note_selection::follow(&mut self.selected_notes, self.selected_region, &self.view.project, &v.project);
+        self.edits.follow_document(self.view.document, v.document);
+        self.view = v;
+        Some(r)
+    }
+
     fn sync(&mut self) {
         let Some(mut s) = self.session.try_lock() else {
             return;
@@ -657,6 +673,11 @@ impl OndinaApp {
             Step::Proceed(a) => self.run_doc_action(ctx, a),
             Step::Ask(a) => self.open_doc_prompt(ctx, a),
         }
+    }
+
+    /// Whether the "Save changes?" prompt is waiting for an answer.
+    pub(crate) fn doc_prompt_open(&self) -> bool {
+        self.doc_prompt.is_some()
     }
 
     fn open_doc_prompt(&mut self, ctx: &egui::Context, action: DocAction) {

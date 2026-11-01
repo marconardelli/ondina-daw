@@ -23,3 +23,6 @@ rfd.workspace = true
 serde_json.workspace = true
 parking_lot.workspace = true
 crossbeam-channel.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

@@ -15,6 +15,7 @@ mod cc_lane;
 mod doc_guard;
 mod drag_cancel;
 mod editors;
+mod file_drop;
 mod extra_ui;
 mod inspector;
 mod mixer;
@@ -76,7 +77,8 @@ fn main() -> eframe::Result<()> {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([1500.0, 920.0])
             .with_min_inner_size([960.0, 600.0])
-            .with_title("Ondina DAW"),
+            .with_title("Ondina DAW")
+            .with_drag_and_drop(true),
         ..Default::default()
     };
     eframe::run_native(

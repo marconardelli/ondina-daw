@@ -137,6 +137,24 @@ Dalla tastiera:
 - Con tracce basse i pulsanti M, S e R stanno accanto al nome e il volume si regola dal mixer.
 - Zoom e altezza delle tracce non si salvano nel progetto e non entrano in Annulla.
 
+### Trascinare file da Esplora risorse
+
+- Un file audio (wav, aiff, flac, mp3, ogg, m4a, caf) rilasciato sulla corsia di una traccia audio si
+  posa su quella traccia, al punto sotto il puntatore, agganciato alla linea della griglia più vicina.
+- Sotto l'ultima traccia, o su una traccia instrument o bus, il file va su una traccia audio nuova in fondo.
+- Mentre trascini, la riga di destinazione si colora, una linea mostra il punto d'inizio e un'etichetta
+  accanto al puntatore dice il nome del file, la traccia e la posizione.
+- Più file insieme si mettono uno dopo l'altro, in ordine di nome, al massimo 8 per volta; la barra di
+  stato dice quanti ne sono rimasti fuori.
+- Un solo Ctrl+Z toglie tutto quello che il rilascio ha aggiunto, tracce nuove comprese.
+- Un file MIDI (.mid) si importa al beat sotto il puntatore, su tracce nuove.
+- Un progetto (.ondina) si apre: se ci sono modifiche non salvate, prima compare la domanda *Save*,
+  *Don't Save* o *Cancel* (una registrazione in corso si ferma prima della domanda). Un progetto va
+  rilasciato da solo: insieme ad altri file non si apre e non si importa niente.
+- I file di altro tipo si saltano e la barra di stato lo dice.
+- Rilasciati fuori dall'arrangiamento (editor, mixer, assistente), i file vanno al cursore di riproduzione.
+- Con file lunghi la finestra si ferma un attimo mentre li legge, come con File > Import Audio.
+
 ## Nome e colore delle regioni
 
 Una regione nuova, o una take registrata, nasce senza un colore proprio e segue quello della traccia;
