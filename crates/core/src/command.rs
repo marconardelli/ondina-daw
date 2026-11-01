@@ -667,6 +667,42 @@ impl Command {
         )
     }
 
+    /// Whether the command only reads: it changes nothing in the project, on disk, in the settings, on the audio
+    /// and MIDI devices or in what is playing. MCP publishes this as `readOnlyHint`, which clients may use to run
+    /// a tool without asking. Not the same as `!is_mutating()`: saving, bouncing, undo, transport and settings
+    /// create no undo step but do change things. An explicit list, so a new command is never read-only by
+    /// accident.
+    pub fn is_read_only(&self) -> bool {
+        use Command::*;
+        matches!(
+            self,
+            GetProject {}
+                | GetProjectJson {}
+                | GetTransport {}
+                | GetSelection {}
+                | GetActivity { .. }
+                | GetTrack { .. }
+                | ListPlugins { .. }
+                | ListPresets { .. }
+                | ListPatches {}
+                | GetPlugin { .. }
+                | GetRegion { .. }
+                | AnalyzeMix { .. }
+                | GetMeters {}
+                | ListAudioDevices {}
+                | ListMidiInputs {}
+                | DetectTempo { apply: None, .. }
+                | DetectTempo { apply: Some(false), .. }
+                | DetectKey { apply: None, .. }
+                | DetectKey { apply: Some(false), .. }
+                | ListTakes { .. }
+                | GetScore { .. }
+                | GetLiveLoops {}
+                | GetMidiRoutes {}
+                | GetSettings {}
+        )
+    }
+
     /// Build a command from an MCP tool name and its JSON arguments.
     pub fn from_tool_call(name: &str, args: &serde_json::Value) -> Result<Command, String> {
         let mut obj = match args {
@@ -685,6 +721,7 @@ pub struct ToolSpec {
     pub name: String,
     pub description: String,
     pub input_schema: serde_json::Value,
+    /// The tool only reads (see `Command::is_read_only`); published as MCP `readOnlyHint`.
     pub read_only: bool,
 }
 
@@ -715,7 +752,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         }
         obj.entry("properties").or_insert(serde_json::json!({}));
         obj.insert("type".into(), serde_json::json!("object"));
-        let read_only = Command::from_tool_call(&name, &minimal_args(&v)).map(|c| !c.is_mutating()).unwrap_or(false);
+        let read_only = Command::from_tool_call(&name, &minimal_args(&v)).map(|c| c.is_read_only()).unwrap_or(false);
         out.push(ToolSpec { name, description, input_schema: v, read_only });
     }
     out
@@ -821,6 +858,49 @@ mod tests {
         assert!(!add.read_only);
         let c = Command::from_tool_call("set_volume", &serde_json::json!({"track_id": 1, "db": -3.0})).unwrap();
         assert_eq!(c.name(), "set_volume");
+    }
+
+    /// MCP clients may run read-only tools without asking (readOnlyHint). Only the tools that just read are
+    /// marked: anything that changes the project, files on disk, settings, devices or what the user hears is
+    /// not. The list is explicit so that a new tool is not read-only by accident.
+    #[test]
+    fn only_tools_that_just_read_are_marked_read_only() {
+        const READ_ONLY: &[&str] = &[
+            "analyze_mix",
+            "detect_key",
+            "detect_tempo",
+            "get_activity",
+            "get_live_loops",
+            "get_meters",
+            "get_midi_routes",
+            "get_plugin",
+            "get_project",
+            "get_project_json",
+            "get_region",
+            "get_score",
+            "get_selection",
+            "get_settings",
+            "get_track",
+            "get_transport",
+            "list_audio_devices",
+            "list_midi_inputs",
+            "list_patches",
+            "list_plugins",
+            "list_presets",
+            "list_takes",
+        ];
+        let specs = tool_specs();
+        let mut marked: Vec<&str> = specs.iter().filter(|s| s.read_only).map(|s| s.name.as_str()).collect();
+        marked.sort_unstable();
+        assert_eq!(marked, READ_ONLY);
+        for name in ["save_project", "bounce", "export_midi", "export_music_xml", "bounce_surround", "bounce_binaural", "export_adm", "export_movie", "extract_movie_frame", "undo", "redo", "scan_vst3", "set_ai_settings", "set_audio_device", "record", "stop", "play"] {
+            assert!(specs.iter().any(|s| s.name == name && !s.read_only), "{name} must not be read-only");
+        }
+        // a read-only tool never creates an undo step either
+        for s in specs.iter().filter(|s| s.read_only) {
+            let c = Command::from_tool_call(&s.name, &minimal_args(&s.input_schema)).unwrap();
+            assert!(!c.is_mutating(), "{}", s.name);
+        }
     }
 
     #[test]

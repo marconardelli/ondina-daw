@@ -488,4 +488,23 @@ mod tests {
         assert_eq!(update["annotations"]["readOnlyHint"], false);
         assert!(GUIDE.contains("update_pattern_row") && GUIDE.contains("remove_pattern_row"));
     }
+
+    /// A client that runs read-only tools without asking must still ask before a tool writes a file, changes the
+    /// project or the settings, or loads native code.
+    #[test]
+    fn read_only_hint_follows_command_is_read_only() {
+        let s = Session::shared(false);
+        let list = handle(&s, &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})).unwrap();
+        let listed = list["result"]["tools"].as_array().unwrap();
+        for t in listed {
+            let name = t["name"].as_str().unwrap();
+            let spec = tools().iter().find(|s| s.name == name).unwrap();
+            assert_eq!(t["annotations"]["readOnlyHint"], spec.read_only, "{name}");
+            assert_eq!(t["annotations"]["idempotentHint"], spec.read_only, "{name}");
+        }
+        for name in ["save_project", "bounce", "export_midi", "export_music_xml", "undo", "redo", "scan_vst3", "set_ai_settings"] {
+            let t = listed.iter().find(|t| t["name"] == name).unwrap();
+            assert_eq!(t["annotations"]["readOnlyHint"], false, "{name}");
+        }
+    }
 }
