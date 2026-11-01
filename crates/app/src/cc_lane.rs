@@ -172,13 +172,14 @@ pub fn segments(cc: &[CcEvent], controller: u8, length: f64) -> Vec<Segment> {
     out
 }
 
-/// Why the lane may not change the sound: None for VST3 instruments, and for Sustain on the Analog Synth and FM Synth;
-/// otherwise a short sentence for the lane. `kind` is the track instrument's plug-in kind.
+/// Why the lane may not change the sound: None for VST3 instruments, and for Sustain on the built-in keyboard
+/// instruments (Analog Synth, FM Synth, Organ, Plucked String, Sampler); otherwise a short sentence for the lane.
+/// `kind` is the track instrument's plug-in kind.
 pub fn ignored_hint(kind: Option<&str>, controller: u8) -> Option<&'static str> {
     match kind {
         None | Some("vst3") => None,
-        Some("analog_synth" | "fm_synth") if controller == SUSTAIN => None,
-        Some(_) => Some("This instrument ignores this controller: the Analog Synth and FM Synth use only Sustain, VST3 instruments get every controller"),
+        Some("analog_synth" | "fm_synth" | "organ" | "pluck_synth" | "sampler") if controller == SUSTAIN => None,
+        Some(_) => Some("This instrument ignores this controller: the built-in instruments use only Sustain (the Drum Synth not even that), VST3 instruments get every controller"),
     }
 }
 
@@ -426,11 +427,11 @@ mod tests {
     fn ignored_hint_cases() {
         assert_eq!(ignored_hint(Some("vst3"), 1), None);
         assert_eq!(ignored_hint(Some("vst3"), 64), None);
-        for k in ["analog_synth", "fm_synth"] {
+        for k in ["analog_synth", "fm_synth", "organ", "pluck_synth", "sampler"] {
             assert_eq!(ignored_hint(Some(k), 64), None);
             assert!(ignored_hint(Some(k), 1).is_some());
         }
-        assert!(ignored_hint(Some("sampler"), 64).is_some());
+        assert!(ignored_hint(Some("drum_synth"), 64).is_some());
         assert_eq!(ignored_hint(None, 1), None);
     }
 
