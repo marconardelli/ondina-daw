@@ -13,16 +13,16 @@ Get the complete raw project document as JSON (large). Prefer get_project / get_
 Parameters: none
 
 ### `new_project`
-Create a new empty project, replacing the current one. The transport stops (Live Loops cells too) and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take).
+Create a new empty project, replacing the current one. The transport stops (Live Loops cells too) and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). Refused when the current project has unsaved changes, unless discard_unsaved is true.
 
-Parameters: `key, name, tempo, time_signature`
+Parameters: `discard_unsaved, key, name, tempo, time_signature`
 
 ### `open_project`
-Open a project file (.ondina JSON). The transport stops and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). VST3 plug-ins whose path is not a .vst3 bundle on a local drive are not loaded and are listed in blocked_plugins. When an MCP client or the assistant opens the project, VST3 plug-ins outside the standard VST3 folders and the folders the user added in Ondina's VST3 library are not loaded either: they stay in the project and in the saved file, are listed in blocked_plugins, stay silent in playback and bounces, and load only when the user opens the project from the app.
+Open a project file (.ondina JSON). The transport stops and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). VST3 plug-ins whose path is not a .vst3 bundle on a local drive are not loaded and are listed in blocked_plugins. When an MCP client or the assistant opens the project, VST3 plug-ins outside the standard VST3 folders and the folders the user added in Ondina's VST3 library are not loaded either: they stay in the project and in the saved file, are listed in blocked_plugins, stay silent in playback and bounces, and load only when the user opens the project from the app. Refused when the current project has unsaved changes, unless discard_unsaved is true. The file must be on a local drive (no network shares). Audio files the project lists on a network share are not read either: they stay in the project and are listed in blocked_audio_files.
 
-Parameters: `path`
+Parameters: `discard_unsaved, path`
 
-### `save_project` · read-only
+### `save_project`
 Save the project. Without a path saves to the current file (or fails if never saved). The path must be a .ondina file (or an older .aurora one) on a local drive (no network shares); .ondina is added when the path has no extension. An existing file is overwritten only if it is an Ondina project. The previous version is kept next to it as <file>.bak when that name is free or already holds an Ondina project; otherwise the backup is skipped, the file is saved anyway and the result reports backup_error.
 
 Parameters: `path`
@@ -67,32 +67,32 @@ Estimate the key of the MIDI parts from their notes (Krumhansl-Kessler key profi
 
 Parameters: `apply, region_id`
 
-### `undo` · read-only
+### `undo`
 Undo the last edit.
 
 Parameters: none
 
-### `redo` · read-only
+### `redo`
 Redo the last undone edit.
 
 Parameters: none
 
-### `play` · read-only
+### `play`
 Start playback, optionally from a beat position.
 
 Parameters: `from_beat`
 
-### `stop` · read-only
+### `stop`
 Stop playback (and recording).
 
 Parameters: none
 
-### `record` · read-only
+### `record`
 Start recording on all record-armed tracks (audio tracks record from the audio input, instrument tracks from MIDI input).
 
 Parameters: `from_beat`
 
-### `set_playhead` · read-only
+### `set_playhead`
 Move the playhead. Give either a beat or a 1-based bar number.
 
 Parameters: `bar, beat`
@@ -127,7 +127,7 @@ Get what happened in this Ondina session since you last looked, newest last: the
 
 Parameters: `limit, since`
 
-### `panic` · read-only
+### `panic`
 Silence all sounding notes immediately.
 
 Parameters: none
@@ -283,7 +283,7 @@ Get a plug-in with all its parameter values and their ranges.
 Parameters: `plugin_id`
 
 ### `set_sampler_sample`
-Load an audio file into a Sampler instrument.
+Load an audio file into a Sampler instrument. The file must be on a local drive (no network shares).
 
 Parameters: `path, plugin_id`
 
@@ -298,7 +298,7 @@ Create a step-sequencer pattern region. Without rows a default drum kit layout (
 Parameters: `name, rows, start, step_length, steps, track_id`
 
 ### `import_audio`
-Import an audio file (wav, aiff, flac, mp3, ogg, m4a) onto an audio track (creates one if track_id omitted) at a beat position.
+Import an audio file (wav, aiff, flac, mp3, ogg, m4a) onto an audio track (creates one if track_id omitted) at a beat position. The file must be on a local drive (no network shares).
 
 Parameters: `path, start, track_id`
 
@@ -313,7 +313,7 @@ Move a region in time and/or to another track.
 Parameters: `region_id, start, track_id`
 
 ### `resize_region`
-Change a region's length in beats (MIDI notes beyond the end are kept but not played).
+Change a region's length in beats (MIDI notes beyond the end are kept but not played). A pattern region keeps whole steps and can have at most 65536 steps: a longer length is refused.
 
 Parameters: `length, region_id`
 
@@ -418,7 +418,7 @@ Set one step of a pattern region: velocity 0 = off.
 Parameters: `region_id, row, step, velocity`
 
 ### `set_pattern_row`
-Set a whole pattern row from a string: 'x' accent, 'o' normal, 'g' ghost, '.' off. E.g. "x...x...x...x...".
+Set a whole pattern row from a string: 'x' accent, 'o' normal, 'g' ghost, '.' off. E.g. "x...x...x...x...". One character per step of the pattern (spaces and '|' are ignored): a string with more or fewer steps is refused.
 
 Parameters: `pattern, region_id, row`
 
@@ -438,7 +438,7 @@ Delete a row of a pattern region together with its steps. The rows after it move
 Parameters: `region_id, row`
 
 ### `set_pattern_swing`
-Set pattern swing 0..1.
+Set pattern swing 0..1 (applied to every second step). A value outside 0..1 is refused. Returns the swing.
 
 Parameters: `region_id, swing`
 
@@ -448,27 +448,27 @@ Convert a pattern region into a regular MIDI region.
 Parameters: `region_id`
 
 ### `generate_drums`
-Session drummer: generate a drum groove as a MIDI region on a (drum) instrument track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
+Session drummer: generate a drum groove as a MIDI region on a (drum) instrument track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512; start is a beat from 0 to 1000000.
 
 Parameters: `bars, fill, intensity, seed, start, style, track_id`
 
 ### `generate_bass`
-Session bassist: generate a bass line following `chords` (one symbol per `beats_per_chord`, default one bar) or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
+Session bassist: generate a bass line following `chords` (one symbol per `beats_per_chord`, default one bar) or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512; start is a beat from 0 to 1000000. beats_per_chord is at least 0.25. The chord track repeats after its last chord, so every bar asked for is filled.
 
 Parameters: `bars, beats_per_chord, chords, octave, seed, start, style, track_id`
 
 ### `generate_chords`
-Session keyboard player: generate chord comping following `chords` or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
+Session keyboard player: generate chord comping following `chords` or the chord track. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512; start is a beat from 0 to 1000000. beats_per_chord is at least 0.25. The chord track repeats after its last chord, so every bar asked for is filled.
 
 Parameters: `bars, beats_per_chord, center_pitch, chords, seed, start, style, track_id`
 
 ### `generate_arpeggio`
-Generate an arpeggio following `chords` or the chord track. rate in beats (0.25 = 1/16). Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
+Generate an arpeggio following `chords` or the chord track. rate in beats (0.25 = 1/16). Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512; start is a beat from 0 to 1000000. beats_per_chord is at least 0.25. The chord track repeats after its last chord, so every bar asked for is filled.
 
 Parameters: `bars, beats_per_chord, center_pitch, chords, mode, octaves, rate, seed, start, track_id`
 
 ### `generate_melody`
-Generate a melody in the project key over `chords` or the chord track. density 0..1. Returns region_id, seed, start, bars; pass the returned seed to get the same part again.
+Generate a melody in the project key over `chords` or the chord track. density 0..1. Returns region_id, seed, start, bars; pass the returned seed to get the same part again. bars is at most 512; start is a beat from 0 to 1000000. beats_per_chord is at least 0.25. The chord track repeats after its last chord, so every bar asked for is filled.
 
 Parameters: `bars, beats_per_chord, chords, density, octave, seed, start, track_id`
 
@@ -498,17 +498,17 @@ Clear the chord track.
 Parameters: none
 
 ### `set_automation`
-Replace the automation of a parameter. target: "volume" (dB), "pan" (-1..1), "send:<index>" (dB), or "plugin:<plugin_id>:<param>". track_id 0 = master.
+Replace the automation of a parameter on a track or bus (the master has no automation: track_id 0 is refused). target: "volume" (dB, -96..6), "pan" (-1..1), "send:<index>" (dB, -96..6), "surround:azimuth" (degrees, -180..180), "surround:elevation" (degrees, -30..90), "surround:spread" (0..1), or "plugin:<plugin_id>:<param>" for a parameter of a built-in plug-in on the same track (its range is in get_plugin). VST3 parameters cannot be automated: set them with set_plugin_param. Values outside the range are clamped; values that are not finite are refused. Returns the stored points.
 
 Parameters: `points, target, track_id`
 
 ### `add_automation_point`
-Add one automation point.
+Add one automation point to a track or bus lane, with the same targets, ranges and limits as set_automation (no master automation). Returns the number of points and the stored value.
 
 Parameters: `beat, target, track_id, value`
 
 ### `clear_automation`
-Remove automation for a target, or all automation of the track if target omitted.
+Remove automation for a target, or all automation of the track if target omitted (tracks and buses; the master has no automation).
 
 Parameters: `target, track_id`
 
@@ -542,28 +542,28 @@ Insert empty time at a position, pushing later material.
 
 Parameters: `at_beat, length`
 
-### `bounce` · read-only
-Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed). After the end the render goes on until reverb and delay tails fade below about -90 dBFS (at least 2 s, at most 20 s: a sound that never fades, like a note held past the end or a noisy plug-in, stops at 20 s). tail_sec sets an exact tail instead: 0 cuts exactly at end, e.g. to export a loop. normalize=true scales the peak to -1 dBFS. normalize_lufs brings the integrated loudness to a target with one gain for the whole mix (no limiter), keeping the peak under true_peak_ceiling_db: the result's loudness reports gain_db, lufs_after, true_peak_after and target_reached (false when the ceiling stopped the gain: the mix needs a limiter, e.g. auto_master, to get that loud). The peak is the analyze_mix estimate; 16 and 24 bit dither can add about one LSB. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
+### `bounce`
+Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed). After the end the render goes on until reverb and delay tails fade below about -90 dBFS (at least 2 s, at most 20 s: a sound that never fades, like a note held past the end or a noisy plug-in, stops at 20 s). tail_sec sets an exact tail instead: 0 cuts exactly at end, e.g. to export a loop. normalize=true scales the peak to -1 dBFS. normalize_lufs brings the integrated loudness to a target with one gain for the whole mix (no limiter), keeping the peak under true_peak_ceiling_db: the result's loudness reports gain_db, lufs_after, true_peak_after and target_reached (false when the ceiling stopped the gain: the mix needs a limiter, e.g. auto_master, to get that loud). The peak is the analyze_mix estimate; 16 and 24 bit dither can add about one LSB. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
 
 Parameters: `bit_depth, end, normalize, normalize_lufs, path, start, tail_sec, track_ids, true_peak_ceiling_db`
 
 ### `bounce_in_place`
-Render a track to audio and place it on a new audio track (bounce in place). The source track is muted. Reverb and delay tails are kept: the render goes on until they fade (at least 2 s, at most 20 s after the last region).
+Render a track to audio and place it on a new audio track (bounce in place). The source track is muted. Reverb and delay tails are kept: the render goes on until they fade (at least 2 s, at most 20 s after the last region). A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
 
 Parameters: `track_id`
 
-### `export_midi` · read-only
+### `export_midi`
 Export MIDI regions to a Standard MIDI File. The path must be a .mid or .midi file on a local drive (no network shares); .mid is added when the path has no extension.
 
 Parameters: `path, track_ids`
 
 ### `import_midi`
-Import a Standard MIDI File, creating instrument tracks (channel 10 becomes a drum track).
+Import a Standard MIDI File, creating instrument tracks (channel 10 becomes a drum track). The file must be on a local drive (no network shares).
 
 Parameters: `at_beat, path`
 
 ### `analyze_mix` · read-only
-Render offline and analyze: integrated loudness (LUFS), true-peak estimate, RMS, crest factor, stereo correlation, low/mid/high spectral balance for the master and each track. Use it to "listen" to the mix.
+Render offline and analyze: integrated loudness (LUFS), true-peak estimate, RMS, crest factor, stereo correlation, low/mid/high spectral balance for the master and each track. Use it to "listen" to the mix. A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
 
 Parameters: `end, start`
 
@@ -582,7 +582,7 @@ List audio output/input devices and the current one.
 
 Parameters: none
 
-### `set_audio_device` · read-only
+### `set_audio_device`
 Select audio devices by name.
 
 Parameters: `input, output`
@@ -592,17 +592,17 @@ List MIDI input ports.
 
 Parameters: none
 
-### `connect_midi_input` · read-only
+### `connect_midi_input`
 Connect a MIDI input port (by name substring) to play the selected/armed instrument track.
 
 Parameters: `name`
 
-### `preview_note` · read-only
+### `preview_note`
 Play a note on a track's instrument for auditioning (duration in seconds, default 0.5).
 
 Parameters: `duration, pitch, track_id, velocity`
 
-### `send_live_midi` · read-only
+### `send_live_midi`
 Send real-time MIDI events to a track's instrument (play it live from an agent). Events run immediately in order; use `delay_ms` for timing.
 
 Parameters: `events, track_id`
@@ -662,7 +662,7 @@ Get a region as music notation: measures with notes (pitch names, note values, d
 
 Parameters: `region_id`
 
-### `export_music_xml` · read-only
+### `export_music_xml`
 Export the score of instrument tracks as MusicXML (opens in MuseScore, Sibelius, Finale, Dorico). The path must be a .musicxml or .xml file on a local drive (no network shares); .musicxml is added when the path has no extension.
 
 Parameters: `path, track_ids`
@@ -678,7 +678,7 @@ Get the Live Loops grid: scenes, cells (per track/scene) and which cells are pla
 Parameters: none
 
 ### `add_scene`
-Add a scene (row) to the Live Loops grid.
+Add a scene (row) to the Live Loops grid. The grid has at most 256 scenes.
 
 Parameters: `name`
 
@@ -693,7 +693,7 @@ Remove a scene and its cells.
 Parameters: `scene`
 
 ### `create_live_cell`
-Create a Live Loops cell on a track and scene: empty MIDI (length in beats), with notes, or copied from an existing region.
+Create a Live Loops cell on a track and scene: empty MIDI (length in beats), with notes, or copied from an existing region. scene is 0..255 (the grid has at most 256 scenes); missing scenes up to it are added.
 
 Parameters: `from_region_id, length, name, notes, scene, track_id`
 
@@ -707,17 +707,17 @@ Replace the notes of a MIDI Live Loops cell.
 
 Parameters: `cell_id, notes`
 
-### `launch_cell` · read-only
+### `launch_cell`
 Launch a cell (quantized to the live quantize grid). Starts playback if stopped.
 
 Parameters: `cell_id`
 
-### `launch_scene` · read-only
+### `launch_scene`
 Launch every cell of a scene.
 
 Parameters: `scene`
 
-### `stop_live_cells` · read-only
+### `stop_live_cells`
 Stop live cells on a track (or all tracks if omitted) and return to the timeline.
 
 Parameters: `track_id`
@@ -742,18 +742,18 @@ Position a track in 3D space for surround/binaural mixing (azimuth degrees: 0 fr
 
 Parameters: `azimuth, elevation, object, spread, track_id`
 
-### `bounce_surround` · read-only
-Bounce a multichannel surround WAV (channel order L R C LFE Ls Rs, plus Lrs Rrs for 7.1, plus Ltf Rtf Ltr Rtr for 7.1.4). Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
+### `bounce_surround`
+Bounce a multichannel surround WAV (channel order L R C LFE Ls Rs, plus Lrs Rrs for 7.1, plus Ltf Rtf Ltr Rtr for 7.1.4). Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
 
 Parameters: `format, path`
 
-### `bounce_binaural` · read-only
-Bounce a binaural (headphone spatial audio) stereo WAV from the 3D positions. Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
+### `bounce_binaural`
+Bounce a binaural (headphone spatial audio) stereo WAV from the 3D positions. Reverb and delay tails are kept (at least 2 s, at most 20 s after the end). The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
 
 Parameters: `path`
 
-### `export_adm` · read-only
-Export an ADM BWF master (ITU-R BS.2076 metadata in a BW64 file, 48 kHz / 24-bit), the interchange format used for Dolby Atmos deliveries: a 7.1.2 channel bed plus one audio object per object track, with time-varying positions from the surround automation. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension.
+### `export_adm`
+Export an ADM BWF master (ITU-R BS.2076 metadata in a BW64 file, 48 kHz / 24-bit), the interchange format used for Dolby Atmos deliveries: a 7.1.2 channel bed plus one audio object per object track, with time-varying positions from the surround automation. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
 
 Parameters: `end, path, start`
 
@@ -777,13 +777,13 @@ Set the SMPTE frame rate for timecode (23.976, 24, 25, 29.97, 30, 50, 60).
 
 Parameters: `fps`
 
-### `extract_movie_frame` · read-only
+### `extract_movie_frame`
 Extract the movie frame at a song position as an image (path ending in .png, .jpg or .jpeg; requires ffmpeg on PATH), so an agent can look at the picture.
 
 Parameters: `beat, path`
 
-### `export_movie` · read-only
-Export the movie with the bounced mix as soundtrack (path ending in .mp4, .mov, .mkv or .m4v; requires ffmpeg on PATH).
+### `export_movie`
+Export the movie with the bounced mix as soundtrack (path ending in .mp4, .mov, .mkv or .m4v; requires ffmpeg on PATH). A render covers at most 60 minutes of the song (plus the tail): a longer range is refused.
 
 Parameters: `path`
 
@@ -802,22 +802,22 @@ Get the MIDI input routing.
 
 Parameters: none
 
-### `scan_vst3` · read-only
+### `scan_vst3`
 Scan the standard VST3 folders, the VST3 folders the user added in Ondina and extra_paths for third-party plug-ins. extra_paths must be folders on a local drive: network shares, device paths and URLs are skipped and listed in skipped_paths. From MCP clients and the assistant an extra folder must also be inside a standard VST3 folder or a folder the user added in Ondina's VST3 library; other folders are skipped and listed in skipped_paths too. scanned_folders lists the extra folders that were scanned.
 
 Parameters: `extra_paths`
 
 ### `add_vst3`
-Load a VST3 plug-in (path to a .vst3 bundle on a local drive) as instrument or insert effect on a track (track_id 0 = master). Network shares, device paths, URLs and files that are not .vst3 are refused. From MCP clients and the assistant the bundle must also be inside a standard VST3 folder (Common Files\VST3, %LOCALAPPDATA%\Programs\Common\VST3) or a folder the user added in Ondina's VST3 library (Add folder…): if it is refused, ask the user to add its folder. Its parameters are then addressable as "p<id>" (normalized 0..1) with set_plugin_param.
+Load a VST3 plug-in (path to a .vst3 bundle on a local drive) as instrument or insert effect on a track (track_id 0 = master). Network shares, device paths, URLs and files that are not .vst3 are refused. From MCP clients and the assistant the bundle must also be inside a standard VST3 folder (Common Files\VST3, %LOCALAPPDATA%\Programs\Common\VST3) or a folder the user added in Ondina's VST3 library (Add folder…): if it is refused, ask the user to add its folder. Its parameters are then addressable as "p<id>" (normalized 0..1) with set_plugin_param; they cannot be automated (set_automation accepts built-in plug-ins only).
 
 Parameters: `as_instrument, index, path, track_id`
 
-### `open_plugin_editor` · read-only
+### `open_plugin_editor`
 Open the native editor window of a VST3 plug-in. Knob moves in the window are applied to the project (undoable) and to the playing instance. Refused for a plug-in that open_project listed in blocked_plugins.
 
 Parameters: `plugin_id`
 
-### `close_plugin_editor` · read-only
+### `close_plugin_editor`
 Close a plug-in editor window.
 
 Parameters: `plugin_id`
@@ -827,7 +827,7 @@ Get application settings (AI model, effort, MCP port, audio device).
 
 Parameters: none
 
-### `set_ai_settings` · read-only
+### `set_ai_settings`
 Change the AI assistant model and/or effort (low, medium, high, xhigh, max).
 
 Parameters: `effort, model`
