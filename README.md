@@ -55,7 +55,7 @@ Every row is available both in the GUI and as MCP tools (full list in [`MCP_TOOL
 | Area | What Ondina does | Main MCP tools |
 |---|---|---|
 | Projects, tempo, meter, key | `.ondina` files, tempo changes, count-in, notes and lyrics | `new_project` `save_project` `set_tempo` `add_tempo_change` `set_key` |
-| Transport, cycle, metronome | sample-accurate transport, cycle (drag, resize and toggle it on the ruler), click, count-in | `play` `stop` `set_cycle` `set_metronome` `set_count_in` |
+| Transport, cycle, metronome | sample-accurate transport, cycle (drag, resize and toggle it on the ruler), click (level and "only while recording" from a right-click on the metronome button), count-in | `play` `stop` `set_cycle` `set_metronome` `set_count_in` |
 | Tracks and library | instrument, audio and aux bus tracks, 23 patches | `add_track` `apply_patch` `list_patches` |
 | Audio and MIDI recording | WASAPI inputs, MIDI ports, Musical Typing | `record` `set_record_arm` `connect_midi_input` `send_live_midi` |
 | Comping | cycle recording creates one take per pass; comp by segments | `list_takes` `comp_takes` |
@@ -174,6 +174,10 @@ extension: Ondina opens both.
   Play took longer than the audio device allows (red when there are any; each one can be heard as a click).
   `get_transport` reports the same numbers as `dsp_load` and `dsp_overloads`. Ondina flushes denormal numbers to
   zero while it renders, live and in bounces, so reverb and filter tails that fade out do not raise the load.
+- **Metronome**: K or a click on the metronome button turns the click on and off. Right-click the button to set
+  the click level (-60 to 0 dB, -9.1 dB by default) and to make it click only while recording; the count-in always
+  clicks. The button is dark blue while the click waits for a recording. `set_metronome` takes the same
+  settings (`level_db`, `only_while_recording`) and `get_transport` reports them.
 
 ### Keyboard shortcuts
 
