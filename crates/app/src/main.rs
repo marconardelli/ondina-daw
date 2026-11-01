@@ -20,6 +20,7 @@ mod editors;
 mod file_drop;
 mod extra_ui;
 mod inspector;
+mod key_menu;
 mod metronome_ui;
 mod mixer;
 mod note_clipboard;

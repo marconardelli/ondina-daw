@@ -23,6 +23,7 @@ use serde_json::Value;
 use crate::theme;
 use crate::doc_guard::{self, Answer, CloseStep, DocAction, Step};
 use crate::editors::take_event;
+use crate::key_menu;
 use crate::metronome_ui;
 use crate::note_clipboard as nc;
 use crate::note_selection;
@@ -1924,6 +1925,16 @@ impl OndinaApp {
                             .width(130.0)
                             .selected_text(p.key.name())
                             .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(false, key_menu::DETECT_LABEL)
+                                    .on_hover_text(key_menu::DETECT_TOOLTIP)
+                                    .clicked()
+                                {
+                                    if let Some(v) = self.exec(key_menu::detect_command()) {
+                                        self.status = key_menu::status(&v);
+                                    }
+                                }
+                                ui.separator();
                                 for root in 0..12u8 {
                                     for scale in [
                                         ScaleKind::Major,
