@@ -2,7 +2,7 @@
 //! pills, slot buttons that open a menu, the dashed "+ Add" slot, LCD value boxes).
 
 use eframe::egui::{
-    self, pos2, vec2, Align2, Color32, InnerResponse, Rect, Response, RichText, Rounding, Sense, Shape, Stroke, Ui,
+    self, pos2, vec2, Color32, InnerResponse, Rect, Response, RichText, Rounding, Sense, Shape, Stroke, Ui,
 };
 
 use crate::theme;
@@ -173,12 +173,12 @@ pub fn lcd_value(ui: &mut Ui, text: &str) -> Response {
 }
 
 /// A small square icon button for panel headers (close, options).
-pub fn header_button(ui: &mut Ui, text: &str, tip: &str) -> Response {
+pub fn header_button(ui: &mut Ui, icon: Icon, tip: &str) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(24.0, 22.0), Sense::click());
     if ui.is_rect_visible(rect) {
-        let fill = if resp.hovered() { theme::HOVER } else { theme::CONTROL };
+        let (fill, fg) = if resp.hovered() { (theme::HOVER, theme::TEXT) } else { (theme::CONTROL, theme::TEXT_2) };
         ui.painter().rect_filled(rect, Rounding::same(theme::R_MD), fill);
-        ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, theme::body_font(), theme::TEXT_2);
+        widgets::paint_icon(ui.painter(), icon, Rect::from_center_size(rect.center(), vec2(12.0, 12.0)), fg);
     }
     resp.on_hover_text(tip)
 }
@@ -187,6 +187,41 @@ pub fn header_button(ui: &mut Ui, text: &str, tip: &str) -> Response {
 pub fn icon_title(ui: &mut Ui, icon: Icon, color: Color32, title: RichText) {
     widgets::icon(ui, icon, 14.0, color);
     ui.label(title);
+}
+
+/// What an empty view says: an icon, a short title and a hint on what to do, centered in the space it is given.
+pub fn empty_state(ui: &mut Ui, icon: Icon, title: &str, hint: &str) -> Response {
+    let rect = ui.available_rect_before_wrap();
+    let height = rect.height().max(EMPTY_STATE_MIN_H);
+    let (rect, resp) = ui.allocate_exact_size(vec2(rect.width(), height), Sense::hover());
+    paint_empty_state(ui, rect, icon, title, hint);
+    resp
+}
+
+/// Least height [`empty_state`] takes.
+pub const EMPTY_STATE_MIN_H: f32 = 120.0;
+
+/// [`empty_state`] painted into `rect` without taking space (over a canvas such as the arrangement).
+pub fn paint_empty_state(ui: &Ui, rect: Rect, icon: Icon, title: &str, hint: &str) {
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let p = ui.painter().with_clip_rect(rect);
+    let wrap = (rect.width() - 2.0 * theme::SP_6).clamp(80.0, 360.0);
+    let title_g = p.layout(title.to_owned(), egui::FontId::new(13.0, theme::semibold()), theme::TEXT_2, wrap);
+    let hint_g = p.layout(hint.to_owned(), egui::FontId::proportional(theme::SIZE_NUMBER), theme::TEXT_3, wrap);
+    let badge = 40.0;
+    let total = badge + theme::SP_5 + title_g.size().y + theme::SP_2 + hint_g.size().y;
+    let top = rect.center().y - total / 2.0;
+    let badge_rect = Rect::from_center_size(pos2(rect.center().x, top + badge / 2.0), vec2(badge, badge));
+    p.rect(badge_rect, Rounding::same(theme::R_XL), theme::RAISED, Stroke::new(1.0_f32, theme::BORDER));
+    widgets::paint_icon(&p, icon, badge_rect.shrink(11.0), theme::TEXT_3);
+    let y = badge_rect.bottom() + theme::SP_5;
+    let title_w = title_g.size().x;
+    let title_h = title_g.size().y;
+    p.galley(pos2(rect.center().x - title_w / 2.0, y), title_g, theme::TEXT_2);
+    let y = y + title_h + theme::SP_2;
+    p.galley(pos2(rect.center().x - hint_g.size().x / 2.0, y), hint_g, theme::TEXT_3);
 }
 
 #[cfg(test)]

@@ -445,10 +445,23 @@ pub enum Icon {
     Rewind,
     Forward,
     Record,
+    Close,
+    Plus,
+    Search,
+    Settings,
+    Undo,
+    Warning,
+    Check,
+    Movie,
+    Scissors,
+    More,
+    ChevronDown,
+    ChevronRight,
+    ChevronLeft,
 }
 
 impl Icon {
-    pub const ALL: [Icon; 20] = [
+    pub const ALL: [Icon; 33] = [
         Icon::Play,
         Icon::Stop,
         Icon::Cycle,
@@ -469,6 +482,19 @@ impl Icon {
         Icon::Rewind,
         Icon::Forward,
         Icon::Record,
+        Icon::Close,
+        Icon::Plus,
+        Icon::Search,
+        Icon::Settings,
+        Icon::Undo,
+        Icon::Warning,
+        Icon::Check,
+        Icon::Movie,
+        Icon::Scissors,
+        Icon::More,
+        Icon::ChevronDown,
+        Icon::ChevronRight,
+        Icon::ChevronLeft,
     ];
 
     /// SVG path data on the 16 grid (from the design tokens).
@@ -496,6 +522,19 @@ impl Icon {
             Icon::Rewind => "M8 3.5L2 8l6 4.5zM14.5 3.5L8.5 8l6 4.5z",
             Icon::Forward => "M1.5 3.5L7.5 8l-6 4.5zM8 3.5L14 8l-6 4.5z",
             Icon::Record => "M8 3a5 5 0 1 1 0 10a5 5 0 1 1 0-10z",
+            Icon::Close => "M4 4l8 8M12 4l-8 8",
+            Icon::Plus => "M8 3v10M3 8h10",
+            Icon::Search => "M7 2.5a4.5 4.5 0 1 1 0 9a4.5 4.5 0 1 1 0-9zM10.3 10.3l3.7 3.7",
+            Icon::Settings => "M8 5.5a2.5 2.5 0 1 1 0 5a2.5 2.5 0 1 1 0-5zM8 1.5v2.2M8 12.3v2.2M1.5 8h2.2M12.3 8h2.2M3.4 3.4l1.6 1.6M11 11l1.6 1.6M3.4 12.6L5 11M11 5l1.6-1.6",
+            Icon::Undo => "M5.5 3L2.5 6l3 3M2.5 6H10a3.5 3.5 0 0 1 0 7H6",
+            Icon::Warning => "M8 2l6.5 11.5h-13zM8 6.5v3.2M8 11.4v0.8",
+            Icon::Check => "M3 8.5l3 3 7-7",
+            Icon::Movie => "M2 3.5h12v9H2zM5 3.5v9M11 3.5v9M2 6.5h3M2 9.5h3M11 6.5h3M11 9.5h3",
+            Icon::Scissors => "M4.5 9.5a2 2 0 1 1 0 4a2 2 0 1 1 0-4zM11.5 9.5a2 2 0 1 1 0 4a2 2 0 1 1 0-4zM5.7 9.9L12 2.5M10.3 9.9L4 2.5",
+            Icon::More => "M3.5 7.2a0.8 0.8 0 1 1 0 1.6a0.8 0.8 0 1 1 0-1.6zM8 7.2a0.8 0.8 0 1 1 0 1.6a0.8 0.8 0 1 1 0-1.6zM12.5 7.2a0.8 0.8 0 1 1 0 1.6a0.8 0.8 0 1 1 0-1.6z",
+            Icon::ChevronDown => "M4 6l4 4 4-4",
+            Icon::ChevronRight => "M6 4l4 4-4 4",
+            Icon::ChevronLeft => "M10 4L6 8l4 4",
         }
     }
 
@@ -630,6 +669,82 @@ pub fn icon_menu_button<R>(
     let ir = ui.menu_button(with_icon_room(ui, text), add_contents);
     let color = ui.style().interact(&ir.response).text_color();
     paint_inline_icon(ui, &ir.response, icon, color);
+    ir
+}
+
+/// `text` with room on its left for an inline icon; paint the icon with [`paint_leading_icon`] once the widget is
+/// laid out (for widgets the helpers above do not cover, such as a disabled button or a menu entry).
+pub fn leading_icon_text(ui: &Ui, text: impl Into<RichText>) -> WidgetText {
+    with_icon_room(ui, text)
+}
+
+/// The icon of a widget built from [`leading_icon_text`].
+pub fn paint_leading_icon(ui: &Ui, resp: &Response, icon: Icon, color: Color32) {
+    paint_inline_icon(ui, resp, icon, color);
+}
+
+/// Width taken by the chevron of a drop-down label.
+pub const CHEVRON_W: f32 = 12.0;
+
+/// `text` with room on its right for the chevron of a drop-down; paint it with [`paint_trailing_chevron`].
+pub fn dropdown_text(ui: &Ui, text: impl Into<RichText>) -> WidgetText {
+    let mut job = egui::text::LayoutJob::default();
+    let text: RichText = text.into();
+    text.append_to(&mut job, ui.style(), FontSelection::Default, Align::Center);
+    let format = job.sections.first().map(|s| s.format.clone()).unwrap_or_default();
+    job.append(" ", CHEVRON_W, format);
+    WidgetText::LayoutJob(job)
+}
+
+/// The chevron at the right end of a drop-down button built from [`dropdown_text`].
+pub fn paint_trailing_chevron(ui: &Ui, resp: &Response, color: Color32) {
+    let x = resp.rect.right() - ui.spacing().button_padding.x - CHEVRON_W / 2.0;
+    let r = Rect::from_center_size(pos2(x, resp.rect.center().y), Vec2::splat(10.0));
+    paint_icon(ui.painter(), Icon::ChevronDown, r, color);
+}
+
+/// A small frameless square button showing only `icon` (close, stop, remove), lit on hover.
+pub fn icon_only_button(ui: &mut Ui, icon: Icon, side: f32, color: Color32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(side), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let fg = if resp.hovered() {
+            ui.painter().rect_filled(rect, Rounding::same(theme::R_SM), theme::HOVER);
+            theme::TEXT
+        } else {
+            color
+        };
+        paint_icon(ui.painter(), icon, rect.shrink(side * 0.2), fg);
+    }
+    resp
+}
+
+/// A menu button whose label ends with a drop-down chevron.
+pub fn dropdown_menu_button<R>(
+    ui: &mut Ui,
+    text: impl Into<RichText>,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    let ir = ui.menu_button(dropdown_text(ui, text), add_contents);
+    let color = ui.style().interact(&ir.response).text_color();
+    paint_trailing_chevron(ui, &ir.response, color);
+    ir
+}
+
+/// The "more" button (three dots) that opens a menu; `fill` overrides the resting button fill.
+pub fn more_menu_button<R>(
+    ui: &mut Ui,
+    size: Vec2,
+    fill: Option<Color32>,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
+    let mut button = egui::Button::new("").min_size(size);
+    if let Some(f) = fill {
+        button = button.fill(f).stroke(Stroke::NONE);
+    }
+    let ir = egui::menu::menu_custom_button(ui, button, add_contents);
+    let color = if ir.response.hovered() { theme::TEXT } else { theme::TEXT_2 };
+    let side = size.y.min(size.x) * 0.6;
+    paint_icon(ui.painter(), Icon::More, Rect::from_center_size(ir.response.rect.center(), Vec2::splat(side)), color);
     ir
 }
 
@@ -1472,6 +1587,33 @@ mod tests {
         for (i, icon) in Icon::ALL.iter().enumerate() {
             assert_eq!(*icon as usize, i);
         }
+    }
+
+    #[test]
+    fn interface_icons_have_the_expected_strokes() {
+        let count = |i: Icon| i.strokes().len();
+        assert_eq!(count(Icon::Close), 2);
+        assert_eq!(count(Icon::Plus), 2);
+        assert_eq!(count(Icon::Settings), 9);
+        assert_eq!(count(Icon::Warning), 3);
+        // the three dots of "more" are closed circles in a row
+        let more = Icon::More.strokes();
+        assert_eq!(more.len(), 3);
+        assert!(more.iter().all(|s| s.closed));
+        let centers: Vec<f32> =
+            more.iter().map(|s| s.points.iter().map(|p| p.x).sum::<f32>() / s.points.len() as f32).collect();
+        assert!(centers.windows(2).all(|w| w[0] < w[1]), "{centers:?}");
+        // chevrons are single open strokes pointing their way
+        let down = &Icon::ChevronDown.strokes()[0];
+        assert!(!down.closed && down.points.len() == 3 && down.points[1].y > down.points[0].y);
+        let left = &Icon::ChevronLeft.strokes()[0];
+        assert!(left.points[1].x < left.points[0].x);
+        let right = &Icon::ChevronRight.strokes()[0];
+        assert!(right.points[1].x > right.points[0].x);
+        // the search lens is a circle with a handle toward the lower right
+        let search = Icon::Search.strokes();
+        assert!(search[0].closed && !search[1].closed);
+        assert!(search[1].points[1].x > search[1].points[0].x && search[1].points[1].y > search[1].points[0].y);
     }
 
     #[test]

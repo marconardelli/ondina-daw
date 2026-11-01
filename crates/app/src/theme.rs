@@ -181,6 +181,14 @@ pub const SIZE_LABEL: f32 = 10.0;
 pub const SIZE_NUMBER: f32 = 11.0;
 pub const SIZE_LCD: f32 = 18.0;
 
+// ---- menus and tooltips ----
+/// Least width of a menu, so the shortcut column lines up.
+pub const MENU_WIDTH: f32 = 200.0;
+/// Width at which a tooltip wraps.
+pub const TOOLTIP_WIDTH: f32 = 300.0;
+/// Seconds the pointer rests before a tooltip shows.
+pub const TOOLTIP_DELAY: f32 = 0.4;
+
 const INTER: &str = "Inter";
 const INTER_SEMIBOLD: &str = "Inter-SemiBold";
 const MONO: &str = "JetBrainsMono";
@@ -350,6 +358,13 @@ pub fn apply(ctx: &egui::Context) {
     style.spacing.button_padding = egui::vec2(7.0, 3.0);
     style.spacing.menu_margin = egui::Margin::same(SP_3);
     style.spacing.window_margin = egui::Margin::same(10.0);
+    // menus: the same padding everywhere, room for the shortcut column
+    style.spacing.menu_width = MENU_WIDTH;
+    style.spacing.menu_spacing = SP_1;
+    // tooltips: one width for all, shown after a short pause so they never flash while the pointer travels
+    style.spacing.tooltip_width = TOOLTIP_WIDTH;
+    style.interaction.tooltip_delay = TOOLTIP_DELAY;
+    style.interaction.show_tooltips_only_when_still = true;
     ctx.set_style(style);
 }
 
@@ -402,6 +417,14 @@ mod tests {
         for s in [ACCENT, PLAY, REC, SOLO, MUTE, MONITOR, AI] {
             assert!(!TRACK_COLORS.contains(&s), "{s:?}");
         }
+    }
+
+    #[test]
+    fn menus_and_tooltips_have_one_size_and_a_short_delay() {
+        assert!(TOOLTIP_DELAY > 0.1 && TOOLTIP_DELAY < 1.0);
+        assert!(TOOLTIP_WIDTH >= MENU_WIDTH);
+        // separators are drawn with the noninteractive stroke: a visible hairline, not the panel fill
+        assert_eq!(visuals().widgets.noninteractive.bg_stroke.color, BORDER);
     }
 
     #[test]
