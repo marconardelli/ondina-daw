@@ -69,11 +69,17 @@ pub enum Command {
     SetPlayhead { beat: Option<f64>, bar: Option<f64> },
     /// Configure the cycle (loop) range.
     SetCycle { enabled: bool, start: Option<f64>, end: Option<f64> },
-    /// Enable or disable the metronome click.
-    SetMetronome { enabled: bool },
+    /// Enable or disable the metronome click, and optionally set its level and whether it clicks only while recording. The count-in before a recording always clicks, at the same level. Returns the resulting metronome, level_db and only_while_recording.
+    SetMetronome {
+        enabled: bool,
+        /// Click level in dB, from -60 (very quiet) to 0 (full scale); values outside are clamped. A new project starts at about -9.1. Omit to keep the current level.
+        level_db: Option<f32>,
+        /// true: the click sounds only while recording (and in the count-in), not in plain playback. Omit to keep the current setting.
+        only_while_recording: Option<bool>,
+    },
     /// Set the number of count-in bars played before recording starts (0-4).
     SetCountIn { bars: u32 },
-    /// Get transport state: playing, recording, playhead position (beats, bar.beat.tick, seconds), cycle, metronome, sample rate, dsp_load (share of the audio block time the last block used) and dsp_overloads (audio blocks since the last Play that took longer than the audio device allows; each one can be heard as a click).
+    /// Get transport state: playing, recording, playhead position (beats, bar.beat.tick, seconds), cycle, metronome, metronome_level_db, metronome_only_while_recording, sample rate, dsp_load (share of the audio block time the last block used) and dsp_overloads (audio blocks since the last Play that took longer than the audio device allows; each one can be heard as a click).
     GetTransport {},
     /// Get what the user has selected in the Ondina window: the selected track, the selected region and up to 256 selected notes of that region (each with its index, pitch, name, start and length in beats from the region start, velocity), plus the playhead and the cycle range. To act on "the notes I selected", pass the note index values as `indices` to quantize_notes, transpose_notes, humanize_notes, set_note_velocities, snap_notes_to_key, add_harmony or remove_notes. Indices refer to the region as it is now: read the selection again after editing the region, and compare pitch and start if in doubt. selected_note_count is the real number of selected notes and can be larger than the list. A headless session has no window: track and region are null and notes is empty.
     GetSelection {},

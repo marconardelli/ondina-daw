@@ -1069,7 +1069,7 @@ impl OndinaApp {
         }
         if k {
             let m = self.view.project.metronome;
-            self.cmd(Command::SetMetronome { enabled: !m });
+            self.cmd(Command::SetMetronome { enabled: !m, level_db: None, only_while_recording: None });
         }
         if del {
             if !self.selected_notes.is_empty() && self.bottom == BottomTab::Editor {
@@ -1828,7 +1828,7 @@ impl OndinaApp {
                 .on_hover_text("Metronome (K)")
                 .clicked()
             {
-                self.cmd(Command::SetMetronome { enabled: !met });
+                self.cmd(Command::SetMetronome { enabled: !met, level_db: None, only_while_recording: None });
             }
             ui.separator();
             // LCD

@@ -646,6 +646,8 @@ impl Session {
             "bpm": self.project.tempo.bpm_at(b),
             "cycle": {"enabled": self.project.cycle.enabled, "start": self.project.cycle.start, "end": self.project.cycle.end},
             "metronome": self.project.metronome,
+            "metronome_level_db": (self.project.metronome_level_db * 100.0).round() / 100.0,
+            "metronome_only_while_recording": self.project.metronome_only_recording,
             "dsp_load": (self.engine.shared.load() * 100.0).round() / 100.0,
             "dsp_overloads": self.engine.shared.overloads(),
             "sample_rate": self.engine.sample_rate(),
