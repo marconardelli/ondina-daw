@@ -212,8 +212,8 @@ actions, and can "listen" to the mix through `analyze_mix`. MCP clients read the
 assistant's and other clients' tool calls, and whether the project was replaced or Ondina restarted. Contextual AI
 buttons live in the piano roll, step
 sequencer, plug-in editors and region menus. The local model edits just the selected notes by passing their indices:
-it can quantize, humanize, transpose them, snap them to the project key or add a harmony voice. The line under the panel title shows which
-engine answers and how many tools it gets.
+it can quantize, humanize, transpose them, snap them to the project key or add a harmony voice. The line under the
+panel title shows which engine answers and how many tools it gets.
 
 ## Controlling Ondina over MCP
 
