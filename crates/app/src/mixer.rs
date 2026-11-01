@@ -55,6 +55,23 @@ const BUS_LOOK: SlotLook = SlotLook {
     text: theme::TEXT,
 };
 
+/// Scroll bars of the effect and send lists inside a strip: always shown as a thin line over the slots (taking no
+/// room from them), widening on hover.
+fn inner_scroll() -> egui::style::ScrollStyle {
+    egui::style::ScrollStyle { dormant_background_opacity: 0.5, dormant_handle_opacity: 1.0, active_background_opacity: 0.6, ..egui::style::ScrollStyle::floating() }
+}
+
+/// Height of the track strips in an area `h` tall and `w` wide: the whole height, less the horizontal scroll bar
+/// (`bar` tall) when `n` strips are wider than the area, so the bar never hides the strips' bottom.
+pub fn strips_height(h: f32, w: f32, n: usize, bar: f32) -> f32 {
+    let needed = n as f32 * STRIP_W + n.saturating_sub(1) as f32 * 2.0;
+    if needed > w {
+        h - bar
+    } else {
+        h
+    }
+}
+
 /// Height of `n` slots stacked with their gaps.
 pub fn rows_h(n: usize) -> f32 {
     n as f32 * SLOT_H + n.saturating_sub(1) as f32 * ROW_GAP
@@ -388,7 +405,11 @@ impl OndinaApp {
                 .max_rect(inner)
                 .layout(egui::Layout::left_to_right(egui::Align::Min)),
         );
-        let strip_h = inner.height().max(strip_min_height(&CHANNEL_PARTS, false));
+        // scroll bars always visible (solid, they take their own room) instead of appearing only on hover
+        tui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+        let bar = tui.spacing().scroll.allocated_width();
+        let shown_n = p.tracks.iter().filter(|t| filter.shows(t.kind)).count();
+        let strip_h = strips_height(inner.height(), inner.width(), shown_n, bar).max(strip_min_height(&CHANNEL_PARTS, false));
         let shown: Vec<(usize, &Track)> = p.tracks.iter().enumerate().filter(|(_, t)| filter.shows(t.kind)).collect();
         if shown.is_empty() {
             tui.label(RichText::new(filter.empty_text()).color(theme::TEXT_3));
@@ -410,6 +431,7 @@ impl OndinaApp {
                 .max_rect(master_rect.shrink2(vec2(1.0, 0.0)).translate(vec2(0.5, 0.0)))
                 .layout(egui::Layout::top_down(egui::Align::Min)),
         );
+        mui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
         let master_h = master_rect.height().max(strip_min_height(&MASTER_PARTS, true) + theme::SP_4);
         egui::ScrollArea::vertical().id_salt("mixer-master-scroll").auto_shrink([false, false]).show(&mut mui, |ui| {
             self.channel_strip(ui, &p, None, MASTER_ID, &p.master, master_h);
@@ -559,6 +581,7 @@ impl OndinaApp {
                     paint_label(ui, r, &label);
                     ui.add_space(LABEL_H);
                     let rows = if master { MASTER_FX_ROWS } else { FX_ROWS };
+                    ui.spacing_mut().scroll = inner_scroll();
                     egui::ScrollArea::vertical()
                         .id_salt(("mixer-fx", id))
                         .max_height(rows_h(rows))
@@ -575,6 +598,7 @@ impl OndinaApp {
                     paint_label(ui, r, "SENDS");
                     ui.add_space(LABEL_H);
                     let buses = Self::buses_for(p, id);
+                    ui.spacing_mut().scroll = inner_scroll();
                     egui::ScrollArea::vertical()
                         .id_salt(("mixer-sends", id))
                         .max_height(rows_h(SEND_ROWS))
@@ -912,6 +936,15 @@ pub fn short(s: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_horizontal_scroll_bar_takes_its_room_only_when_strips_overflow() {
+        assert_eq!(strips_height(400.0, 1000.0, 3, 8.0), 400.0);
+        assert_eq!(strips_height(400.0, 300.0, 3, 8.0), 392.0);
+        assert_eq!(strips_height(400.0, 300.0, 0, 8.0), 400.0);
+        assert!(inner_scroll().dormant_handle_opacity > 0.0, "inner bars show without hovering");
+        assert!(egui::style::ScrollStyle::solid().allocated_width() > 0.0);
+    }
     use serde_json::json;
 
     #[test]
