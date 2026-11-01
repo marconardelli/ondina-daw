@@ -2417,3 +2417,68 @@ fn old_projects_keep_the_metronome_level_they_had() {
     assert_eq!(again.project.metronome_level_db, -18.0);
     assert!(again.project.metronome_only_recording);
 }
+
+/// Amplitude of the `freq` component of `x` (single-bin DFT over the whole slice).
+fn tone_level(x: &[f32], freq: f64, sr: f64) -> f64 {
+    let (mut re, mut im) = (0.0f64, 0.0f64);
+    for (n, v) in x.iter().enumerate() {
+        let ph = 2.0 * std::f64::consts::PI * freq * n as f64 / sr;
+        re += *v as f64 * ph.cos();
+        im -= *v as f64 * ph.sin();
+    }
+    2.0 / x.len() as f64 * (re * re + im * im).sqrt()
+}
+
+#[test]
+fn de_esser_is_listed_added_and_applied_in_a_bounce() {
+    let mut s = Session::new(false);
+    let effects = ok(&mut s, "list_plugins", json!({"category": "effect"}));
+    let de = effects.as_array().unwrap().iter().find(|p| p["kind"] == "de_esser").expect("de_esser in list_plugins");
+    assert_eq!(de["group"], "Dynamics");
+    let ids: Vec<&str> = de["params"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["freq", "threshold", "range", "mode", "listen"]);
+    assert_eq!(de["params"][3]["choices"], json!(["Split", "Wideband"]));
+    let presets = ok(&mut s, "list_presets", json!({"kind": "de_esser"}));
+    let names: Vec<&str> = presets.as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"Vocal De-Ess") && names.contains(&"Soft De-Ess"), "{presets}");
+    let patches = ok(&mut s, "list_patches", json!({}));
+    let lead = patches.as_array().unwrap().iter().find(|p| p["name"] == "Lead Vocal").unwrap();
+    assert_eq!(lead["effects"], json!(["channel_eq", "compressor", "reverb"]));
+
+    // Three seconds of a "voice" at 200 Hz plus an "s" at 7 kHz.
+    let sr_in = 48000usize;
+    let x: Vec<f32> = (0..3 * sr_in)
+        .map(|n| {
+            let t = n as f64 / sr_in as f64;
+            (0.3 * (2.0 * std::f64::consts::PI * 200.0 * t).sin() + 0.3 * (2.0 * std::f64::consts::PI * 7000.0 * t).sin()) as f32
+        })
+        .collect();
+    let wav = tmp("de_esser.wav");
+    write_wav(&wav, &[x], sr_in as u32);
+    let rid = ok(&mut s, "import_audio", json!({"path": wav.display().to_string(), "start": 0}))["region_id"].as_u64().unwrap();
+    let t = s.project.find_region(rid).unwrap().0.id;
+    let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "de_esser"}))["plugin_id"].as_u64().unwrap();
+    assert_eq!(s.can_undo(), Some("add_effect"));
+    let info = ok(&mut s, "get_plugin", json!({"plugin_id": fx}));
+    let param = |id: &str| info["params"].as_array().unwrap().iter().find(|p| p["id"] == id).unwrap().clone();
+    assert_eq!(param("mode")["selected"], "Split");
+    assert_eq!(param("freq")["value"].as_f64(), Some(6000.0));
+
+    let bounce = |s: &mut Session, name: &str| {
+        let path = tmp(name);
+        let r = ok(s, "bounce", json!({"path": path.display().to_string(), "bit_depth": 32, "tail_sec": 0}));
+        let sr = r["sample_rate"].as_u64().unwrap() as usize;
+        let reader = hound::WavReader::open(&path).unwrap();
+        let channels = reader.spec().channels as usize;
+        let left: Vec<f32> = reader.into_samples::<f32>().map(|x| x.unwrap()).step_by(channels).collect();
+        let window = &left[sr..2 * sr];
+        (tone_level(window, 200.0, sr as f64), tone_level(window, 7000.0, sr as f64))
+    };
+    let (low_on, high_on) = bounce(&mut s, "de_esser_on.wav");
+    ok(&mut s, "set_plugin_bypass", json!({"plugin_id": fx, "bypass": true}));
+    let (low_off, high_off) = bounce(&mut s, "de_esser_off.wav");
+    let high = 20.0 * (high_on / high_off).log10();
+    let low = 20.0 * (low_on / low_off).log10();
+    assert!((-10.0..=-6.0).contains(&high), "7 kHz changed by {high} dB");
+    assert!(low.abs() < 0.5, "200 Hz changed by {low} dB");
+}
