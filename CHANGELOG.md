@@ -7,6 +7,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-01
+
+### Added
+
+- Piano roll: new **Length** menu for the selected notes (or the whole region when nothing is selected).
+  *Legato* stretches each note to the start of the next one (notes played together, even a slightly loose chord,
+  end together), *Remove overlaps* cuts a note where the same pitch starts again, *Fixed* gives every note the
+  current *Note length*, and *Halve* / *Double* shorten or lengthen them. Starts and pitches never move, and each
+  change is a single Ctrl+Z.
+- Piano roll: new **Velocity** menu for the selected notes: set them all to 64, 80, 100 or 127 (or type a value
+  from 1 to 127), or scale them to 90% or 110%.
+- The assistant (with Claude) and MCP clients can change note lengths with the new `set_note_lengths` tool, for
+  example "make the bass legato".
+- New **De-Esser** effect (Dynamics group) that turns down harsh S and T sounds on vocals only while they happen.
+  Set the Frequency where the sibilance starts, the Threshold and the maximum reduction (Range); *Split* mode turns
+  down only the high band, *Wideband* the whole signal, and *Listen* lets you hear the band being detected. Below
+  the threshold the sound passes through unchanged, with no added latency. Two presets: *Vocal De-Ess* and
+  *Soft De-Ess*.
+- Add it from the mixer insert slots or the inspector; the assistant and MCP clients add it with `add_effect`
+  (`kind: "de_esser"`), or just ask the assistant to "de-ess the vocal".
+
 ## [0.15.2] - 2026-11-01
 
 ### Changed
@@ -484,7 +505,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.15.2...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/marconardelli/ondina-daw/compare/v0.15.2...v0.16.0
 [0.15.2]: https://github.com/marconardelli/ondina-daw/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/marconardelli/ondina-daw/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/marconardelli/ondina-daw/compare/v0.14.0...v0.15.0
