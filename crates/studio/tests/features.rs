@@ -1582,3 +1582,119 @@ fn transport_reports_dsp_overloads_since_the_last_play() {
     assert_eq!(ok(&mut s, "get_transport", json!({}))["dsp_overloads"], 0);
     ok(&mut s, "stop", json!({}));
 }
+
+// ---- get_activity
+
+#[test]
+fn get_activity_is_read_only() {
+    assert!(!Command::GetActivity { since: None, limit: None }.is_mutating());
+    assert!(tool_specs().iter().any(|t| t.name == "get_activity" && t.read_only));
+    let mut s = Session::new(false);
+    ok(&mut s, "set_tempo", json!({"bpm": 100}));
+    let (undo, rev, dirty) = (s.can_undo().map(String::from), s.revision, s.dirty);
+    let a = ok(&mut s, "get_activity", json!({}));
+    let (seq, len) = (a["latest_seq"].as_u64().unwrap(), s.log.len());
+    let b = ok(&mut s, "get_activity", json!({"since": seq}));
+    assert_eq!(s.can_undo().map(String::from), undo);
+    assert_eq!(s.revision, rev);
+    assert_eq!(s.dirty, dirty);
+    // reading the activity is not itself activity
+    assert_eq!(b["latest_seq"].as_u64().unwrap(), seq);
+    assert!(b["entries"].as_array().unwrap().is_empty(), "{b}");
+    assert_eq!(s.log.len(), len);
+}
+
+#[test]
+fn get_activity_lists_who_did_what_and_folds_a_fader_drag() {
+    let mut s = Session::new(false);
+    s.execute_coalesced(Command::SetVolume { track_id: 0, db: -3.0 }, "vol:0").unwrap();
+    s.execute_coalesced(Command::SetVolume { track_id: 0, db: -4.0 }, "vol:0").unwrap();
+    s.execute(Command::from_tool_call("add_track", &json!({"kind": "instrument", "patch": "Lush Pad"})).unwrap(), Source::Gui).unwrap();
+    ok(&mut s, "set_tempo", json!({"bpm": 98}));
+    let a = ok(&mut s, "get_activity", json!({}));
+    let e = a["entries"].as_array().unwrap();
+    let rows: Vec<(&str, &str, u64)> = e.iter().map(|x| (x["source"].as_str().unwrap(), x["command"].as_str().unwrap(), x["count"].as_u64().unwrap())).collect();
+    assert_eq!(rows, vec![("gui", "set_volume", 2), ("gui", "add_track", 1), ("mcp", "set_tempo", 1)], "{a}");
+    assert!(e[0]["message"].as_str().unwrap().contains("-4"), "{a}");
+    assert!(e.iter().all(|x| x["ok"] == true && x["mutating"] == true), "{a}");
+    let seqs: Vec<u64> = e.iter().map(|x| x["seq"].as_u64().unwrap()).collect();
+    assert!(seqs.windows(2).all(|w| w[0] < w[1]), "{seqs:?}");
+    assert_eq!(*seqs.last().unwrap(), a["latest_seq"].as_u64().unwrap());
+
+    // a long drag stays one entry
+    let len = s.log.len();
+    for i in 0..10 {
+        s.execute_coalesced(Command::SetVolume { track_id: 0, db: -5.0 - i as f32 }, "vol:0").unwrap();
+    }
+    assert_eq!(s.log.len(), len + 1);
+    assert_eq!(s.log.back().unwrap().count, 10);
+
+    // another source in between splits the gesture; a failed step is not folded into the good ones
+    ok(&mut s, "set_tempo", json!({"bpm": 99}));
+    s.execute_coalesced(Command::SetVolume { track_id: 0, db: -1.0 }, "vol:0").unwrap();
+    assert!(s.execute_coalesced(Command::SetVolume { track_id: 999_999, db: -1.0 }, "vol:0").is_err());
+    let tail: Vec<(String, bool, u32)> = s.log.iter().rev().take(3).map(|l| (l.command.clone(), l.ok, l.count)).collect();
+    assert_eq!(tail, vec![("set_volume".to_string(), false, 1), ("set_volume".to_string(), true, 1), ("set_tempo".to_string(), true, 1)]);
+}
+
+#[test]
+fn get_activity_since_returns_only_newer_entries() {
+    let mut s = Session::new(false);
+    ok(&mut s, "set_tempo", json!({"bpm": 100}));
+    let a = ok(&mut s, "get_activity", json!({}));
+    let seq = a["latest_seq"].as_u64().unwrap();
+    ok(&mut s, "set_key", json!({"key": "A minor"}));
+    ok(&mut s, "get_transport", json!({}));
+    let b = ok(&mut s, "get_activity", json!({"since": seq}));
+    let names: Vec<&str> = b["entries"].as_array().unwrap().iter().map(|x| x["command"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["set_key", "get_transport"], "{b}");
+    assert_eq!(b["entries"][1]["mutating"], false);
+    assert_eq!(b["truncated"], false);
+    let c = ok(&mut s, "get_activity", json!({"since": b["latest_seq"]}));
+    assert!(c["entries"].as_array().unwrap().is_empty(), "{c}");
+    assert_eq!(c["truncated"], false);
+}
+
+#[test]
+fn get_activity_reports_truncation() {
+    let mut s = Session::new(false);
+    ok(&mut s, "set_tempo", json!({"bpm": 100}));
+    let first = ok(&mut s, "get_activity", json!({}))["latest_seq"].as_u64().unwrap();
+    for _ in 0..510 {
+        ok(&mut s, "get_transport", json!({}));
+    }
+    assert_eq!(s.log.len(), 500);
+    let a = ok(&mut s, "get_activity", json!({"since": first}));
+    assert_eq!(a["truncated"], true, "the entry after `first` fell out of the log");
+    assert_eq!(a["entries"].as_array().unwrap().len(), 50);
+    let latest = a["latest_seq"].as_u64().unwrap();
+    assert_eq!(a["entries"][49]["seq"].as_u64().unwrap(), latest);
+    assert_eq!(ok(&mut s, "get_activity", json!({"limit": 1000}))["entries"].as_array().unwrap().len(), 200);
+    let z = ok(&mut s, "get_activity", json!({"since": latest, "limit": 0}));
+    assert!(z["entries"].as_array().unwrap().is_empty());
+    assert_eq!(z["truncated"], false);
+    // a cursor from an earlier run of Ondina
+    let r = ok(&mut s, "get_activity", json!({"since": latest + 1000}));
+    assert_eq!(r["truncated"], true);
+    assert!(r["entries"].as_array().unwrap().is_empty());
+    // limit cuts the list: truncated too
+    let few = ok(&mut s, "get_activity", json!({"since": latest - 5, "limit": 2}));
+    assert_eq!(few["entries"].as_array().unwrap().len(), 2);
+    assert_eq!(few["truncated"], true);
+}
+
+#[test]
+fn get_activity_shows_when_the_project_was_replaced() {
+    let mut s = Session::new(false);
+    let a = ok(&mut s, "get_activity", json!({}));
+    assert!(a["session_id"].as_u64().unwrap() > 0, "{a}");
+    assert_eq!(a["revision"].as_u64().unwrap(), s.revision);
+    ok(&mut s, "new_project", json!({"name": "Second"}));
+    let b = ok(&mut s, "get_activity", json!({"since": a["latest_seq"]}));
+    assert_ne!(b["document"], a["document"]);
+    assert_eq!(b["session_id"], a["session_id"]);
+    assert!(b["revision"].as_u64().unwrap() > a["revision"].as_u64().unwrap());
+    let e = b["entries"].as_array().unwrap();
+    assert_eq!(e.len(), 1, "{b}");
+    assert_eq!((e[0]["command"].as_str(), e[0]["source"].as_str()), (Some("new_project"), Some("mcp")));
+}

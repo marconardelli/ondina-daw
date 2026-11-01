@@ -76,6 +76,13 @@ pub enum Command {
     GetTransport {},
     /// Get what the user has selected in the Ondina window: the selected track, the selected region and up to 256 selected notes of that region (each with its index, pitch, name, start and length in beats from the region start, velocity), plus the playhead and the cycle range. To act on "the notes I selected", pass the note index values as `indices` to quantize_notes, transpose_notes, humanize_notes, set_note_velocities, snap_notes_to_key or remove_notes. Indices refer to the region as it is now: read the selection again after editing the region, and compare pitch and start if in doubt. selected_note_count is the real number of selected notes and can be larger than the list. A headless session has no window: track and region are null and notes is empty.
     GetSelection {},
+    /// Get what happened in this Ondina session since you last looked, newest last: the edits the user made in the Ondina window (source "gui"), the tools called by MCP clients ("mcp"), the built-in assistant's tool calls ("ai") and scripts ("script"). Each entry has seq, source, command (the tool name), ok, mutating (whether the command changes the project), message (a short summary of the result or the error; it can contain file paths that the user or a client chose), count (how many steps of one continuous gesture, such as a fader drag, the entry stands for) and seconds_ago. Save latest_seq and pass it as `since` next time to get only newer entries; without `since` you get the latest `limit` entries. truncated is true when entries after `since` are missing from the list (the session keeps the last 500, `limit` cut the list, or `since` is larger than latest_seq because Ondina was restarted): read get_project again. revision grows with every change to the project, also changes that leave no entry (knob moves in native plug-in windows); document changes when open_project or new_project replaced the project and session_id changes when Ondina restarts: if either differs from what you saw, ids you remembered may no longer exist. Calls to get_activity are not listed. The selection and the playhead are not listed: read them with get_selection and get_transport.
+    GetActivity {
+        /// latest_seq from your previous get_activity call: only newer entries are returned.
+        since: Option<u64>,
+        /// Most entries to return, the newest are kept (default 50, at most 200; 0 returns only the counters).
+        limit: Option<usize>,
+    },
     /// Silence all sounding notes immediately.
     Panic {},
 
@@ -545,6 +552,7 @@ impl Command {
                 | SetPlayhead { .. }
                 | GetTransport {}
                 | GetSelection {}
+                | GetActivity { .. }
                 | Panic {}
                 | GetTrack { .. }
                 | ListPlugins { .. }

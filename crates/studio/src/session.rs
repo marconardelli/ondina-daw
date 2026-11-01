@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use ondina_core::command::Command;
 use ondina_core::model::*;
@@ -33,15 +33,23 @@ pub enum Source {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LogEntry {
+    /// Grows by one for every entry and every step folded into one; never reused within a session.
+    pub seq: u64,
     pub source: Source,
     pub command: String,
     pub ok: bool,
+    /// The command changes the project (see `Command::is_mutating`).
+    pub mutating: bool,
     pub message: String,
+    /// Steps of one continuous gesture this entry stands for (fader drags, knob turns).
+    pub count: u32,
     #[serde(skip)]
     pub at: Instant,
 }
 
 const UNDO_LIMIT: usize = 200;
+/// Entries the activity log keeps.
+const LOG_LIMIT: usize = 500;
 /// Longest exact tail `bounce` accepts, in seconds.
 const MAX_FIXED_TAIL_SEC: f64 = 60.0;
 
@@ -76,6 +84,12 @@ pub struct Session {
     /// closes its in-place text fields when it changes, so a field opened on the old project never edits the new one.
     pub document: u64,
     pub log: VecDeque<LogEntry>,
+    /// Last `seq` given to a log entry (0 while the log is empty).
+    log_seq: u64,
+    /// Highest `seq` that fell out of the log because of `LOG_LIMIT`.
+    log_dropped: u64,
+    /// Unix milliseconds when this session started: tells an MCP client that Ondina was restarted.
+    session_id: u64,
     pub selected_track: Option<Id>,
     pub selected_region: Option<Id>,
     /// Note indices the user selected in `selected_region`, copied by the GUI for `get_selection`. Window state, not part of the project.
@@ -107,6 +121,9 @@ impl Session {
             revision: 1,
             document: 1,
             log: VecDeque::new(),
+            log_seq: 0,
+            log_dropped: 0,
+            session_id: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
             selected_track: None,
             selected_region: None,
             selected_notes: vec![],
@@ -181,11 +198,40 @@ impl Session {
         self.update_midi_target();
     }
 
-    fn push_log(&mut self, source: Source, command: String, ok: bool, message: String) {
-        self.log.push_back(LogEntry { source, command, ok, message, at: Instant::now() });
-        while self.log.len() > 500 {
-            self.log.pop_front();
+    /// Records one command in the activity log. `merge` folds a step of the same continuous gesture (a coalesced
+    /// GUI drag) into the last entry, so a fader drag stays one entry instead of pushing older history out.
+    fn push_log(&mut self, source: Source, command: String, ok: bool, message: String, mutating: bool, merge: bool) {
+        self.log_seq += 1;
+        let seq = self.log_seq;
+        if merge && ok {
+            if let Some(last) = self.log.back_mut().filter(|l| l.ok && l.source == source && l.command == command) {
+                last.seq = seq;
+                last.count += 1;
+                last.message = message;
+                last.at = Instant::now();
+                return;
+            }
         }
+        self.log.push_back(LogEntry { seq, source, command, ok, mutating, message, count: 1, at: Instant::now() });
+        while self.log.len() > LOG_LIMIT {
+            if let Some(old) = self.log.pop_front() {
+                self.log_dropped = old.seq;
+            }
+        }
+    }
+
+    /// Identifies this run of Ondina (Unix milliseconds at start).
+    pub fn session_id(&self) -> u64 {
+        self.session_id
+    }
+
+    /// What `get_activity` returns: the log entries after `since`, plus the counters an agent compares between calls.
+    pub fn activity_json(&self, since: Option<u64>, limit: Option<usize>) -> Value {
+        let mut v = crate::activity::activity(&self.log, self.log_seq, self.log_dropped, since, limit);
+        v["session_id"] = json!(self.session_id);
+        v["revision"] = json!(self.revision);
+        v["document"] = json!(self.document);
+        v
     }
 
     /// Execute a command. Mutating commands create an undo step; opening or creating a project starts a fresh history.
@@ -254,6 +300,8 @@ impl Session {
         // with the new file path and audio pool, so they start a fresh history instead.
         let replaces_project = matches!(cmd, Command::OpenProject { .. } | Command::NewProject { .. });
         let before = if mutating { Some(self.project.clone()) } else { None };
+        // Reading the activity is not activity: otherwise every query would add an entry and fill the GUI's MCP window.
+        let quiet = matches!(cmd, Command::GetActivity { .. });
         let result = self.dispatch(cmd, source);
         match &result {
             Ok(v) => {
@@ -270,9 +318,9 @@ impl Session {
                         self.commit();
                     }
                 }
-                if source != Source::Gui || mutating {
+                if (source != Source::Gui || mutating) && !quiet {
                     let msg = summarize(v);
-                    self.push_log(source, name, true, msg);
+                    self.push_log(source, name, true, msg, mutating, !new_undo_step);
                 }
             }
             Err(e) => {
@@ -280,7 +328,7 @@ impl Session {
                     // roll back partial edits
                     self.project = b;
                 }
-                self.push_log(source, name, false, e.clone());
+                self.push_log(source, name, false, e.clone(), mutating, false);
             }
         }
         result
@@ -396,6 +444,7 @@ impl Session {
             }
             GetTransport {} => Ok(self.transport_json()),
             GetSelection {} => Ok(self.selection_json()),
+            GetActivity { since, limit } => Ok(self.activity_json(since, limit)),
             Panic {} => {
                 self.engine.panic();
                 Ok(json!({"ok": true}))

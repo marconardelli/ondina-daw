@@ -35,6 +35,7 @@ Ondina is a digital audio workstation. Everything is controlled through tools th
 - track_id 0 addresses the master channel (volume, pan, effects).
 - Every edit is undoable with `undo`.
 - `get_selection` tells you what the user selected in the Ondina window (track, region, notes with their index, playhead, cycle). When the user says "these notes" or "this region", call it first and pass the note `index` values as `indices` to `quantize_notes`, `transpose_notes`, `humanize_notes`, `set_note_velocities`, `snap_notes_to_key` or `remove_notes`. Read it again after editing: indices change when notes move.
+- `get_activity` tells you what happened since you last looked: the edits the user made in the window, the assistant's and other clients' tool calls, and whether the project was replaced (`document`) or Ondina restarted (`session_id`). Keep `latest_seq` and pass it as `since` next time.
 
 ## Typical workflow to create a song
 1. `get_project` to see what exists (ids!).

@@ -117,6 +117,11 @@ Get what the user has selected in the Ondina window: the selected track, the sel
 
 Parameters: none
 
+### `get_activity` · read-only
+Get what happened in this Ondina session since you last looked, newest last: the edits the user made in the Ondina window (source "gui"), the tools called by MCP clients ("mcp"), the built-in assistant's tool calls ("ai") and scripts ("script"). Each entry has seq, source, command (the tool name), ok, mutating (whether the command changes the project), message (a short summary of the result or the error; it can contain file paths that the user or a client chose), count (how many steps of one continuous gesture, such as a fader drag, the entry stands for) and seconds_ago. Save latest_seq and pass it as `since` next time to get only newer entries; without `since` you get the latest `limit` entries. truncated is true when entries after `since` are missing from the list (the session keeps the last 500, `limit` cut the list, or `since` is larger than latest_seq because Ondina was restarted): read get_project again. revision grows with every change to the project, also changes that leave no entry (knob moves in native plug-in windows); document changes when open_project or new_project replaced the project and session_id changes when Ondina restarts: if either differs from what you saw, ids you remembered may no longer exist. Calls to get_activity are not listed. The selection and the playhead are not listed: read them with get_selection and get_transport.
+
+Parameters: `limit, since`
+
 ### `panic` · read-only
 Silence all sounding notes immediately.
 
