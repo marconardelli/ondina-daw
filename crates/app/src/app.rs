@@ -1533,6 +1533,16 @@ impl OndinaApp {
                 }
                 if ui
                     .add_enabled(
+                        self.can_repeat_notes(),
+                        egui::Button::new("Repeat Selected Notes   Ctrl+D"),
+                    )
+                    .clicked()
+                {
+                    self.repeat_selected_notes();
+                    ui.close_menu();
+                }
+                if ui
+                    .add_enabled(
                         self.selected_region.is_some(),
                         egui::Button::new("Delete Region   Del"),
                     )
@@ -2260,7 +2270,7 @@ impl OndinaApp {
                     ("Shift+, / Shift+.", "Playhead to previous / next marker"),
                     ("Ctrl+Z / Ctrl+Y", "Undo / Redo"),
                     ("Del", "Delete region or selected notes"),
-                    ("Ctrl+D", "Duplicate region"),
+                    ("Ctrl+D", "Duplicate region (piano roll: repeat selected notes)"),
                     ("Ctrl+T", "Split selected region at playhead"),
                     ("Ctrl+S / Ctrl+O / Ctrl+N", "Save / Open / New"),
                     ("Ctrl+B", "Bounce"),
