@@ -13,6 +13,7 @@ use crate::automation_lane;
 use crate::arrange_view::{self, apply_step, max_scroll_y, zoom_track_height, ArrangeView, ViewArea};
 use crate::piano_roll_view::{wheel_zoom, zoom_factor};
 use crate::region_edit::{self, region_name_field, FadeGeom, FadeHandle};
+use crate::session_players::{self, Player};
 use crate::theme;
 
 const HEADER_W: f32 = 210.0;
@@ -824,42 +825,66 @@ impl OndinaApp {
                         ui.close_menu();
                     }
                     ui.separator();
-                    ui.menu_button("Session Drummer (4 bars)", |ui| {
+                    let span = session_players::generator_span(p.cycle, self.position(), bpb, self.extra.players.bars);
+                    let len = session_players::span_text(span);
+                    if span.from_cycle {
+                        ui.label(egui::RichText::new(format!("Length: {len}")).weak()).on_hover_text(
+                            "The session players fill the cycle around the playhead. Move the playhead out of the cycle or turn the cycle off to choose a length.",
+                        );
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.label("Length");
+                            for n in session_players::LENGTHS {
+                                ui.selectable_value(&mut self.extra.players.bars, n, n.to_string());
+                            }
+                            ui.label("bars");
+                        });
+                    }
+                    ui.menu_button(format!("Session Drummer ({len})"), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Intensity");
+                            for i in session_players::Intensity::ALL {
+                                ui.selectable_value(&mut self.extra.players.intensity, i, i.label());
+                            }
+                        });
+                        ui.checkbox(&mut self.extra.players.fill, "Fill at the end")
+                            .on_hover_text("The last bar ends with a fill (parts of 2 bars or more).");
+                        ui.separator();
                         for st in ["rock", "pop", "funk", "hip_hop", "trap", "house", "techno", "disco", "reggaeton", "jazz", "ballad", "drum_and_bass", "lo_fi"] {
                             if ui.button(st).clicked() {
                                 if let Ok(style) = serde_json::from_value(serde_json::json!(st)) {
-                                    self.cmd(Command::GenerateDrums { track_id: tid, start: b, bars: 4, style, intensity: Some(0.6), fill: Some(true), seed: None });
+                                    self.run_player(Player::Drums(style), tid, span);
                                 }
                                 ui.close_menu();
                             }
                         }
                     });
-                    ui.menu_button("Session Bassist (follows chord track)", |ui| {
+                    ui.menu_button(format!("Session Bassist ({len}, follows chord track)"), |ui| {
                         for st in ["root", "root_fifth", "eighths", "octaves", "syncopated", "walking", "sub808"] {
                             if ui.button(st).clicked() {
                                 if let Ok(style) = serde_json::from_value(serde_json::json!(st)) {
-                                    self.cmd(Command::GenerateBass { track_id: tid, start: b, bars: 4, style, chords: None, beats_per_chord: None, octave: None, seed: None });
+                                    self.run_player(Player::Bass(style), tid, span);
                                 }
                                 ui.close_menu();
                             }
                         }
                     });
-                    ui.menu_button("Session Keys (follows chord track)", |ui| {
+                    ui.menu_button(format!("Session Keys ({len}, follows chord track)"), |ui| {
                         for st in ["sustained", "pop", "offbeat", "ballad", "funk"] {
                             if ui.button(st).clicked() {
                                 if let Ok(style) = serde_json::from_value(serde_json::json!(st)) {
-                                    self.cmd(Command::GenerateChords { track_id: tid, start: b, bars: 4, style, chords: None, beats_per_chord: None, center_pitch: None, seed: None });
+                                    self.run_player(Player::Keys(style), tid, span);
                                 }
                                 ui.close_menu();
                             }
                         }
                     });
-                    if ui.button("Arpeggio (4 bars)").clicked() {
-                        self.cmd(Command::GenerateArpeggio { track_id: tid, start: b, bars: 4, mode: ondina_core::generate::ArpMode::UpDown, rate: Some(0.25), octaves: Some(2), chords: None, beats_per_chord: None, center_pitch: None, seed: None });
+                    if ui.button(format!("Arpeggio ({len})")).clicked() {
+                        self.run_player(Player::Arpeggio, tid, span);
                         ui.close_menu();
                     }
-                    if ui.button("Melody (4 bars)").clicked() {
-                        self.cmd(Command::GenerateMelody { track_id: tid, start: b, bars: 4, density: Some(0.5), octave: Some(5), chords: None, beats_per_chord: None, seed: None });
+                    if ui.button(format!("Melody ({len})")).clicked() {
+                        self.run_player(Player::Melody, tid, span);
                         ui.close_menu();
                     }
                     ui.separator();
