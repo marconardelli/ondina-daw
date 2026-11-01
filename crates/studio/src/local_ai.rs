@@ -26,11 +26,11 @@ pub const LOCAL_TOOLS: &[&str] = &[
     "create_midi_region", "add_notes", "duplicate_region", "delete_region", "set_volume", "set_pan", "set_mute", "add_effect",
     "add_marker", "copy_section", "play", "stop", "set_playhead", "analyze_mix", "auto_master", "undo", "bounce",
     "redo", "get_region", "replace_notes", "quantize_notes", "transpose_notes", "set_note_velocities", "humanize_notes",
-    "snap_notes_to_key", "set_pattern_row",
+    "snap_notes_to_key", "add_harmony", "set_pattern_row",
     "add_pattern_row", "get_plugin", "set_plugin_params", "add_scene", "create_live_cell",
 ];
 
-const SYSTEM: &str = "You are the assistant inside Ondina DAW. You control the DAW only by calling the provided tools. Positions are in beats (quarter notes); bar N starts at beat (N-1)*4 in 4/4. MIDI pitch 60 = C4. Call get_project to learn track ids before editing existing tracks; add_track returns the new track_id. Prefer library patches (e.g. \"Pop Drum Kit\", \"Deep Sub Bass\", \"Lush Pad\", \"Stage Electric Piano\") and the generate_* tools. The [Ondina context] lists the selected notes as index:pitch@start+length; to change only those notes pass their index values as indices (quantize_notes, humanize_notes, transpose_notes, set_note_velocities, snap_notes_to_key). quantize_notes and humanize_notes re-sort the region: for a further edit of the same notes use the indices they return, not the ones from the context. Read a region with get_region before rewriting it and a plug-in with get_plugin before setting its parameters. After finishing, answer briefly in the user's language. All your edits for one request are one undo step: undo reverts everything you did in this request, so fix a single mistake directly.";
+const SYSTEM: &str = "You are the assistant inside Ondina DAW. You control the DAW only by calling the provided tools. Positions are in beats (quarter notes); bar N starts at beat (N-1)*4 in 4/4. MIDI pitch 60 = C4. Call get_project to learn track ids before editing existing tracks; add_track returns the new track_id. Prefer library patches (e.g. \"Pop Drum Kit\", \"Deep Sub Bass\", \"Lush Pad\", \"Stage Electric Piano\") and the generate_* tools. The [Ondina context] lists the selected notes as index:pitch@start+length; to change only those notes pass their index values as indices (quantize_notes, humanize_notes, transpose_notes, set_note_velocities, snap_notes_to_key, add_harmony). quantize_notes and humanize_notes re-sort the region: for a further edit of the same notes use the indices they return, not the ones from the context. add_harmony returns the indices of the notes it added. Read a region with get_region before rewriting it and a plug-in with get_plugin before setting its parameters. After finishing, answer briefly in the user's language. All your edits for one request are one undo step: undo reverts everything you did in this request, so fix a single mistake directly.";
 
 /// Context size the bundled server is started with; the history budget is derived from it.
 const CONTEXT_TOKENS: usize = 16384;
@@ -519,7 +519,7 @@ mod tests {
         let design = prompts::design_sound(7, "Analog Synth");
         assert_eq!(design, "Adjust the parameters of plug-in 7 (Analog Synth) to get a great sound for this track's role in the song. Explain briefly.");
         // tools each request needs even when its text does not name them
-        let cases: [(&str, &[&str]); 9] = [
+        let cases: [(&str, &[&str]); 10] = [
             (prompts::CONTINUE_IMPROVE, &["get_region", "replace_notes", "add_notes", "quantize_notes", "transpose_notes"]),
             (prompts::WRITE_GROOVE, &["get_region", "set_pattern_row", "add_pattern_row"]),
             (design.as_str(), &["get_plugin", "set_plugin_params"]),
@@ -528,7 +528,8 @@ mod tests {
             (prompts::WRITE_PART, &["get_project", "list_patches", "create_midi_region", "add_notes", "generate_melody"]),
             (prompts::VARY_REGION, &["get_region", "create_midi_region", "duplicate_region", "replace_notes"]),
             ("Humanize the selected notes and snap them to the key.", &["humanize_notes", "snap_notes_to_key"]),
-            (SYSTEM, &["quantize_notes", "humanize_notes", "transpose_notes", "set_note_velocities", "snap_notes_to_key"]),
+            ("Add a harmony a third above the selected notes.", &["add_harmony"]),
+            (SYSTEM, &["quantize_notes", "humanize_notes", "transpose_notes", "set_note_velocities", "snap_notes_to_key", "add_harmony"]),
         ];
         let all: Vec<&str> = mcp::tools().iter().map(|t| t.name.as_str()).collect();
         for (text, needed) in cases {
@@ -564,7 +565,7 @@ mod tests {
         let unique: std::collections::HashSet<&&str> = LOCAL_TOOLS.iter().collect();
         assert_eq!(unique.len(), LOCAL_TOOLS.len(), "duplicate names in LOCAL_TOOLS");
         assert_eq!(local_tools().as_array().unwrap().len(), LOCAL_TOOLS.len());
-        for name in ["set_pattern_row", "get_plugin", "set_plugin_params", "create_live_cell", "get_region", "replace_notes", "quantize_notes", "transpose_notes", "humanize_notes", "snap_notes_to_key"] {
+        for name in ["set_pattern_row", "get_plugin", "set_plugin_params", "create_live_cell", "get_region", "replace_notes", "quantize_notes", "transpose_notes", "humanize_notes", "snap_notes_to_key", "add_harmony"] {
             assert!(LOCAL_TOOLS.contains(&name), "{name} is missing");
         }
     }
@@ -772,6 +773,44 @@ mod tests {
         assert_eq!(note_at(&s, 0.0), (61, 100));
         assert_eq!(note_at(&s, 1.0), (63, 100));
         assert_eq!(note_at(&s, 2.0), (66, 100));
+    }
+
+    #[test]
+    fn local_turn_adds_harmony_to_selected_notes() {
+        let session = Session::shared(false);
+        let midi_id = {
+            let mut s = session.lock();
+            let mut run = |name: &str, args: Value| s.execute(Command::from_tool_call(name, &args).unwrap(), Source::Gui).unwrap();
+            run("set_key", json!({"key": "C major"}));
+            let t = run("add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();
+            let notes = json!([
+                {"pitch": 60, "velocity": 100, "start": 0.0, "length": 0.5},
+                {"pitch": 62, "velocity": 100, "start": 1.0, "length": 0.5},
+                {"pitch": 64, "velocity": 100, "start": 2.0, "length": 0.5}
+            ]);
+            run("create_midi_region", json!({"track_id": t, "start": 0, "length": 4, "notes": notes}))["region_id"].as_u64().unwrap()
+        };
+        // (pitch, start) of every note of the region
+        let notes = |s: &Session| match &s.project.find_region(midi_id).unwrap().1.content {
+            RegionContent::Midi(m) => m.notes.iter().map(|n| (n.pitch, n.start)).collect::<Vec<_>>(),
+            _ => panic!("not a MIDI region"),
+        };
+        let port = mock_server(Duration::ZERO, vec![
+            json!({"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "add_harmony", "arguments": json!({"region_id": midi_id, "interval": "3rd", "indices": [0, 2]}).to_string()}}
+            ]}}]}),
+            json!({"choices": [{"message": {"role": "assistant", "content": "Done."}}]}),
+        ]);
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut a = LocalAssistant::default();
+        a.run_turn(&session, &local_settings(port), "harmonize the selection", "", &tx, &Arc::new(AtomicBool::new(false)));
+        let events: Vec<AiEvent> = rx.try_iter().collect();
+        assert!(events.iter().any(|e| matches!(e, AiEvent::ToolCall { name, ok: true, .. } if name == "add_harmony")), "{events:?}");
+        let mut s = session.lock();
+        assert_eq!(notes(&s), vec![(60, 0.0), (64, 0.0), (62, 1.0), (64, 2.0), (67, 2.0)]);
+        assert_eq!(s.can_undo(), Some("assistant: harmonize the selection"));
+        s.execute(Command::Undo {}, Source::Gui).unwrap();
+        assert_eq!(notes(&s), vec![(60, 0.0), (62, 1.0), (64, 2.0)]);
     }
 
     #[test]
