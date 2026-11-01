@@ -67,6 +67,41 @@ impl ScaleKind {
     }
 }
 
+/// A harmony interval counted in scale steps, as a musician names it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub enum HarmonyInterval {
+    #[serde(rename = "3rd")]
+    Third,
+    #[serde(rename = "5th")]
+    Fifth,
+    #[serde(rename = "6th")]
+    Sixth,
+    #[serde(rename = "octave")]
+    Octave,
+}
+
+impl HarmonyInterval {
+    /// Scale steps in a seven-note scale.
+    fn steps(self) -> i32 {
+        match self {
+            HarmonyInterval::Third => 2,
+            HarmonyInterval::Fifth => 4,
+            HarmonyInterval::Sixth => 5,
+            HarmonyInterval::Octave => 7,
+        }
+    }
+
+    /// The same interval in the major scale, for scales that do not have seven notes.
+    fn semitones(self) -> i32 {
+        match self {
+            HarmonyInterval::Third => 4,
+            HarmonyInterval::Fifth => 7,
+            HarmonyInterval::Sixth => 9,
+            HarmonyInterval::Octave => 12,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct Key {
     /// Pitch class of the tonic, 0 = C .. 11 = B.
@@ -106,6 +141,30 @@ impl Key {
         let idx = degree.rem_euclid(n) as usize;
         let p = (octave + 1 + oct) * 12 + self.root as i32 + iv[idx] as i32;
         p.clamp(0, 127) as u8
+    }
+
+    /// The note `interval` above (or below) `pitch` that stays in this key, or `None` when it would fall outside
+    /// MIDI 0..=127. In a seven-note scale the interval counts scale steps, starting from the nearest scale note
+    /// when `pitch` is outside the key. Other scales take the scale note nearest to the major interval. An octave is
+    /// always 12 semitones from `pitch` itself, so an octave doubling copies a chromatic note exactly.
+    pub fn harmony(&self, pitch: u8, interval: HarmonyInterval, below: bool) -> Option<u8> {
+        let sign = if below { -1 } else { 1 };
+        let iv = self.scale.intervals();
+        let target = if interval == HarmonyInterval::Octave {
+            pitch as i32 + sign * 12
+        } else if iv.len() == 7 {
+            let rel = self.snap(pitch) as i32 - self.root as i32;
+            let idx = iv.iter().position(|&x| x as i32 == rel.rem_euclid(12))? as i32;
+            let degree = idx + sign * interval.steps();
+            self.root as i32 + (rel.div_euclid(12) + degree.div_euclid(7)) * 12 + iv[degree.rem_euclid(7) as usize] as i32
+        } else {
+            let t = self.snap(pitch) as i32 + sign * interval.semitones();
+            if !(0..=127).contains(&t) {
+                return None;
+            }
+            self.snap(t as u8) as i32
+        };
+        (0..=127).contains(&target).then_some(target as u8)
     }
 
     pub fn name(&self) -> String {
@@ -287,5 +346,56 @@ mod tests {
         assert_eq!(roman_to_symbol("vi", key).unwrap(), "Am");
         assert_eq!(roman_to_symbol("V7", key).unwrap(), "G7");
         assert_eq!(key.snap(61), 60);
+    }
+
+    #[test]
+    fn harmony_counts_scale_steps_in_seven_note_keys() {
+        use HarmonyInterval::*;
+        let c = Key { root: 0, scale: ScaleKind::Major };
+        assert_eq!(c.harmony(60, Third, false), Some(64));
+        assert_eq!(c.harmony(64, Third, false), Some(67));
+        assert_eq!(c.harmony(71, Third, false), Some(74));
+        assert_eq!(c.harmony(60, Third, true), Some(57));
+        assert_eq!(c.harmony(60, Sixth, true), Some(52));
+        assert_eq!(c.harmony(71, Sixth, true), Some(62));
+        assert_eq!(c.harmony(62, Fifth, false), Some(69));
+        assert_eq!(c.harmony(60, Sixth, false), Some(69));
+        // An octave is exactly 12 semitones, even for a note outside the key.
+        assert_eq!(c.harmony(61, Octave, false), Some(73));
+        assert_eq!(c.harmony(61, Octave, true), Some(49));
+        // The MIDI range edges give None instead of panicking or clamping.
+        assert_eq!(c.harmony(127, Octave, false), None);
+        assert_eq!(c.harmony(2, Octave, true), None);
+        assert_eq!(c.harmony(127, Third, false), None);
+        assert_eq!(c.harmony(2, Sixth, true), None);
+        assert_eq!(c.harmony(124, Third, false), Some(127));
+        assert_eq!(c.harmony(0, Third, true), None);
+        let am = Key { root: 9, scale: ScaleKind::Minor };
+        assert_eq!(am.harmony(69, Third, false), Some(72));
+        assert_eq!(am.harmony(64, Third, false), Some(67));
+        // G#4 is outside A minor: it starts from the nearest degree, G4.
+        assert_eq!(am.harmony(68, Third, false), Some(71));
+    }
+
+    #[test]
+    fn harmony_in_other_scales_takes_the_nearest_scale_note() {
+        use HarmonyInterval::*;
+        let pent = Key { root: 9, scale: ScaleKind::MinorPentatonic };
+        assert_eq!(pent.harmony(69, Third, false), Some(72));
+        let chromatic = Key { root: 0, scale: ScaleKind::Chromatic };
+        assert_eq!(chromatic.harmony(60, Third, false), Some(64));
+        assert_eq!(chromatic.harmony(60, Sixth, false), Some(69));
+        for pitch in 0..=127u8 {
+            for interval in [Third, Fifth, Sixth, Octave] {
+                for below in [false, true] {
+                    if let Some(p) = pent.harmony(pitch, interval, below) {
+                        assert!(p <= 127);
+                        if interval != Octave {
+                            assert!(pent.contains(p), "{pitch} {interval:?} below={below} gave {p}");
+                        }
+                    }
+                }
+            }
+        }
     }
 }
