@@ -1747,8 +1747,6 @@ fn resized_marker_length(start: f64, pointer_beat: f64, snap: f64) -> f64 {
 /// Shortest chord the right edge can be dragged to, in beats.
 const MIN_CHORD_LEN: f64 = 0.25;
 
-/// Where a chord typed on the empty chord lane at `pointer_beat` goes: on the grid line at or before the pointer
-/// (`snap` beats, 0 = no grid), `bar` beats long, but never over the chords around it. None when there is no room.
 /// Where the chord lane sits on screen, and how the arrangement is scrolled and zoomed.
 #[derive(Debug, Clone, Copy)]
 struct ChordLaneGeom {
@@ -1789,6 +1787,8 @@ fn chord_field_rect(target: ChordTarget, chords: &[ChordEvent], g: ChordLaneGeom
     }
 }
 
+/// Where a chord typed on the empty chord lane at `pointer_beat` goes: on the grid line at or before the pointer
+/// (`snap` beats, 0 = no grid), `bar` beats long, but never over the chords around it. None when there is no room.
 fn new_chord_span(pointer_beat: f64, snap: f64, bar: f64, chords: &[ChordEvent]) -> Option<(f64, f64)> {
     let floor = if snap > 0.0 { (pointer_beat / snap).floor() * snap } else { pointer_beat };
     let prev_end = chords.iter().filter(|c| c.beat <= pointer_beat).map(|c| c.beat + c.length).fold(0.0, f64::max);
