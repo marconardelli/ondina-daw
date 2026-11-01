@@ -1902,3 +1902,51 @@ fn session_players_phrase_in_bars_of_a_three_four_project() {
     assert!(s.project.find_region(mel).is_none(), "one undo removes the melody region");
     assert!(s.project.find_region(keys).is_some());
 }
+
+#[test]
+fn add_notes_reports_where_the_added_notes_landed() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();
+    let start = json!([
+        {"pitch": 60, "velocity": 100, "start": 0.0, "length": 0.5},
+        {"pitch": 64, "velocity": 100, "start": 2.0, "length": 0.5}
+    ]);
+    let rid = ok(&mut s, "create_midi_region", json!({"track_id": t, "start": 0, "length": 8, "notes": start}))["region_id"].as_u64().unwrap();
+    let before = ok(&mut s, "get_region", json!({"region_id": rid}))["notes"].clone();
+    // three notes in no particular order, one identical to a note already there
+    let added = [(62u64, 3.0f64), (60, 0.0), (67, 1.0)];
+    let notes: Vec<Value> = added.iter().map(|&(p, st)| json!({"pitch": p, "velocity": 100, "start": st, "length": 0.5})).collect();
+    let r = ok(&mut s, "add_notes", json!({"region_id": rid, "notes": notes}));
+    let indices: Vec<usize> = r["indices"].as_array().expect("indices").iter().map(|x| x.as_u64().unwrap() as usize).collect();
+    assert_eq!(indices, vec![1, 2, 4], "{r}");
+    assert_eq!(r["note_count"], json!(5));
+    let got = ok(&mut s, "get_region", json!({"region_id": rid}))["notes"].clone();
+    let key = |n: &Value| (n["pitch"].as_u64().unwrap(), n["start"].as_f64().unwrap());
+    let mut read: Vec<(u64, f64)> = indices.iter().map(|&i| key(&got[i])).collect();
+    let mut want = added.to_vec();
+    read.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    want.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(read, want);
+    // the existing 60 keeps index 0, the added one comes right after it
+    assert_eq!(key(&got[0]), (60, 0.0));
+    assert!(!indices.contains(&0));
+
+    ok(&mut s, "transpose_notes", json!({"region_id": rid, "semitones": 12, "indices": r["indices"]}));
+    let moved = ok(&mut s, "get_region", json!({"region_id": rid}))["notes"].clone();
+    assert_eq!(key(&moved[0]), (60, 0.0), "the existing 60 stays");
+    assert_eq!(key(&moved[3]), (64, 2.0), "the existing 64 stays");
+    for &i in &indices {
+        assert_eq!(moved[i]["pitch"].as_u64().unwrap(), got[i]["pitch"].as_u64().unwrap() + 12, "note {i} moved up an octave");
+    }
+
+    ok(&mut s, "undo", json!({}));
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(ok(&mut s, "get_region", json!({"region_id": rid}))["notes"], before);
+
+    let spec = tool_specs().into_iter().find(|t| t.name == "add_notes").unwrap();
+    assert!(spec.description.contains("indices"), "{}", spec.description);
+    let props = &spec.input_schema["properties"];
+    assert!(props.get("region_id").is_some() && props.get("notes").is_some());
+    let req = spec.input_schema.get("required").and_then(|r| r.as_array()).cloned().unwrap_or_default();
+    assert!(req.iter().all(|x| x == "region_id" || x == "notes"), "no new required parameter: {req:?}");
+}
