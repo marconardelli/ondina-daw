@@ -136,7 +136,7 @@ extension: Ondina opens both.
   to add a point (on the grid, Alt ignores it), drag a point to move it, double-click or right-click it to delete
   it; an empty lane shows the channel value as a dashed line. Each edit is one undo step and is the same
   `set_automation` agents use. Esc during a drag (a region, a fade, a marker, a chord, the cycle, a track header or
-  an automation point) cancels it: everything goes back to where it was.
+  an automation point) cancels it: everything goes back to where it was. A drag ends only when the button that holds it is released: a right or middle click in the middle neither drops it nor opens a menu.
 - **Piano roll**: click on empty space to add a note (length from the toolbar) and select it (Ctrl/Shift+click keeps the selection and adds the new note); click a note to select it,
   Ctrl/Shift+click to add to the selection; drag on empty space to box-select (stacked notes included); drag a note
   to move it (the moved notes stay selected), Alt+drag to copy it (the copies become the selection, one undo step),

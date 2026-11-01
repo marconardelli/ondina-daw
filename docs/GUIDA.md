@@ -646,6 +646,10 @@ compatibile OpenAI all'indirizzo scelto in **Settings ⚙** (di default `http://
   torna com'era e non serve Ctrl+Z. Il ciclo, che si aggiorna mentre lo trascini, torna al suo posto; nella
   cronologia può restare un passo "set_cycle" che non cambia nulla. Finché tieni premuto il pulsante non parte un
   altro trascinamento: rilascia e ricomincia.
+- Un trascinamento finisce solo quando rilasci il pulsante che lo tiene, di solito il sinistro. Un clic destro o
+  centrale a metà non lo chiude, non apre menu e non cancella nulla: l'anteprima continua a seguire il puntatore e il
+  gesto si conferma al rilascio del sinistro. Vale per finestra di arrangiamento, piano roll e step sequencer. Nella
+  corsia dei controller il tratto di cancellazione, fatto col destro, finisce al rilascio del destro.
 - Tutto quello che l'assistente fa per una richiesta è un solo passo: Ctrl+Z, o **↶ Undo AI edit**
   nel pannello dell'assistente, riporta il progetto a com'era prima della richiesta. Il menu Edit
   mostra l'inizio della richiesta, per esempio *Undo assistant: Add drums*.
