@@ -3,10 +3,13 @@
 
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{Pos2, Rect};
+use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Pos2, Rect, RichText, Rounding, Stroke};
 use ondina_core::command::Command;
-use ondina_core::model::{Id, TrackKind};
+use ondina_core::model::{Id, Project, TrackKind};
 use ondina_studio::Session;
+
+use crate::doc_guard::DocAction;
+use crate::theme;
 
 /// Audio formats the decoder reads (the same list as File > Import Audio).
 pub const AUDIO_EXTENSIONS: &[&str] = &["wav", "aif", "aiff", "flac", "mp3", "ogg", "m4a", "caf"];
@@ -346,6 +349,126 @@ pub fn hover_label(plan: &DropPlan, track_name: Option<&str>, at: &str) -> Strin
 /// Physical screen pixels (what Windows reports for the cursor) to points inside the window.
 pub fn screen_px_to_points(x: i32, y: i32, pixels_per_point: f32, inner_min: Pos2) -> Pos2 {
     Pos2::new(x as f32 / pixels_per_point - inner_min.x, y as f32 / pixels_per_point - inner_min.y)
+}
+
+/// The pointer while files are dragged over the window. During an OLE drag Windows sends the window no mouse
+/// moves and winit ignores the point it gets with the drag events, so egui's pointer stays where it was before
+/// the drag: ask Windows for the cursor instead (physical pixels, the process is per-monitor DPI aware).
+pub fn drag_pointer(ctx: &egui::Context) -> Option<Pos2> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        let mut pt = POINT { x: 0, y: 0 };
+        // SAFETY: the only pointer passed is to a local POINT that outlives the call.
+        let ok = unsafe { GetCursorPos(&mut pt) } != 0;
+        let (ppp, inner) = ctx.input(|i| (i.pixels_per_point, i.viewport().inner_rect));
+        if let (true, Some(inner)) = (ok, inner) {
+            return Some(screen_px_to_points(pt.x, pt.y, ppp, inner.min));
+        }
+    }
+    ctx.input(|i| i.pointer.latest_pos())
+}
+
+impl crate::app::OndinaApp {
+    /// Feedback while files are dragged over the window, and the import when they are dropped.
+    pub(crate) fn file_drop_ui(&mut self, ui: &mut egui::Ui, g: DropGeom, p: &Project) {
+        let (hovered, dropped) = ui.input(|i| (i.raw.hovered_files.clone(), i.raw.dropped_files.clone()));
+        if hovered.is_empty() && dropped.is_empty() {
+            return;
+        }
+        let tracks: Vec<(Id, TrackKind)> = p.tracks.iter().map(|t| (t.id, t.kind)).collect();
+        let pointer = drag_pointer(ui.ctx());
+        let spot = drop_spot(pointer, &g, &tracks, self.snap, self.position());
+        if !dropped.is_empty() {
+            let paths: Vec<PathBuf> = dropped.iter().filter_map(|f| f.path.clone()).collect();
+            let ctx = ui.ctx().clone();
+            self.drop_files(&ctx, &paths, &spot);
+            return;
+        }
+        if self.doc_prompt_open() {
+            return;
+        }
+        let paths: Vec<PathBuf> = hovered.iter().filter_map(|f| f.path.clone()).collect();
+        let plan = plan_drop(&paths, &spot);
+        draw_drop_hint(ui, &g, p, &spot, &plan, pointer);
+        // No events arrive while dragging: keep drawing so the line follows the cursor.
+        ui.ctx().request_repaint();
+    }
+
+    fn drop_files(&mut self, ctx: &egui::Context, paths: &[PathBuf], spot: &DropSpot) {
+        if self.doc_prompt_open() {
+            self.status = "Answer the Save question first: the dropped files were not used".into();
+            return;
+        }
+        match plan_drop(paths, spot) {
+            // The single entry point asks to save unsaved work and stops a recording first.
+            DropPlan::Open(path) => self.request_doc_action(ctx, DocAction::Open(Some(path))),
+            DropPlan::Refuse(m) => self.status = m,
+            DropPlan::Import(plan) => {
+                let id = next_drop_id();
+                if let Some(r) = self.exec_with(|s| run_import(s, &plan, id)) {
+                    if r.track.is_some() {
+                        self.selected_track = r.track;
+                        self.selected_region = r.last_region;
+                    }
+                    self.status = report_status(&plan, &r);
+                }
+            }
+        }
+    }
+}
+
+/// Where the files would land: the target row, the line at the drop beat and a label near the pointer. Paints
+/// only, so the arrangement's clicks are not affected.
+fn draw_drop_hint(ui: &egui::Ui, g: &DropGeom, p: &Project, spot: &DropSpot, plan: &DropPlan, pointer: Option<Pos2>) {
+    let tracks_area = Rect::from_min_max(pos2(g.rect.left(), g.tracks_top), g.rect.max);
+    let painter = ui.painter_at(tracks_area);
+    let line_x = g.timeline_x + ((spot.beat - g.scroll_beat) as f32) * g.px_per_beat;
+    let line = |y0: f32, y1: f32| {
+        if spot.on_timeline && line_x >= g.timeline_x {
+            painter.line_segment([pos2(line_x, y0), pos2(line_x, y1)], Stroke::new(2.0_f32, theme::ACCENT));
+        }
+    };
+    match plan {
+        DropPlan::Import(ip) if !ip.audio.is_empty() => {
+            let y = g.tracks_top + spot.row as f32 * g.track_h - g.scroll_y;
+            let row = Rect::from_min_max(pos2(g.rect.left(), y), pos2(g.rect.right(), y + g.track_h));
+            painter.rect_filled(row, Rounding::ZERO, theme::ACCENT.gamma_multiply(0.18));
+            if spot.track.is_none() {
+                painter.rect_stroke(row, Rounding::ZERO, Stroke::new(1.0_f32, theme::ACCENT));
+                painter.text(
+                    pos2(g.rect.left() + 10.0, y + g.track_h / 2.0),
+                    Align2::LEFT_CENTER,
+                    "New audio track",
+                    FontId::proportional(11.0),
+                    theme::TEXT_DIM,
+                );
+            }
+            line(y, y + g.track_h);
+        }
+        DropPlan::Import(_) => line(g.tracks_top, g.rect.bottom()),
+        DropPlan::Open(_) => {
+            ui.painter_at(g.rect).rect_stroke(g.rect.shrink(1.0), Rounding::ZERO, Stroke::new(2.0_f32, theme::ACCENT));
+        }
+        DropPlan::Refuse(_) => {}
+    }
+    let track_name = spot.track.and_then(|id| p.track(id)).map(|t| t.name.as_str());
+    let text = hover_label(plan, track_name, &p.bar_beat_string(spot.beat));
+    let color = if matches!(plan, DropPlan::Refuse(_)) { theme::REC } else { Color32::WHITE };
+    let at = match pointer.filter(|p| ui.ctx().screen_rect().contains(*p)) {
+        Some(p) => p + vec2(14.0, 14.0),
+        None => pos2(g.rect.center().x - 120.0, g.rect.top() + 8.0),
+    };
+    egui::Area::new(egui::Id::new("file_drop_hint"))
+        .order(egui::Order::Tooltip)
+        .interactable(false)
+        .fixed_pos(at)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).fill(theme::PANEL).show(ui, |ui| {
+                ui.label(RichText::new(text).color(color));
+            });
+        });
 }
 
 #[cfg(test)]
