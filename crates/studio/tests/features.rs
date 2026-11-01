@@ -404,6 +404,7 @@ fn third_party_vst3_instrument_and_effect() {
         return;
     }
     let mut s = Session::new(false);
+    s.settings.vst3_folders = vec![root.display().to_string()];
     let scan = ok(&mut s, "scan_vst3", json!({"extra_paths": [root.display().to_string()]}));
     assert!(scan["plugins"].as_array().unwrap().len() >= 2, "{scan}");
     let t = ok(&mut s, "add_track", json!({"kind": "instrument", "name": "Dexed"}))["track_id"].as_u64().unwrap();
@@ -1475,4 +1476,95 @@ fn scan_vst3_skips_network_folders() {
     assert_eq!(skipped[0]["path"], "\\\\server\\vst");
     assert!(!skipped[0]["reason"].as_str().unwrap().is_empty());
     assert!(v["plugins"].is_array());
+}
+
+/// A folder outside the VST3 folders with an (empty, never loaded) Evil.vst3 and a Missing.vst3 that does not exist.
+fn untrusted_vst3_paths() -> (String, String) {
+    let dir = tmp("untrusted_vst3");
+    std::fs::create_dir_all(&dir).unwrap();
+    let evil = dir.join("Evil.vst3");
+    std::fs::write(&evil, b"").unwrap();
+    let missing = dir.join("Missing.vst3");
+    let _ = std::fs::remove_file(&missing);
+    (evil.display().to_string(), missing.display().to_string())
+}
+
+#[test]
+fn add_vst3_from_mcp_and_ai_only_loads_from_vst3_folders() {
+    let mut s = Session::new(false);
+    s.settings.vst3_folders = vec![];
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
+    let (evil, missing) = untrusted_vst3_paths();
+    let before = ok(&mut s, "get_project_json", json!({}));
+    let undo = s.can_undo().map(str::to_string);
+    for path in [&evil, &missing] {
+        let e = call(&mut s, "add_vst3", json!({"track_id": t, "path": path})).unwrap_err();
+        assert!(e.starts_with("plug-in path refused") && e.contains("VST3 folder added in Ondina"), "{e}");
+        let e = s.execute(Command::AddVst3 { track_id: t, path: path.clone(), as_instrument: None, index: None }, Source::Ai).unwrap_err();
+        assert!(e.starts_with("plug-in path refused") && e.contains("VST3 folder added in Ondina"), "{e}");
+    }
+    assert_eq!(ok(&mut s, "get_project_json", json!({})), before);
+    assert_eq!(s.can_undo().map(str::to_string), undo);
+}
+
+#[test]
+fn add_vst3_from_the_app_is_not_limited_to_vst3_folders() {
+    let mut s = Session::new(false);
+    s.settings.vst3_folders = vec![];
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
+    let (_, missing) = untrusted_vst3_paths();
+    for source in [Source::Gui, Source::Script] {
+        let e = s.execute(Command::AddVst3 { track_id: t, path: missing.clone(), as_instrument: None, index: None }, source).unwrap_err();
+        assert!(!e.starts_with("plug-in path refused"), "{source:?}: {e}");
+    }
+}
+
+#[test]
+fn add_vst3_from_mcp_accepts_a_folder_added_by_the_user() {
+    let mut s = Session::new(false);
+    let dir = tmp("user_vst3_folder");
+    std::fs::create_dir_all(&dir).unwrap();
+    s.settings.vst3_folders = vec![dir.display().to_string()];
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
+    let missing = dir.join("Missing.vst3");
+    let _ = std::fs::remove_file(&missing);
+    let e = call(&mut s, "add_vst3", json!({"track_id": t, "path": missing.display().to_string()})).unwrap_err();
+    assert!(!e.starts_with("plug-in path refused"), "{e}");
+}
+
+#[test]
+fn scan_vst3_from_mcp_skips_folders_outside_vst3_folders() {
+    let mut s = Session::new(false);
+    s.settings.vst3_folders = vec![];
+    let dir = tmp("scan_untrusted");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.display().to_string();
+    let v = ok(&mut s, "scan_vst3", json!({"extra_paths": [dir]}));
+    let skipped = v["skipped_paths"].as_array().unwrap_or_else(|| panic!("{v}"));
+    assert!(skipped.iter().any(|x| x["path"] == json!(dir) && x["reason"].as_str().unwrap().contains("VST3 folder added in Ondina")), "{v}");
+    let scanned = v["scanned_folders"].as_array().unwrap_or_else(|| panic!("{v}"));
+    assert!(scanned.iter().all(|f| f.as_str().unwrap().to_lowercase() != dir.to_lowercase()), "{v}");
+    let v = s.execute(Command::ScanVst3 { extra_paths: Some(vec![dir.clone()]) }, Source::Gui).unwrap();
+    assert!(v.get("skipped_paths").is_none(), "{v}");
+    assert_eq!(v["scanned_folders"].as_array().unwrap().len(), 1, "{v}");
+}
+
+#[test]
+fn scan_vst3_uses_the_folders_added_by_the_user() {
+    let mut s = Session::new(false);
+    let dir = tmp("scan_user_folder");
+    std::fs::create_dir_all(&dir).unwrap();
+    s.settings.vst3_folders = vec![dir.display().to_string()];
+    let v = ok(&mut s, "scan_vst3", json!({}));
+    let scanned = v["scanned_folders"].as_array().unwrap_or_else(|| panic!("{v}"));
+    assert_eq!(scanned.len(), 1, "{v}");
+    assert!(scanned[0].as_str().unwrap().to_lowercase().ends_with("scan_user_folder"), "{v}");
+    assert!(v.get("skipped_paths").is_none(), "{v}");
+}
+
+#[test]
+fn get_settings_lists_the_vst3_folders() {
+    let mut s = Session::new(false);
+    s.settings.vst3_folders = vec!["C:\\Plugins".into()];
+    assert_eq!(ok(&mut s, "get_settings", json!({}))["vst3_folders"], json!(["C:\\Plugins"]));
 }

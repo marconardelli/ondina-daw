@@ -151,6 +151,40 @@ pub(crate) fn checked_output_path(source: Source, path: &str, allowed: &[&str], 
     }
 }
 
+/// Why a plug-in or a scan folder from MCP or the assistant is refused.
+const NOT_IN_VST3_FOLDER: &str = "is not in a standard VST3 folder or a VST3 folder added in Ondina (VST3 library > Add folder…)";
+
+/// The extra folders `scan_vst3` hands to the scanner (the standard folders are always scanned): the
+/// user's VST3 folders plus `extra`. The scanner loads every plug-in it finds, so from MCP and the
+/// assistant an extra folder must lie inside one of `roots`; the others are skipped with the reason.
+/// User folders that cannot be scanned (deleted, on a share) are left out without a report:
+/// `skipped_paths` is about the caller's `extra_paths`.
+pub(crate) fn vst3_scan_folders(source: Source, extra: &[String], user: &[String], roots: &[String]) -> (Vec<String>, Vec<(String, String)>) {
+    let mut folders = ondina_dsp::vst3::split_scan_paths(user).0;
+    let mut skipped = vec![];
+    for p in extra {
+        let (kept, sk) = ondina_dsp::vst3::split_scan_paths(std::slice::from_ref(p));
+        skipped.extend(sk);
+        for k in kept {
+            if matches!(source, Source::Mcp | Source::Ai) && !ondina_dsp::vst3::is_under_trusted(&k, roots) {
+                skipped.push((p.clone(), format!("{p} {NOT_IN_VST3_FOLDER}")));
+            } else {
+                folders.push(k);
+            }
+        }
+    }
+    let mut seen: Vec<String> = vec![];
+    folders.retain(|f| {
+        let key = f.to_lowercase();
+        if seen.contains(&key) {
+            return false;
+        }
+        seen.push(key);
+        true
+    });
+    (folders, skipped)
+}
+
 /// Whether the file at `path` is an Ondina project, judged from its first 4 KiB: project files
 /// start with `{"format": "ondina-project", ...}` (see `ondina_core::save_project_string`), or with
 /// `"aurora-project"` when they were saved before the rename.
@@ -408,10 +442,11 @@ impl Session {
                 r.map(|_| json!({"path": path}))
             }
             ScanVst3 { extra_paths } => {
-                let (folders, skipped) = ondina_dsp::vst3::split_scan_paths(extra_paths.as_deref().unwrap_or(&[]));
+                let roots = ondina_dsp::vst3::trusted_roots(&self.settings.vst3_folders);
+                let (folders, skipped) = vst3_scan_folders(source, extra_paths.as_deref().unwrap_or(&[]), &self.settings.vst3_folders, &roots);
                 match ondina_dsp::vst3::scan(&folders) {
                     Ok(list) => {
-                        let mut v = json!({"plugins": list.iter().map(|p| json!({"path": p.path, "name": p.name, "vendor": p.vendor, "version": p.version, "category": p.category, "instrument": p.is_instrument, "audio_inputs": p.audio_inputs, "audio_outputs": p.audio_outputs})).collect::<Vec<_>>()});
+                        let mut v = json!({"plugins": list.iter().map(|p| json!({"path": p.path, "name": p.name, "vendor": p.vendor, "version": p.version, "category": p.category, "instrument": p.is_instrument, "audio_inputs": p.audio_inputs, "audio_outputs": p.audio_outputs})).collect::<Vec<_>>(), "scanned_folders": folders});
                         if !skipped.is_empty() {
                             v["skipped_paths"] = json!(skipped.iter().map(|(p, r)| json!({"path": p, "reason": r})).collect::<Vec<_>>());
                         }
@@ -420,7 +455,7 @@ impl Session {
                     Err(e) => Err(e),
                 }
             }
-            AddVst3 { track_id, path, as_instrument, index } => self.add_vst3(*track_id, path, *as_instrument, *index),
+            AddVst3 { track_id, path, as_instrument, index } => self.add_vst3(*track_id, path, *as_instrument, *index, source),
             OpenPluginEditor { plugin_id } => {
                 let Some(p) = self.project.find_plugin(*plugin_id) else { return Some(Err("plug-in not found".into())) };
                 if p.kind != "vst3" {
@@ -437,7 +472,8 @@ impl Session {
             }
             GetSettings {} => Ok(json!({
                 "model": self.settings.model(), "effort": self.settings.effort(), "mcp_enabled": self.settings.mcp_enabled, "mcp_port": self.settings.mcp_port,
-                "audio_output": self.settings.audio_output, "api_key_configured": self.settings.api_key().is_some(), "ffmpeg": ffmpeg_path().map(|p| p.display().to_string())
+                "audio_output": self.settings.audio_output, "api_key_configured": self.settings.api_key().is_some(), "ffmpeg": ffmpeg_path().map(|p| p.display().to_string()),
+                "vst3_folders": self.settings.vst3_folders
             })),
             SetAiSettings { model, effort } => {
                 if let Some(m) = model {
@@ -743,8 +779,12 @@ impl Session {
         Ok(json!({"movie": abs, "duration_sec": duration, "offset_sec": offset_sec, "audio_track": region.map(|r| json!({"track_id": r.0, "region_id": r.1})), "frame_rate": self.project.frame_rate, "ffmpeg_available": ffmpeg_path().is_some()}))
     }
 
-    fn add_vst3(&mut self, track_id: Id, path: &str, as_instrument: Option<bool>, index: Option<usize>) -> Result<Value, String> {
+    fn add_vst3(&mut self, track_id: Id, path: &str, as_instrument: Option<bool>, index: Option<usize>, source: Source) -> Result<Value, String> {
         let abs = ondina_dsp::vst3::resolve_plugin_path(path)?;
+        // a dialog in the app is the user's own choice; a path from MCP or the assistant is not
+        if matches!(source, Source::Mcp | Source::Ai) && !ondina_dsp::vst3::is_under_trusted(&ondina_dsp::vst3::trusted_check_path(&abs), &ondina_dsp::vst3::trusted_roots(&self.settings.vst3_folders)) {
+            return Err(format!("plug-in path refused: {path} {NOT_IN_VST3_FOLDER}"));
+        }
         let path = abs.as_str();
         let (name, is_inst, params) = ondina_dsp::vst3::probe(path)?;
         let as_inst = as_instrument.unwrap_or(is_inst);
@@ -898,5 +938,40 @@ mod tests {
         assert_eq!(a[i + 1], "file:C:\\m.mp4");
         assert_eq!(a.last().unwrap(), "-");
         assert!(a.contains(&"scale=320:180".to_string()));
+    }
+
+    #[test]
+    fn vst3_scan_folders_limits_only_mcp_and_ai() {
+        let trusted = std::env::temp_dir().join("ondina_scan_trusted");
+        let sub = trusted.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let untrusted = std::env::temp_dir().join("ondina_scan_untrusted");
+        std::fs::create_dir_all(&untrusted).unwrap();
+        let trusted = trusted.display().to_string();
+        let sub = sub.display().to_string();
+        let untrusted = untrusted.display().to_string();
+        let roots = ondina_dsp::vst3::trusted_roots(std::slice::from_ref(&trusted));
+        let extra = vec![untrusted.clone(), sub.clone()];
+        for source in [Source::Mcp, Source::Ai] {
+            let (folders, skipped) = vst3_scan_folders(source, &extra, &[], &roots);
+            assert_eq!(skipped.len(), 1, "{source:?}: {skipped:?}");
+            assert_eq!(skipped[0].0, untrusted);
+            assert!(skipped[0].1.contains("VST3 folder added in Ondina"), "{}", skipped[0].1);
+            assert_eq!(folders, vec![ondina_dsp::vst3::absolute(&sub)], "{source:?}");
+        }
+        for source in [Source::Gui, Source::Script] {
+            let (folders, skipped) = vst3_scan_folders(source, &extra, &[], &roots);
+            assert!(skipped.is_empty(), "{source:?}: {skipped:?}");
+            assert_eq!(folders, vec![ondina_dsp::vst3::absolute(&untrusted), ondina_dsp::vst3::absolute(&sub)], "{source:?}");
+        }
+        let user = vec![trusted.clone(), "C:\\no-such-ondina-user-folder".to_string()];
+        for source in [Source::Mcp, Source::Ai, Source::Gui, Source::Script] {
+            let (folders, skipped) = vst3_scan_folders(source, &[], &user, &roots);
+            assert_eq!(folders, vec![ondina_dsp::vst3::absolute(&trusted)], "{source:?}");
+            assert!(skipped.is_empty(), "{source:?}: {skipped:?}");
+        }
+        let (folders, skipped) = vst3_scan_folders(Source::Mcp, &[trusted.to_uppercase()], std::slice::from_ref(&trusted), &roots);
+        assert_eq!(folders.len(), 1, "{folders:?}");
+        assert!(skipped.is_empty(), "{skipped:?}");
     }
 }
