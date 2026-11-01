@@ -316,7 +316,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use ondina_core::command::Command;
-    use ondina_core::model::{Note, TrackKind};
+    use ondina_core::model::{CcEvent, Note, TrackKind};
     use ondina_core::ops::{self, Outcome};
 
     fn run(p: &mut Project, c: Command) -> serde_json::Value {
@@ -588,5 +588,29 @@ mod tests {
         let peak = sample_peak(&left, &right);
         assert!((peak - 0.95).abs() < 1e-6);
         assert_eq!(report.true_peak_dbtp, (ondina_dsp::util::gain_to_db(peak) * 10.0).round() / 10.0);
+    }
+
+    #[test]
+    fn sustain_lane_holds_an_organ_note() {
+        fn organ_project(pedal: bool) -> Project {
+            let mut p = Project::new("t");
+            let t = run(&mut p, Command::AddTrack { kind: TrackKind::Instrument, name: None, patch: None, instrument: Some("organ".into()), preset: None, index: None })["track_id"].as_u64().unwrap();
+            let r = run(&mut p, Command::CreateMidiRegion { track_id: t, start: 0.0, length: 8.0, name: None, notes: Some(vec![Note { pitch: 60, velocity: 110, start: 0.0, length: 0.5 }]) })["region_id"].as_u64().unwrap();
+            if pedal {
+                run(&mut p, Command::AddCc { region_id: r, events: vec![CcEvent { beat: 0.0, controller: 64, value: 127 }, CcEvent { beat: 4.0, controller: 64, value: 0 }] });
+            }
+            assert!(p.tracks.iter().all(|t| t.channel.inserts.is_empty()));
+            p
+        }
+        // 120 bpm at 48 kHz: one beat is 24000 samples
+        let window = |p: &Project, from: usize, to: usize| {
+            let res = render_offline(p, Arc::new(AudioPool::new()), opts(8.0, 0.0, 0.0));
+            res.left[from..to].iter().chain(&res.right[from..to]).map(|&s| (s as f64) * (s as f64)).sum::<f64>()
+        };
+        let held = window(&organ_project(true), 48000, 72000);
+        let free = window(&organ_project(false), 48000, 72000);
+        assert!(held > 1e-3 && held > 1000.0 * free, "held {held} vs free {free}");
+        let after = window(&organ_project(true), 120000, 144000);
+        assert!(after <= held * 1e-6, "{after} still sounding after the pedal (held {held})");
     }
 }
