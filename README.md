@@ -381,4 +381,7 @@ vulnerabilities privately as described there, not in public issues.
 
 [MIT](LICENSE) © 2026 Marco Nardelli.
 
+The application embeds the [Inter](https://github.com/rsms/inter) and [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono)
+fonts, both under the SIL Open Font License 1.1; their license texts are in [`crates/app/assets/fonts`](crates/app/assets/fonts).
+
 VST is a trademark of Steinberg Media Technologies GmbH.
