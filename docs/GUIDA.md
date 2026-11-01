@@ -258,6 +258,16 @@ Ondina carica i plug-in VST3 solo da un bundle `.vst3` su un disco locale, per e
 `C:\Program Files\Common Files\VST3`. Il controllo vale per **Add from file…**, per l'assistente, per i
 client MCP e per i progetti che apri.
 
+I client MCP e l'assistente caricano plug-in solo dalle cartelle VST3 standard
+(`C:\Program Files\Common Files\VST3` e `%LOCALAPPDATA%\Programs\Common\VST3`) e da quelle che aggiungi tu.
+Per aggiungerne una: pannello **Library** → **Third-party VST3** → **Add folder…**. Ondina la salva nelle
+impostazioni e rifà la scansione; la ✕ accanto alla cartella la toglie. Nessun tool MCP può cambiare questo
+elenco.
+
+- Se un agente chiede un plug-in fuori da queste cartelle riceve un errore che inizia con *plug-in path
+  refused*: aggiungi la cartella e riprova. Lo stesso vale per le cartelle extra della scansione, che vengono
+  saltate.
+- **Add from file…** non ha questo limite: il plug-in lo scegli tu.
 - Un plug-in su una cartella di rete (`\\server\cartella`) o un file che non è `.vst3` viene rifiutato
   con un messaggio.
 - Se apri un progetto che usa un plug-in rifiutato, il progetto si apre lo stesso: il plug-in resta al

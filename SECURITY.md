@@ -47,13 +47,22 @@ references a refused plug-in still opens: the plug-in stays in the project but i
 there), and `open_project` lists it in `blocked_plugins`. This applies to the app's own menus too, because the risk
 comes from the project file: plug-ins kept on a NAS must be copied to a local folder.
 
+MCP clients and the assistant can load plug-ins only from the standard VST3 folders (`Common Files\VST3` under
+both Program Files folders and `%LOCALAPPDATA%\Programs\Common\VST3`) and from the folders you add with **Add
+folder…** in the app's VST3 library. The check runs on the path Windows resolved, so a link inside one of those
+folders that leads elsewhere is refused. `add_vst3` refuses any other path with "plug-in path refused", and
+`scan_vst3` skips any other extra folder and lists it in `skipped_paths`. The list of folders is kept in
+`settings.json` and no tool can change it. Plug-ins you pick with **Add from file…** in the app are not limited,
+because the choice is yours.
+
 ## Known issues being worked on
 
 This was found in an automated review of the first release and is tracked for fixing:
 
-- **Native plug-ins from any local folder.** A `.vst3` bundle in any folder of a local drive can still be loaded by
-  `add_vst3` or by an opened project, without asking the user, and the path check may not recognise a drive letter
-  mapped to a network share. Planned: only load plug-ins found by the scanner in standard or user-configured folders,
-  and ask before loading a plug-in requested by MCP/AI or referenced by an opened project.
+- **Native plug-ins referenced by an opened project.** A project can still reference a `.vst3` bundle in any folder
+  of a local drive, and opening it loads the plug-in without asking (MCP clients and the assistant can open
+  projects too); the path check may not recognise a drive letter mapped to a network share. A folder you added
+  in the app counts as trusted together with every link inside it, as long as the links stay on local drives.
+  Planned: ask before loading a plug-in that a project references outside the VST3 folders.
 
 Until these are fixed, only open projects you trust and only connect MCP clients you trust.

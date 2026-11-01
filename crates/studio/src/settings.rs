@@ -21,11 +21,15 @@ pub struct Settings {
     pub provider: String,
     pub local_url: String,
     pub local_model: String,
+    /// Folders the user added in the VST3 library. MCP clients and the assistant may load plug-ins only
+    /// from these and the standard VST3 folders; they are never set through a tool.
+    #[serde(default)]
+    pub vst3_folders: Vec<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { api_key: None, model: crate::ai::DEFAULT_MODEL.into(), effort: "medium".into(), mcp_enabled: true, mcp_port: 3917, audio_output: None, recent_projects: vec![], ui_scale: 1.0, provider: "auto".into(), local_url: "http://127.0.0.1:8080/v1".into(), local_model: "local".into() }
+        Settings { api_key: None, model: crate::ai::DEFAULT_MODEL.into(), effort: "medium".into(), mcp_enabled: true, mcp_port: 3917, audio_output: None, recent_projects: vec![], ui_scale: 1.0, provider: "auto".into(), local_url: "http://127.0.0.1:8080/v1".into(), local_model: "local".into(), vst3_folders: vec![] }
     }
 }
 
@@ -78,5 +82,54 @@ impl Settings {
         self.recent_projects.retain(|p| p != path);
         self.recent_projects.insert(0, path.to_string());
         self.recent_projects.truncate(10);
+    }
+
+    /// Add a VST3 folder (already checked and resolved by the caller). False when it is already in the
+    /// list, compared without regard to case as Windows does.
+    pub fn add_vst3_folder(&mut self, folder: &str) -> bool {
+        let key = folder.to_lowercase();
+        if self.vst3_folders.iter().any(|f| f.to_lowercase() == key) {
+            return false;
+        }
+        self.vst3_folders.push(folder.to_string());
+        true
+    }
+
+    /// Remove a VST3 folder, compared without regard to case.
+    pub fn remove_vst3_folder(&mut self, folder: &str) {
+        let key = folder.to_lowercase();
+        self.vst3_folders.retain(|f| f.to_lowercase() != key);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_without_vst3_folders_load_with_an_empty_list() {
+        let s: Settings = serde_json::from_str(r#"{"model":"x","mcp_port":4000}"#).unwrap();
+        assert!(s.vst3_folders.is_empty());
+        assert_eq!(s.mcp_port, 4000);
+        let mut s = s;
+        s.vst3_folders.push("C:\\Plugins".into());
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.vst3_folders, vec!["C:\\Plugins".to_string()]);
+    }
+
+    #[test]
+    fn add_vst3_folder_skips_duplicates_ignoring_case() {
+        let mut s = Settings::default();
+        assert!(s.add_vst3_folder("C:\\Plugins"));
+        assert!(!s.add_vst3_folder("c:\\plugins"));
+        assert_eq!(s.vst3_folders.len(), 1);
+    }
+
+    #[test]
+    fn remove_vst3_folder_ignores_case() {
+        let mut s = Settings::default();
+        s.add_vst3_folder("C:\\Plugins");
+        s.remove_vst3_folder("c:\\PLUGINS");
+        assert!(s.vst3_folders.is_empty());
     }
 }
