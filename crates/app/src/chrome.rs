@@ -121,7 +121,8 @@ pub fn slot_menu<R>(
         .rounding(Rounding::same(theme::R_MD))
         .truncate()
         .min_size(vec2(width, height));
-    ui.scope(|ui| {
+    // a button lays its text out with the layout's alignment: centered like the design's slots
+    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
         ui.set_max_width(width);
         egui::menu::menu_custom_button(ui, button, add_contents)
     })
@@ -134,7 +135,11 @@ pub fn add_slot_menu<R>(ui: &mut Ui, label: &str, add_contents: impl FnOnce(&mut
     let button = egui::Button::new(RichText::new(label).color(theme::TEXT_3))
         .frame(false)
         .min_size(vec2(width, ROW_H));
-    let ir = egui::menu::menu_custom_button(ui, button, add_contents);
+    let ir = ui
+        .with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+            egui::menu::menu_custom_button(ui, button, add_contents)
+        })
+        .inner;
     paint_dashed(ui, ir.response.rect, ir.response.hovered());
     ir
 }
