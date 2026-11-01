@@ -600,4 +600,98 @@ mod tests {
         assert!(!m.is_empty());
         assert!(m.iter().all(|n| key.contains(n.pitch) || true));
     }
+
+    /// FNV-1a over every note field, in the order the generator returned them.
+    fn digest(notes: &[Note]) -> (usize, u64) {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for nt in notes {
+            for word in [nt.pitch as u64, nt.velocity as u64, nt.start.to_bits(), nt.length.to_bits()] {
+                for b in word.to_le_bytes() {
+                    h ^= b as u64;
+                    h = h.wrapping_mul(0x100000001b3);
+                }
+            }
+        }
+        (notes.len(), h)
+    }
+
+    fn mixed() -> Vec<TimedChord> {
+        [("C", 0.0, 2.0), ("Am", 2.0, 2.0), ("F", 4.0, 8.0), ("G7", 12.0, 3.0), ("C", 15.0, 1.0)]
+            .iter()
+            .map(|(s, start, length)| TimedChord { start: *start, length: *length, chord: Chord::parse(s).unwrap() })
+            .collect()
+    }
+
+    #[test]
+    fn common_time_output_matches_the_previous_generators() {
+        const EXPECTED: [(&str, usize, u64); 14] = [
+            ("bass/root", 34, 0xdccfa6c4075fafa5),
+            ("bass/root_fifth", 64, 0x3f9e649ad5e2ca01),
+            ("bass/eighths", 128, 0x5c95e657df0ee085),
+            ("bass/octaves", 128, 0x16d9fd11594a3135),
+            ("bass/syncopated", 98, 0x1e8665fdb83d542e),
+            ("bass/walking", 64, 0x3c7708653782da6b),
+            ("bass/sub808", 38, 0x7c7def9cef3d7358),
+            ("comp/sustained", 56, 0x279b0c9b15dc6f95),
+            ("comp/pop", 254, 0x4c8ea9eedc9c489d),
+            ("comp/offbeat", 198, 0x856728b3b9f11b1d),
+            ("comp/ballad", 116, 0xcf27287b3777a165),
+            ("comp/funk", 260, 0xf575967693a2e56c),
+            ("melody/0.3", 76, 0xf4287d59eb7980ed),
+            ("melody/0.8", 336, 0x2fd36355401cc2fa),
+        ];
+        let sets = [prog(), mixed()];
+        let seeds = [1u64, 42];
+        let mut got: Vec<(&str, usize, u64)> = vec![];
+        let bass_styles = [
+            ("bass/root", BassStyle::Root),
+            ("bass/root_fifth", BassStyle::RootFifth),
+            ("bass/eighths", BassStyle::Eighths),
+            ("bass/octaves", BassStyle::Octaves),
+            ("bass/syncopated", BassStyle::Syncopated),
+            ("bass/walking", BassStyle::Walking),
+            ("bass/sub808", BassStyle::Sub808),
+        ];
+        for (name, st) in bass_styles {
+            let mut all = vec![];
+            for c in &sets {
+                for &seed in &seeds {
+                    all.extend(bass(c, st, 1, seed));
+                }
+            }
+            let (count, h) = digest(&all);
+            got.push((name, count, h));
+        }
+        let comp_styles = [
+            ("comp/sustained", CompStyle::Sustained),
+            ("comp/pop", CompStyle::Pop),
+            ("comp/offbeat", CompStyle::Offbeat),
+            ("comp/ballad", CompStyle::Ballad),
+            ("comp/funk", CompStyle::Funk),
+        ];
+        for (name, st) in comp_styles {
+            let mut all = vec![];
+            for c in &sets {
+                for &seed in &seeds {
+                    all.extend(comp(c, st, 62, seed));
+                }
+            }
+            let (count, h) = digest(&all);
+            got.push((name, count, h));
+        }
+        let keys = [Key { root: 0, scale: ScaleKind::Major }, Key { root: 9, scale: ScaleKind::Minor }];
+        for (name, density) in [("melody/0.3", 0.3f32), ("melody/0.8", 0.8)] {
+            let mut all = vec![];
+            for c in &sets {
+                for &seed in &seeds {
+                    for key in keys {
+                        all.extend(melody(c, key, density, 4, seed));
+                    }
+                }
+            }
+            let (count, h) = digest(&all);
+            got.push((name, count, h));
+        }
+        assert_eq!(got, EXPECTED.to_vec());
+    }
 }
