@@ -2636,3 +2636,102 @@ fn detect_key_explains_what_it_cannot_read() {
     assert_eq!(s.can_undo().map(String::from), undo);
     assert_eq!(s.project.key.name(), "C Major");
 }
+
+/// A Pop Drum Kit with a 16-step pattern: Kick, Closed Hat and Open Hat have different steps.
+fn pattern_row_session() -> (Session, u64) {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Pop Drum Kit"}))["track_id"].as_u64().unwrap();
+    let rid = ok(&mut s, "create_pattern_region", json!({"track_id": t, "start": 0, "steps": 16}))["region_id"].as_u64().unwrap();
+    for (row, pattern) in [(0, "x...x...x...x..."), (3, "o.o.o.o.o.o.o.o."), (4, "..x...x...x...x.")] {
+        ok(&mut s, "set_pattern_row", json!({"region_id": rid, "row": row, "pattern": pattern}));
+    }
+    (s, rid)
+}
+
+#[test]
+fn update_pattern_row_mutes_renames_and_changes_the_sound_in_one_undo_step_each() {
+    let (mut s, rid) = pattern_row_session();
+    let before = region_object(&mut s, rid);
+    let undo_before = s.can_undo().map(String::from);
+
+    ok(&mut s, "update_pattern_row", json!({"region_id": rid, "row": 3, "muted": true}));
+    assert_eq!(s.can_undo(), Some("update_pattern_row"));
+    let r = ok(&mut s, "get_region", json!({"region_id": rid}));
+    assert_eq!(r["rows"][3]["muted"], true);
+    assert_eq!(r["rows"][3]["pattern"], "o.o.o.o.o.o.o.o.");
+    assert_eq!(r["rows"][0]["muted"], false);
+
+    ok(&mut s, "convert_pattern_to_midi", json!({"region_id": rid}));
+    let notes = ok(&mut s, "get_region", json!({"region_id": rid}))["notes"].as_array().unwrap().clone();
+    assert!(!notes.iter().any(|n| n["pitch"] == 42), "a muted row is not converted");
+    assert!(notes.iter().any(|n| n["pitch"] == 36));
+    ok(&mut s, "undo", json!({}));
+
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(region_object(&mut s, rid), before);
+    assert_eq!(s.can_undo().map(String::from), undo_before);
+
+    ok(&mut s, "update_pattern_row", json!({"region_id": rid, "row": 2, "name": " Snare 2 ", "pitch": 40}));
+    let row = ok(&mut s, "get_region", json!({"region_id": rid}))["rows"][2].clone();
+    assert_eq!(row["name"], "Snare 2");
+    assert_eq!(row["pitch"], 40);
+    assert_eq!(row["muted"], false);
+    assert_eq!(row["pattern"], "................");
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(region_object(&mut s, rid), before);
+}
+
+#[test]
+fn remove_pattern_row_moves_the_later_rows_up_in_one_undo_step() {
+    let (mut s, rid) = pattern_row_session();
+    let before = region_object(&mut s, rid);
+
+    let v = ok(&mut s, "remove_pattern_row", json!({"region_id": rid, "row": 3}));
+    assert_eq!(v, json!({"removed": {"name": "Closed Hat", "pitch": 42}, "rows": 7}));
+    let r = ok(&mut s, "get_region", json!({"region_id": rid}));
+    assert_eq!(r["rows"].as_array().unwrap().len(), 7);
+    assert_eq!(r["rows"][3]["name"], "Open Hat");
+    assert_eq!(r["rows"][3]["pattern"], "..x...x...x...x.");
+    assert_eq!(r["rows"][0]["pattern"], "x...x...x...x...");
+    assert_eq!(region_object(&mut s, rid)["length"], before["length"]);
+    assert_eq!(s.can_undo(), Some("remove_pattern_row"));
+
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(region_object(&mut s, rid), before);
+
+    for _ in 0..8 {
+        ok(&mut s, "remove_pattern_row", json!({"region_id": rid, "row": 0}));
+    }
+    let r = ok(&mut s, "get_region", json!({"region_id": rid}));
+    assert_eq!(r["rows"], json!([]));
+    assert_eq!(r["type"], "pattern");
+    assert_eq!(ok(&mut s, "add_pattern_row", json!({"region_id": rid, "name": "Kick", "pitch": 36})), json!({"row": 0}));
+}
+
+#[test]
+fn pattern_row_edits_explain_bad_arguments_and_change_nothing() {
+    let (mut s, rid) = pattern_row_session();
+    let t = ok(&mut s, "get_region", json!({"region_id": rid}))["track_id"].clone();
+    let midi = ok(&mut s, "create_midi_region", json!({"track_id": t, "start": 8, "length": 4}))["region_id"].as_u64().unwrap();
+    let before = ok(&mut s, "get_project_json", json!({}));
+    let undo_before = s.can_undo().map(String::from);
+
+    let err = call(&mut s, "update_pattern_row", json!({"region_id": rid, "row": 8, "muted": true})).unwrap_err();
+    assert!(err.contains("row 8") && err.contains("8 rows"), "{err}");
+    let err = call(&mut s, "remove_pattern_row", json!({"region_id": rid, "row": 8})).unwrap_err();
+    assert!(err.contains("row 8") && err.contains("8 rows"), "{err}");
+    let err = call(&mut s, "update_pattern_row", json!({"region_id": rid, "row": 0, "pitch": 128})).unwrap_err();
+    assert!(err.contains("pitch"), "{err}");
+    let err = call(&mut s, "update_pattern_row", json!({"region_id": rid, "row": 0, "name": ""})).unwrap_err();
+    assert!(err.contains("name"), "{err}");
+    let err = call(&mut s, "update_pattern_row", json!({"region_id": rid, "row": 0})).unwrap_err();
+    assert!(err.contains("nothing to change"), "{err}");
+    let err = call(&mut s, "update_pattern_row", json!({"region_id": midi, "row": 0, "muted": true})).unwrap_err();
+    assert!(err.contains("pattern"), "{err}");
+
+    assert_eq!(ok(&mut s, "get_project_json", json!({})), before);
+    assert_eq!(s.can_undo().map(String::from), undo_before);
+    for name in ["update_pattern_row", "remove_pattern_row"] {
+        assert!(tool_specs().iter().any(|t| t.name == name && !t.read_only), "{name}");
+    }
+}
