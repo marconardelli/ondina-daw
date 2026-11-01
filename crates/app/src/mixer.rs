@@ -43,6 +43,8 @@ const LOUDNESS_ROWS: usize = 3;
 const VALUE_BOX_W: f32 = 44.0;
 /// The quietest peak the peak box shows as a number; under it, "−∞".
 pub const PEAK_FLOOR_DB: f32 = -60.0;
+/// Characters of a track name that fit the strip's name band; longer names get a tooltip.
+const NAME_CHARS: usize = 15;
 /// Data keys of the mixer meters' peak holds (apart from the Inspector's).
 const HOLDS_KEY: &str = "mixer-holds";
 
@@ -518,8 +520,14 @@ impl OndinaApp {
                         (full.shrink(1.0), Rounding { nw: theme::R_LG - 1.0, ne: theme::R_LG - 1.0, sw: 0.0, se: 0.0 })
                     };
                     paint_band(ui, band, round, color, theme::ON_TRACK, None, name);
-                    if !master && ui.interact(band, egui::Id::new(("mixer-head", id)), Sense::click()).on_hover_text(name).clicked() {
-                        self.select_track(id);
+                    if !master {
+                        let mut resp = ui.interact(band, egui::Id::new(("mixer-head", id)), Sense::click());
+                        if let Some(tip) = slot_tooltip(name, NAME_CHARS, None) {
+                            resp = resp.on_hover_text(tip);
+                        }
+                        if resp.clicked() {
+                            self.select_track(id);
+                        }
                     }
                 }
                 Part::Input => {
@@ -881,6 +889,18 @@ pub fn effect_menu(ui: &mut egui::Ui, mut on_pick: impl FnMut(&'static str)) {
     }
 }
 
+/// Hover text for a plug-in slot of the strip: the full name when `short` cut it to `max_chars`, and why the
+/// plug-in is not loaded. None when there is nothing to add.
+pub fn slot_tooltip(label: &str, max_chars: usize, not_loaded: Option<&str>) -> Option<String> {
+    let cut = label.chars().count() > max_chars;
+    match (cut, not_loaded) {
+        (false, None) => None,
+        (true, None) => Some(label.to_string()),
+        (false, Some(reason)) => Some(format!("Not loaded: {reason}")),
+        (true, Some(reason)) => Some(format!("{label}\nNot loaded: {reason}")),
+    }
+}
+
 pub fn short(s: &str, n: usize) -> String {
     if s.chars().count() > n {
         format!("{}…", s.chars().take(n - 1).collect::<String>())
@@ -1018,6 +1038,30 @@ mod tests {
         p.tracks = vec![a, b, c, bus];
         assert_eq!(bus_sources(&p, 10), 2);
         assert_eq!(bus_sources(&p, 3), 0);
+    }
+
+    #[test]
+    fn slot_tooltip_is_empty_for_a_short_loaded_plugin() {
+        assert_eq!(slot_tooltip("Compressor", 15, None), None);
+    }
+
+    #[test]
+    fn slot_tooltip_shows_the_full_name_when_cut() {
+        assert_eq!(slot_tooltip("Valhalla VintageVerb", 15, None), Some("Valhalla VintageVerb".into()));
+        assert_eq!(slot_tooltip("Fifteen chars!!", 15, None), None);
+        assert_eq!(short("Fifteen chars!!", 15), "Fifteen chars!!");
+    }
+
+    #[test]
+    fn slot_tooltip_says_why_a_plugin_is_not_loaded() {
+        assert_eq!(
+            slot_tooltip("Foo", 15, Some("X is not a .vst3 plug-in bundle")),
+            Some("Not loaded: X is not a .vst3 plug-in bundle".into())
+        );
+        assert_eq!(
+            slot_tooltip("Valhalla VintageVerb", 15, Some("X is not a .vst3 plug-in bundle")),
+            Some("Valhalla VintageVerb\nNot loaded: X is not a .vst3 plug-in bundle".into())
+        );
     }
 
     #[test]
