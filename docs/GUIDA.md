@@ -310,6 +310,10 @@ elenco.
   refused*: aggiungi la cartella e riprova. Lo stesso vale per le cartelle extra della scansione, che vengono
   saltate.
 - **Add from file…** non ha questo limite: il plug-in lo scegli tu.
+- Se un client MCP o l'assistente apre un progetto, i plug-in VST3 fuori da queste cartelle non vengono caricati:
+  restano nel progetto e nel file, ma la traccia non suona, i bounce li saltano, la finestra del plug-in non si
+  apre e l'agente li trova in `blocked_plugins`. Per sentirli salva il progetto e aprilo tu da **File → Open**,
+  oppure aggiungi la loro cartella con **Add folder…** prima che l'agente apra il progetto.
 - Un plug-in su una cartella di rete (`\\server\cartella`) o un file che non è `.vst3` viene rifiutato
   con un messaggio.
 - Se apri un progetto che usa un plug-in rifiutato, il progetto si apre lo stesso: il plug-in resta al

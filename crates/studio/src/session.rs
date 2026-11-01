@@ -1,7 +1,7 @@
 //! The session: owns the project, undo history, audio pool and engine, and executes
 //! every [`Command`] — whether it comes from the GUI, the MCP server or the AI assistant.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -98,6 +98,11 @@ pub struct Session {
     midi_conn: Option<midir::MidiInputConnection<()>>,
     pub midi_input_name: Option<String>,
     pub settings: crate::Settings,
+    /// vst3 paths of the current document that were refused because an MCP client or the assistant opened it and
+    /// they lie outside the trusted VST3 folders. Kept out of every snapshot handed to the engine or to an offline
+    /// render, whatever undo, redo or duplicate_track do to the project; emptied when a document is opened by the
+    /// user or created.
+    untrusted_vst3: HashSet<String>,
     midi_routes: Arc<parking_lot::RwLock<Vec<MidiRoute>>>,
     record_start: f64,
     record_count_in_sec: f64,
@@ -131,6 +136,7 @@ impl Session {
             midi_conn: None,
             midi_input_name: None,
             settings: crate::Settings::load(),
+            untrusted_vst3: HashSet::new(),
             midi_routes: Arc::new(parking_lot::RwLock::new(vec![])),
             record_start: 0.0,
             record_count_in_sec: 0.0,
@@ -142,11 +148,24 @@ impl Session {
         Arc::new(Mutex::new(Session::new(audio)))
     }
 
+    /// The project as the audio engine and offline renders get it: plug-ins refused when an MCP client or the
+    /// assistant opened the document are left out (see `untrusted_vst3`).
+    pub fn engine_project(&self) -> Project {
+        let mut p = self.project.clone();
+        crate::session_ext::strip_untrusted_vst3(&mut p, &self.untrusted_vst3);
+        p
+    }
+
+    /// Whether `path` is a vst3 path refused when an MCP client or the assistant opened the document.
+    pub(crate) fn is_untrusted_vst3(&self, path: &str) -> bool {
+        self.untrusted_vst3.contains(path)
+    }
+
     fn commit(&mut self) {
         *self.midi_routes.write() = self.project.midi_routes.clone();
         self.revision += 1;
         self.dirty = true;
-        self.engine.set_project(Arc::new(self.project.clone()));
+        self.engine.set_project(Arc::new(self.engine_project()));
         self.update_midi_target();
     }
 
@@ -390,6 +409,7 @@ impl Session {
                     Outcome::Done(v) => v,
                     Outcome::NotHandled => return Err("internal".into()),
                 };
+                self.untrusted_vst3.clear();
                 self.reset_transport_for_new_document();
                 self.path = None;
                 self.pool.clear();
@@ -401,7 +421,7 @@ impl Session {
             }
             OpenProject { path } => {
                 self.refuse_while_recording(source)?;
-                self.open(Path::new(&path))
+                self.open(Path::new(&path), source)
             }
             SaveProject { path } => {
                 let p = match path {
@@ -506,7 +526,7 @@ impl Session {
                     Some(t) => (t, 0.0),
                     None => (BOUNCE_TAIL_SEC, AUTO_TAIL_MAX_SEC),
                 };
-                let mut res = render_offline(&self.project, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start, end, tail_sec: tail, auto_tail_max_sec: auto_max, solo: track_ids, analyze: true, keep_audio: true });
+                let mut res = render_offline(&self.engine_project(), Arc::new(self.pool.clone()), OfflineOptions { sample_rate: sr, start, end, tail_sec: tail, auto_tail_max_sec: auto_max, solo: track_ids, analyze: true, keep_audio: true });
                 if normalize.unwrap_or(false) {
                     ondina_engine::offline::normalize(&mut res.left, &mut res.right);
                 }
@@ -532,7 +552,7 @@ impl Session {
                     return Err("track has no regions".into());
                 }
                 let sr = self.engine.sample_rate();
-                let mut solo_proj = self.project.clone();
+                let mut solo_proj = self.engine_project();
                 // render the track pre-master-chain: bypass master inserts and reset master fader
                 solo_proj.master.inserts.clear();
                 solo_proj.master.volume_db = 0.0;
@@ -571,7 +591,7 @@ impl Session {
             SetAudioDevice { output, input } => {
                 self.engine.set_devices(output, input);
                 std::thread::sleep(std::time::Duration::from_millis(200));
-                self.engine.set_project(Arc::new(self.project.clone()));
+                self.engine.set_project(Arc::new(self.engine_project()));
                 self.engine.set_pool(Arc::new(self.pool.clone()));
                 Ok(serde_json::to_value(self.engine.list_devices()).unwrap())
             }
@@ -687,10 +707,13 @@ impl Session {
         self.engine.locate(0.0);
     }
 
-    fn open(&mut self, path: &Path) -> Result<Value, String> {
+    fn open(&mut self, path: &Path, source: Source) -> Result<Value, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         let project = load_project_str(&text)?;
-        let blocked = crate::session_ext::blocked_plugins(&project);
+        // A project from an MCP client or the assistant may point at any .vst3 on a local drive: load only what
+        // add_vst3 would accept from them. The user's own Open keeps loading everything the lexical check allows.
+        let roots = matches!(source, Source::Mcp | Source::Ai).then(|| ondina_dsp::vst3::trusted_roots(&self.settings.vst3_folders));
+        let (blocked, untrusted) = crate::session_ext::blocked_plugins_from(&project, roots.as_deref());
         let mut pool = AudioPool::new();
         let mut missing = vec![];
         for f in &project.audio_files {
@@ -703,6 +726,7 @@ impl Session {
         }
         self.reset_transport_for_new_document();
         self.project = project;
+        self.untrusted_vst3 = untrusted;
         self.pool = pool;
         self.engine.set_pool(Arc::new(self.pool.clone()));
         self.path = Some(path.to_path_buf());
@@ -876,7 +900,7 @@ impl Session {
         if end <= start {
             return Err("project is empty: nothing to analyze".into());
         }
-        let res = render_offline(&self.project, Arc::new(self.pool.clone()), OfflineOptions { sample_rate: 44100, start, end, tail_sec: 1.0, auto_tail_max_sec: 0.0, solo: None, analyze: true, keep_audio: false });
+        let res = render_offline(&self.engine_project(), Arc::new(self.pool.clone()), OfflineOptions { sample_rate: 44100, start, end, tail_sec: 1.0, auto_tail_max_sec: 0.0, solo: None, analyze: true, keep_audio: false });
         let a = res.analysis.unwrap_or_default();
         let master = a.get(&MASTER_ID).cloned();
         let mut tracks = vec![];

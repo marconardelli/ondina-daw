@@ -53,16 +53,18 @@ folder…** in the app's VST3 library. The check runs on the path Windows resolv
 folders that leads elsewhere is refused. `add_vst3` refuses any other path with "plug-in path refused", and
 `scan_vst3` skips any other extra folder and lists it in `skipped_paths`. The list of folders is kept in
 `settings.json` and no tool can change it. Plug-ins you pick with **Add from file…** in the app are not limited,
-because the choice is yours.
+because the choice is yours. The same rule applies to projects they open: a plug-in outside those folders stays in
+the project and in the saved file but is not loaded, not in playback, bounces or a native editor window, and
+`open_project` lists it in `blocked_plugins`. It loads when you open the project yourself from the app.
 
 ## Known issues being worked on
 
 This was found in an automated review of the first release and is tracked for fixing:
 
-- **Native plug-ins referenced by an opened project.** A project can still reference a `.vst3` bundle in any folder
-  of a local drive, and opening it loads the plug-in without asking (MCP clients and the assistant can open
-  projects too); the path check may not recognise a drive letter mapped to a network share. A folder you added
-  in the app counts as trusted together with every link inside it, as long as the links stay on local drives.
-  Planned: ask before loading a plug-in that a project references outside the VST3 folders.
+- **Native plug-ins referenced by a project you open.** A project you open from the app can still reference a
+  `.vst3` bundle in any folder of a local drive, and opening it loads the plug-in without asking; the path check
+  may not recognise a drive letter mapped to a network share. A folder you added in the app counts as trusted
+  together with every link inside it, as long as the links stay on local drives. Planned: ask before loading a
+  plug-in that a project references outside the VST3 folders.
 
 Until these are fixed, only open projects you trust and only connect MCP clients you trust.
