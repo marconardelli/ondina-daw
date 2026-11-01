@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-11-01
+
+### Changed
+
+- The sustain pedal now works on the Tonewheel Organ, Plucked String and Sampler too, not only on the Analog Synth
+  and FM Synth: notes keep ringing while the pedal is down. A note played again with the pedal down restarts on the
+  same voice, and a key still held when the pedal comes up keeps sounding until you release it. The Drum Synth
+  ignores the pedal, and the controller lane says so.
+
+### Fixed
+
+- A right or middle click while dragging regions, notes or steps no longer drops the drag early: the arrange window,
+  the piano roll and the step sequencer finish the move only when you let go of the left button.
+
 ## [0.19.0] - 2026-11-01
 
 ### Added
@@ -573,7 +587,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.19.1...HEAD
+[0.19.1]: https://github.com/marconardelli/ondina-daw/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/marconardelli/ondina-daw/compare/v0.18.0...v0.19.0
 [0.18.0]: https://github.com/marconardelli/ondina-daw/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/marconardelli/ondina-daw/compare/v0.16.0...v0.17.0
