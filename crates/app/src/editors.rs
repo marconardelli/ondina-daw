@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use ondina_core::command::Command;
 use ondina_core::model::*;
-use ondina_core::theory::note_name;
+use ondina_core::theory::{note_name, HarmonyInterval};
 use ondina_dsp::MidiKind;
 use eframe::egui::{
     self, pos2, vec2, Align2, Color32, FontId, Key, PointerButton, Rect, RichText, Rounding, Sense, Stroke,
@@ -23,6 +23,17 @@ use crate::theme;
 
 const KEYS_W: f32 = 54.0;
 const VEL_H: f32 = 56.0;
+
+/// The piano roll's Harmony menu: label, interval and whether the voice goes below the notes.
+const HARMONY_MENU: [(&str, HarmonyInterval, bool); 7] = [
+    ("3rd above", HarmonyInterval::Third, false),
+    ("3rd below", HarmonyInterval::Third, true),
+    ("5th above", HarmonyInterval::Fifth, false),
+    ("6th above", HarmonyInterval::Sixth, false),
+    ("6th below", HarmonyInterval::Sixth, true),
+    ("Octave above", HarmonyInterval::Octave, false),
+    ("Octave below", HarmonyInterval::Octave, true),
+];
 
 fn is_black(p: i32) -> bool {
     matches!(p.rem_euclid(12), 1 | 3 | 6 | 8 | 10)
@@ -145,6 +156,16 @@ impl OndinaApp {
             if ui.button("Snap to key").on_hover_text("Move the selected notes to the nearest pitch in the project key (all notes when nothing is selected)").clicked() {
                 self.exec_on_selection(Command::SnapNotesToKey { region_id: rid, indices: sel.clone() });
             }
+            ui.menu_button("Harmony", |ui| {
+                for (label, interval, below) in HARMONY_MENU {
+                    if ui.button(label).clicked() {
+                        self.add_harmony(Command::AddHarmony { region_id: rid, interval, below: Some(below), indices: sel.clone() });
+                        ui.close_menu();
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Add a voice in the project key to the selected notes (all notes when nothing is selected). The new notes become the selection.");
             if ui.button("Select all").on_hover_text("Select every note (Ctrl+A)").clicked() {
                 self.selected_notes = nc::select_all(m.notes.len());
             }
@@ -868,6 +889,15 @@ impl OndinaApp {
         }
         if let Some(ix) = v.get("indices").and_then(|x| x.as_array()) {
             self.selected_notes = ix.iter().filter_map(|i| i.as_u64()).map(|i| i as usize).collect();
+        }
+    }
+
+    /// Run add_harmony and select the notes it added, so the new voice can be moved or deleted at once.
+    fn add_harmony(&mut self, c: Command) {
+        let Some(v) = self.exec(c) else { return };
+        self.selected_notes = note_selection::select_added(&self.selected_notes, &v);
+        if note_selection::result_indices(&v).is_empty() {
+            self.status = "Harmony: no new notes (they are already there or out of range)".into();
         }
     }
 
