@@ -7,6 +7,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-11-01
+
+### Changed
+
+- Saving can no longer leave you with a broken project: Ondina writes the project to a temporary file, makes sure it
+  is fully on disk and only then puts it in place. A full disk, a crash or a power cut during the save keeps the
+  project you had, and the status bar says why the save failed.
+- The previous version of the project is kept next to it as `<name>.ondina.bak` (one copy, replaced at every save,
+  also when the assistant or an MCP client saves). To go back to it, copy it and rename the copy to end in
+  `.ondina`. You can turn the copy off in Settings > Autosave, *Keep a backup of the previous save*.
+- Settings are saved the same safe way. A settings file that cannot be read at startup is kept as
+  `settings.json.broken` (so your API key, VST3 folders and recent files can be recovered from it), Ondina starts
+  with the defaults and the status bar tells you.
+- Mixer and inspector show third-party plug-ins by their own name instead of "?"; hover a slot to read a name that
+  is too long to fit.
+- In the mixer, double-click a VST3 insert or VST3 instrument to open its window (or right-click an insert, Open
+  plug-in window). A single click still selects it.
+- Plug-ins that are not loaded are struck through and greyed out in the mixer and the inspector; hover them to see
+  why.
+
 ## [0.15.0] - 2026-11-01
 
 ### Added
@@ -444,7 +464,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.15.1...HEAD
+[0.15.1]: https://github.com/marconardelli/ondina-daw/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/marconardelli/ondina-daw/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/marconardelli/ondina-daw/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/marconardelli/ondina-daw/compare/v0.12.0...v0.13.0
