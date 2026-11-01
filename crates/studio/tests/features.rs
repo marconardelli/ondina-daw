@@ -571,6 +571,61 @@ fn add_harmony_is_one_undo_step_and_reports_the_added_notes() {
 }
 
 #[test]
+fn set_note_lengths_is_one_undo_step_and_keeps_the_indices() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();
+    let notes = json!([
+        {"pitch": 40, "velocity": 100, "start": 0.0, "length": 1.5},
+        {"pitch": 40, "velocity": 100, "start": 1.0, "length": 0.5},
+        {"pitch": 43, "velocity": 100, "start": 2.0, "length": 0.25},
+        {"pitch": 45, "velocity": 100, "start": 3.0, "length": 0.25}
+    ]);
+    let rid = ok(&mut s, "create_midi_region", json!({"track_id": t, "start": 0, "length": 4, "notes": notes}))["region_id"].as_u64().unwrap();
+    let before = ok(&mut s, "get_region", json!({"region_id": rid}))["notes"].clone();
+    let lengths = |s: &mut Session| -> Vec<f64> {
+        let n = ok(s, "get_region", json!({"region_id": rid}))["notes"].clone();
+        n.as_array().unwrap().iter().map(|x| x["length"].as_f64().unwrap()).collect()
+    };
+    let r = ok(&mut s, "set_note_lengths", json!({"region_id": rid, "mode": "legato"}));
+    assert_eq!(r["changed"], json!(3), "{r}");
+    assert!(r.get("indices").is_none(), "{r}");
+    assert_eq!(lengths(&mut s), vec![1.0, 1.0, 1.0, 0.25]);
+    // one undo brings every length back
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(ok(&mut s, "get_region", json!({"region_id": rid}))["notes"], before);
+    let r = ok(&mut s, "set_note_lengths", json!({"region_id": rid, "mode": "no_overlap"}));
+    assert_eq!(r["changed"], json!(1), "{r}");
+    assert_eq!(lengths(&mut s), vec![1.0, 0.5, 0.25, 0.25]);
+    ok(&mut s, "undo", json!({}));
+    let r = ok(&mut s, "set_note_lengths", json!({"region_id": rid, "mode": "fixed", "length": 0.5, "indices": [2, 3]}));
+    assert_eq!(r["indices"], json!([2, 3]), "{r}");
+    assert_eq!(lengths(&mut s), vec![1.5, 0.5, 0.5, 0.5]);
+    let after = ok(&mut s, "get_region", json!({"region_id": rid}))["notes"].clone();
+    for i in 0..4 {
+        assert_eq!(after[i]["pitch"], before[i]["pitch"]);
+        assert_eq!(after[i]["start"], before[i]["start"]);
+    }
+    // doubling stops at the end of the region
+    ok(&mut s, "set_note_lengths", json!({"region_id": rid, "mode": "scale", "factor": 2, "indices": [3]}));
+    assert_eq!(lengths(&mut s)[3], 1.0);
+    assert!(call(&mut s, "set_note_lengths", json!({"region_id": rid, "mode": "fixed"})).is_err());
+    assert!(call(&mut s, "set_note_lengths", json!({"region_id": rid, "mode": "staccato"})).is_err());
+    assert!(call(&mut s, "set_note_lengths", json!({"region_id": rid, "mode": "scale", "factor": 0})).is_err());
+    let spec = tool_specs().into_iter().find(|t| t.name == "set_note_lengths").expect("set_note_lengths is a tool");
+    let mode = spec.input_schema["properties"]["mode"].to_string();
+    for v in ["legato", "no_overlap", "fixed", "scale"] {
+        assert!(mode.contains(&format!("\"{v}\"")), "mode schema lacks {v}: {mode}");
+    }
+    let req = spec.input_schema.get("required").and_then(|r| r.as_array()).cloned().unwrap_or_default();
+    for k in ["region_id", "mode"] {
+        assert!(req.iter().any(|x| x == k), "{k} must be required");
+    }
+    for k in ["length", "factor", "indices"] {
+        assert!(!req.iter().any(|x| x == k), "{k} must stay optional");
+    }
+}
+
+#[test]
 fn resize_region_is_one_undo_step() {
     let mut s = Session::new(false);
     let t = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();

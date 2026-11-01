@@ -106,6 +106,27 @@ della regione se non c'è nessuna selezione).
 - L'assistente e i client MCP fanno lo stesso con il tool `add_harmony` (per esempio "aggiungi una seconda voce a
   terze sopra le note selezionate").
 
+### Lunghezza e velocity (Length, Velocity)
+
+I menu **Length** e **Velocity** della barra del piano roll cambiano le note selezionate (tutte le note della
+regione se non c'è nessuna selezione). Gli inizi e le altezze non si muovono e la selezione resta sulle stesse
+note. Ogni voce si annulla con un Ctrl+Z.
+
+- **Legato**: ogni nota dura fino all'inizio della nota seguente. Le note che partono insieme (anche un accordo
+  suonato un poco sfasato) finiscono insieme; le ultime restano come sono. Con una selezione conta solo la nota
+  seguente tra quelle selezionate: puoi legare il basso senza guardare gli accordi.
+- **Remove overlaps**: una nota si accorcia dove ricomincia la stessa altezza. Utile con un basso o un lead
+  monofonico suonato dal vivo.
+- **Fixed**: tutte le note prendono la durata scelta in **Note length** (il menu mostra quale, per esempio
+  *Fixed 1/16*).
+- **Halve (×½)** e **Double (×2)** dimezzano o raddoppiano le durate.
+- Nessuna nota diventa più corta di 1/64 di battito, e una nota allungata si ferma alla fine della regione. Se non
+  cambia niente, la barra di stato lo dice.
+- **Velocity**: *Set 64*, *80*, *100*, *127* danno a tutte la stessa velocity; *Scale 90%* e *110%* le
+  abbassano o le alzano in proporzione; nel campo numerico scrivi un valore da 1 a 127 e premi **Set**.
+- L'assistente (con Claude) e i client MCP fanno lo stesso con `set_note_lengths` (per esempio "rendi legato il
+  basso") e `set_note_velocities`.
+
 ## Tracce nell'arrangiamento
 
 A sinistra di ogni traccia c'è la sua intestazione, con il nome, i pulsanti M (mute), S (solo) e
@@ -478,6 +499,8 @@ compatibile OpenAI all'indirizzo scelto in **Settings ⚙** (di default `http://
   finestra di arrangiamento. Se nel piano roll hai selezionato delle note, il modello modifica solo
   quelle: può quantizzarle, umanizzarle, trasporle, portarle nella tonalità del progetto o aggiungere
   una voce in armonia (per esempio "umanizza le note selezionate"). Claude riceve tutti i tool.
+  Le lunghezze delle note (`set_note_lengths`) non sono tra i tool del modello locale: usa il menu
+  **Length** o Claude.
 - Sotto il titolo del pannello compaiono il motore e quanti tool riceve: col modello locale
   `local model (offline) · 46 tools`.
 - La conversazione tiene le richieste più recenti entro il contesto del modello. Quando si allunga,

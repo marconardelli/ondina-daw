@@ -14,6 +14,7 @@ use crate::app::{BottomTab, OndinaApp, Drag};
 use crate::cc_lane::{self, CcStroke};
 use crate::note_clipboard as nc;
 use crate::note_drag::{self, VelocityStroke};
+use crate::note_menus::{self, VelocityChoice};
 use crate::note_selection;
 use crate::piano_roll_view::{
     follow_scroll, initial_view, loop_local_beat, playing_pattern_step, scroll_pitch, wheel_zoom, zoom_factor,
@@ -166,6 +167,39 @@ impl OndinaApp {
             })
             .response
             .on_hover_text("Add a voice in the project key to the selected notes (all notes when nothing is selected). The new notes become the selection.");
+            ui.menu_button("Length", |ui| {
+                for (label, choice, hint) in note_menus::LENGTH_MENU {
+                    let text = note_menus::length_label(label, choice, len_label(self.note_len));
+                    if ui.button(text).on_hover_text(hint).clicked() {
+                        let c = note_menus::length_command(rid, choice, self.note_len, sel.clone());
+                        if let Some(s) = self.exec_on_selection(c).as_ref().and_then(note_menus::length_status) {
+                            self.status = s;
+                        }
+                        ui.close_menu();
+                    }
+                }
+            })
+            .response
+            .on_hover_text("Change the length of the selected notes (all notes when nothing is selected). Starts and pitches stay.");
+            ui.menu_button("Velocity", |ui| {
+                for (label, choice) in note_menus::VELOCITY_MENU {
+                    if ui.button(label).clicked() {
+                        self.exec_on_selection(note_menus::velocity_command(rid, choice, sel.clone()));
+                        ui.close_menu();
+                    }
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut self.pr_velocity).range(1..=127));
+                    if ui.button("Set").clicked() {
+                        let c = note_menus::velocity_command(rid, VelocityChoice::Set(self.pr_velocity), sel.clone());
+                        self.exec_on_selection(c);
+                        ui.close_menu();
+                    }
+                });
+            })
+            .response
+            .on_hover_text("Set or scale the velocity of the selected notes (all notes when nothing is selected)");
             if ui.button("Select all").on_hover_text("Select every note (Ctrl+A)").clicked() {
                 self.selected_notes = nc::select_all(m.notes.len());
             }
@@ -881,15 +915,15 @@ impl OndinaApp {
 
     /// Run a note command on the current selection and keep the same notes selected: Quantize and
     /// Humanize re-sort the region, and the result says where the selected notes went.
-    fn exec_on_selection(&mut self, c: Command) {
+    fn exec_on_selection(&mut self, c: Command) -> Option<serde_json::Value> {
         let had_selection = !self.selected_notes.is_empty();
-        let Some(v) = self.exec(c) else { return };
-        if !had_selection {
-            return;
+        let v = self.exec(c)?;
+        if had_selection {
+            if let Some(ix) = v.get("indices").and_then(|x| x.as_array()) {
+                self.selected_notes = ix.iter().filter_map(|i| i.as_u64()).map(|i| i as usize).collect();
+            }
         }
-        if let Some(ix) = v.get("indices").and_then(|x| x.as_array()) {
-            self.selected_notes = ix.iter().filter_map(|i| i.as_u64()).map(|i| i as usize).collect();
-        }
+        Some(v)
     }
 
     /// Run add_harmony and select the notes it added, so the new voice can be moved or deleted at once.

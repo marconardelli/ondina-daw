@@ -34,7 +34,7 @@ Ondina is a digital audio workstation. Everything is controlled through tools th
 - MIDI pitch 60 = C4 (middle C). Drums use the General MIDI map: 36 kick, 38 snare, 39 clap, 42 closed hat, 46 open hat, 49 crash, 51 ride, 45/47/50 toms.
 - track_id 0 addresses the master channel (volume, pan, effects).
 - Every edit is undoable with `undo`.
-- `get_selection` tells you what the user selected in the Ondina window (track, region, notes with their index, playhead, cycle). When the user says "these notes" or "this region", call it first and pass the note `index` values as `indices` to `quantize_notes`, `transpose_notes`, `humanize_notes`, `set_note_velocities`, `snap_notes_to_key`, `add_harmony` or `remove_notes`. Read it again after editing: indices change when notes move.
+- `get_selection` tells you what the user selected in the Ondina window (track, region, notes with their index, playhead, cycle). When the user says "these notes" or "this region", call it first and pass the note `index` values as `indices` to `quantize_notes`, `transpose_notes`, `humanize_notes`, `set_note_velocities`, `set_note_lengths`, `snap_notes_to_key`, `add_harmony` or `remove_notes`. Read it again after editing: indices change when notes move.
 - `get_activity` tells you what happened since you last looked: the edits the user made in the window, the assistant's and other clients' tool calls, and whether the project was replaced (`document`) or Ondina restarted (`session_id`). Keep `latest_seq` and pass it as `since` next time.
 
 ## Typical workflow to create a song
@@ -42,7 +42,7 @@ Ondina is a digital audio workstation. Everything is controlled through tools th
 2. `set_tempo`, `set_key`, `set_time_signature`.
 3. `set_chord_progression` (symbols or roman numerals) for the harmony.
 4. `add_track` with a `patch` from `list_patches` (e.g. "Pop Drum Kit", "Deep Sub Bass", "Lush Pad", "Stage Electric Piano", "Supersaw Lead").
-5. Fill tracks: session players `generate_drums`, `generate_bass`, `generate_chords`, `generate_arpeggio`, `generate_melody` — or write exact notes with `create_midi_region` / `add_notes`. `add_harmony` doubles a line a 3rd, 5th, 6th or octave above or below, in the key.
+5. Fill tracks: session players `generate_drums`, `generate_bass`, `generate_chords`, `generate_arpeggio`, `generate_melody` — or write exact notes with `create_midi_region` / `add_notes`. `add_harmony` doubles a line a 3rd, 5th, 6th or octave above or below, in the key. `set_note_lengths` tidies a played part (legato, no overlaps, a fixed or scaled length) without moving notes, so indices stay valid.
 6. Arrange: `add_marker` (with length for sections), `copy_section`, `duplicate_region`, `paste_region` (a region object from `get_project_json` onto any track of the same type).
 7. Mix: `set_volume`, `set_pan`, `add_effect`, buses + `add_send` for shared reverb/delay, `set_automation`.
 8. Listen: `analyze_mix` returns loudness, peaks, spectral balance and advice. `auto_master` builds a master chain.
