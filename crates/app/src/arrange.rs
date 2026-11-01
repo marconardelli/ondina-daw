@@ -523,6 +523,13 @@ impl OndinaApp {
             pos2(timeline_x, top + RULER_H + LANE_H),
             pos2(full.right(), tracks_top),
         );
+        let cgeom = ChordLaneGeom {
+            timeline_x,
+            right: full.right(),
+            top: clane.top(),
+            scroll_beat: self.scroll_beat,
+            px_per_beat: self.px_per_beat,
+        };
         painter.rect_filled(clane, Rounding::ZERO, theme::LANE);
         painter.text(
             pos2(full.left() + 8.0, clane.center().y),
@@ -546,7 +553,6 @@ impl OndinaApp {
                 }
             }
         }
-        let mut chord_edit_rect: Option<Rect> = None;
         for c in &p.chords {
             // a chord being dragged is drawn where it will land
             let (beat, len, ghost) = match &self.drag {
@@ -554,22 +560,12 @@ impl OndinaApp {
                 Some(Drag::ResizeChord { id, cur_len, .. }) if *id == c.id => (c.beat, *cur_len, true),
                 _ => (c.beat, c.length, false),
             };
-            let x = self.beat_to_x(beat, timeline_x);
-            let w = len as f32 * self.px_per_beat;
-            if x + w < timeline_x || x > full.right() {
-                continue;
-            }
-            let r = Rect::from_min_size(
-                pos2(x.max(timeline_x), clane.top() + 1.0),
-                vec2((w - 1.0 - (timeline_x - x).max(0.0)).max(1.0), LANE_H - 2.0),
-            );
+            let Some(r) = chord_span_rect(beat, len, cgeom) else { continue };
             painter.rect_filled(r, Rounding::same(2.0_f32), Color32::from_rgb(60, 70, 60));
             if ghost {
                 painter.rect_stroke(r, Rounding::same(2.0_f32), Stroke::new(1.5_f32, theme::SELECT));
             }
-            if self.chord_edit.as_ref().is_some_and(|e| e.target == ChordTarget::Existing(c.id)) {
-                chord_edit_rect = Some(r);
-            } else {
+            if !self.chord_edit.as_ref().is_some_and(|e| e.target == ChordTarget::Existing(c.id)) {
                 painter.text(
                     pos2(r.left() + 4.0, r.center().y),
                     Align2::LEFT_CENTER,
@@ -631,8 +627,6 @@ impl OndinaApp {
                     focus: true,
                     invalid: false,
                 });
-                // open the field on this frame: chord_edit_rect was decided before the double-click
-                chord_edit_rect = Some(r);
             }
             let cid = c.id;
             let symbol = &c.symbol;
@@ -655,23 +649,10 @@ impl OndinaApp {
         // Chord field, registered last so it sits on top of the lane. A chord that scrolled out of view, was
         // deleted or undone away drops the edit, and so does a new chord whose place is out of view.
         let target = self.chord_edit.take().and_then(|edit| {
-            let (r, old) = match edit.target {
-                ChordTarget::Existing(id) => {
-                    let old = p.chords.iter().find(|c| c.id == id)?.symbol.clone();
-                    (chord_edit_rect?, Some(old))
-                }
-                ChordTarget::New { beat, length } => {
-                    let x = self.beat_to_x(beat, timeline_x);
-                    let w = length as f32 * self.px_per_beat;
-                    if x + w < timeline_x || x > full.right() {
-                        return None;
-                    }
-                    let r = Rect::from_min_size(
-                        pos2(x.max(timeline_x), clane.top() + 1.0),
-                        vec2((w - 1.0 - (timeline_x - x).max(0.0)).max(1.0), LANE_H - 2.0),
-                    );
-                    (r, None)
-                }
+            let r = chord_field_rect(edit.target, &p.chords, cgeom)?;
+            let old = match edit.target {
+                ChordTarget::Existing(id) => Some(p.chords.iter().find(|c| c.id == id)?.symbol.clone()),
+                ChordTarget::New { .. } => None,
             };
             Some((edit, old, r))
         });
@@ -1743,6 +1724,46 @@ const MIN_CHORD_LEN: f64 = 0.25;
 
 /// Where a chord typed on the empty chord lane at `pointer_beat` goes: on the grid line at or before the pointer
 /// (`snap` beats, 0 = no grid), `bar` beats long, but never over the chords around it. None when there is no room.
+/// Where the chord lane sits on screen, and how the arrangement is scrolled and zoomed.
+#[derive(Debug, Clone, Copy)]
+struct ChordLaneGeom {
+    /// Screen x of the timeline's left edge, where beat `scroll_beat` is drawn.
+    timeline_x: f32,
+    /// Screen x of the lane's right edge.
+    right: f32,
+    /// Screen y of the lane's top edge.
+    top: f32,
+    scroll_beat: f64,
+    px_per_beat: f32,
+}
+
+/// Screen rect of the chord-lane span `beat..beat + len`, cut at the timeline's left edge; None when no part of it
+/// is in view.
+fn chord_span_rect(beat: f64, len: f64, g: ChordLaneGeom) -> Option<Rect> {
+    let x = g.timeline_x + ((beat - g.scroll_beat) as f32) * g.px_per_beat;
+    let w = len as f32 * g.px_per_beat;
+    if x + w < g.timeline_x || x > g.right {
+        return None;
+    }
+    Some(Rect::from_min_size(
+        pos2(x.max(g.timeline_x), g.top + 1.0),
+        vec2((w - 1.0 - (g.timeline_x - x).max(0.0)).max(1.0), LANE_H - 2.0),
+    ))
+}
+
+/// Where the chord field goes this frame. It comes from the project, not from the chords drawn earlier in the
+/// frame, so a field opened by the menu or a double-click shows on the same frame. None drops the edit: the chord
+/// was deleted or undone away, or its span is out of view.
+fn chord_field_rect(target: ChordTarget, chords: &[ChordEvent], g: ChordLaneGeom) -> Option<Rect> {
+    match target {
+        ChordTarget::Existing(id) => {
+            let c = chords.iter().find(|c| c.id == id)?;
+            chord_span_rect(c.beat, c.length, g)
+        }
+        ChordTarget::New { beat, length } => chord_span_rect(beat, length, g),
+    }
+}
+
 fn new_chord_span(pointer_beat: f64, snap: f64, bar: f64, chords: &[ChordEvent]) -> Option<(f64, f64)> {
     let floor = if snap > 0.0 { (pointer_beat / snap).floor() * snap } else { pointer_beat };
     let prev_end = chords.iter().filter(|c| c.beat <= pointer_beat).map(|c| c.beat + c.length).fold(0.0, f64::max);
@@ -1994,14 +2015,15 @@ pub fn draw_meter(painter: &egui::Painter, r: Rect, m: [f32; 2]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        button_row_top, chord_commit, cycle_gesture_key, cycle_hit_zone, cycle_toggle, dragged_marker_beat,
+        button_row_top, chord_commit, chord_field_rect, chord_span_rect, cycle_gesture_key, cycle_hit_zone, cycle_toggle, dragged_marker_beat,
         edge_scroll_speed, moved_cycle, new_chord_span, next_cycle_gesture, region_edge_width, region_hit_zone,
         rename_commit, resized_chord_length, resized_cycle, resized_marker_length, ruler_click_action,
         ruler_drag_action, track_drop_index, track_move_target, CycleZone, RegionZone, RulerClick, RulerDrag,
         CYCLE_EDGE_PX, HEADER_BUTTON_H, HEADER_FULL_H, MIN_CHORD_LEN, MIN_CYCLE_LEN, MIN_MARKER_LEN, REGION_EDGE_PX,
-        TRACK_DRAG_SCROLL_PX_S,
+        TRACK_DRAG_SCROLL_PX_S, ChordLaneGeom, ChordTarget, LANE_H,
     };
     use crate::arrange_view::{TRACK_H_MAX, TRACK_H_MIN};
+    use eframe::egui::{pos2, vec2, Rect};
     use ondina_core::command::Command;
     use ondina_core::model::ChordEvent;
     use ondina_core::theory::{Key, ScaleKind};
@@ -2241,6 +2263,34 @@ mod tests {
         assert_eq!(state(&s), ("Am".into(), 5.0, 4.0));
         run(&mut s, "undo", json!({}));
         assert!(s.project.chords.is_empty());
+    }
+
+    #[test]
+    fn chord_field_opens_on_the_same_frame_and_drops_when_the_chord_is_gone() {
+        let g = ChordLaneGeom { timeline_x: 210.0, right: 1010.0, top: 48.0, scroll_beat: 0.0, px_per_beat: 20.0 };
+        let chords = [chord(7, 4.0, 4.0), chord(8, 100.0, 4.0)];
+        // opened from the menu on a visible chord: the rect comes from the project alone
+        let r = chord_field_rect(ChordTarget::Existing(7), &chords, g);
+        assert_eq!(r, Some(Rect::from_min_size(pos2(290.0, 49.0), vec2(79.0, LANE_H - 2.0))));
+        // the same rect the lane draws for that chord
+        assert_eq!(r, chord_span_rect(4.0, 4.0, g));
+        // out of view, or deleted / undone away: no field
+        assert_eq!(chord_field_rect(ChordTarget::Existing(8), &chords, g), None);
+        assert_eq!(chord_field_rect(ChordTarget::Existing(9), &chords, g), None);
+        // scrolled so the chord starts left of the timeline: cut at the edge
+        let scrolled = ChordLaneGeom { scroll_beat: 6.0, ..g };
+        assert_eq!(
+            chord_field_rect(ChordTarget::Existing(7), &chords, scrolled),
+            Some(Rect::from_min_size(pos2(210.0, 49.0), vec2(39.0, LANE_H - 2.0)))
+        );
+        let gone = ChordLaneGeom { scroll_beat: 9.0, ..g };
+        assert_eq!(chord_field_rect(ChordTarget::Existing(7), &chords, gone), None);
+        // a new chord: its span, or nothing when it is out of view
+        assert_eq!(
+            chord_field_rect(ChordTarget::New { beat: 0.0, length: 4.0 }, &chords, g),
+            Some(Rect::from_min_size(pos2(210.0, 49.0), vec2(79.0, LANE_H - 2.0)))
+        );
+        assert_eq!(chord_field_rect(ChordTarget::New { beat: 60.0, length: 4.0 }, &chords, g), None);
     }
 
     #[test]
