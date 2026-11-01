@@ -358,6 +358,7 @@ mod tests {
         assert_eq!(c.harmony(60, Third, true), Some(57));
         assert_eq!(c.harmony(60, Sixth, true), Some(52));
         assert_eq!(c.harmony(71, Sixth, true), Some(62));
+        assert_eq!(c.harmony(72, Sixth, true), Some(64));
         assert_eq!(c.harmony(62, Fifth, false), Some(69));
         assert_eq!(c.harmony(60, Sixth, false), Some(69));
         // An octave is exactly 12 semitones, even for a note outside the key.
