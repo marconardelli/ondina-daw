@@ -18,7 +18,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::session_ext::{checked_output_path, is_ondina_project_file, MIDI_EXTENSIONS, PROJECT_EXTENSIONS, WAV_EXTENSIONS};
+use crate::session_ext::{audio_file_allowed, checked_input_path, checked_output_path, is_ondina_project_file, MIDI_EXTENSIONS, PROJECT_EXTENSIONS, WAV_EXTENSIONS};
 
 pub type SharedSession = Arc<Mutex<Session>>;
 
@@ -432,7 +432,8 @@ impl Session {
             OpenProject { path, discard_unsaved } => {
                 self.refuse_while_recording(source)?;
                 self.refuse_to_drop_unsaved_work(source, discard_unsaved)?;
-                self.open(Path::new(&path), source)
+                let file = checked_input_path(source, &path)?;
+                self.open(&file, source)
             }
             SaveProject { path } => {
                 let p = match path {
@@ -483,7 +484,8 @@ impl Session {
 
             // IO-level mutating commands
             ImportAudio { path, track_id, start } => {
-                let file_id = self.load_audio(Path::new(&path))?;
+                let path = checked_input_path(source, &path)?;
+                let file_id = self.load_audio(&path)?;
                 let track_id = match track_id {
                     Some(t) => t,
                     None => ops::add_track(&mut self.project, TrackKind::Audio, None, None, None, None, None)?,
@@ -503,7 +505,8 @@ impl Session {
                 Ok(json!({"track_id": track_id, "region_id": rid, "file_id": file_id, "duration_sec": f.duration_sec, "length_beats": len_beats}))
             }
             SetSamplerSample { plugin_id, path } => {
-                let file_id = self.load_audio(Path::new(&path))?;
+                let path = checked_input_path(source, &path)?;
+                let file_id = self.load_audio(&path)?;
                 let p = self.project.find_plugin_mut(plugin_id).ok_or("plug-in not found")?;
                 if p.kind != "sampler" {
                     return Err("plug-in is not a sampler".into());
@@ -512,7 +515,8 @@ impl Session {
                 Ok(json!({"file_id": file_id}))
             }
             ImportMidi { path, at_beat } => {
-                let bytes = std::fs::read(&path).map_err(|e| format!("cannot read {path}: {e}"))?;
+                let file = checked_input_path(source, &path)?;
+                let bytes = std::fs::read(&file).map_err(|e| format!("cannot read {path}: {e}"))?;
                 let ids = midi_io::import_midi(&mut self.project, &bytes, at_beat.unwrap_or(0.0))?;
                 Ok(json!({"track_ids": ids}))
             }
@@ -792,7 +796,12 @@ impl Session {
         let (blocked, untrusted) = crate::session_ext::blocked_plugins_from(&project, roots.as_deref());
         let mut pool = AudioPool::new();
         let mut missing = vec![];
+        let mut blocked_audio = vec![];
         for f in &project.audio_files {
+            if !audio_file_allowed(source, &f.path) {
+                blocked_audio.push(f.path.clone());
+                continue;
+            }
             match load_audio_file(Path::new(&f.path)) {
                 Ok(d) => {
                     pool.insert(f.id, Arc::new(d));
@@ -812,6 +821,9 @@ impl Session {
         let mut v = json!({"opened": path.display().to_string(), "missing_audio_files": missing, "summary": ops::project_summary(&self.project)});
         if !blocked.is_empty() {
             v["blocked_plugins"] = json!(blocked);
+        }
+        if !blocked_audio.is_empty() {
+            v["blocked_audio_files"] = json!(blocked_audio);
         }
         Ok(v)
     }

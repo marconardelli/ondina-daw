@@ -37,7 +37,7 @@ pub enum Command {
         /// true: replace the project even if it has unsaved changes, which are lost (no undo). Default false: from an MCP client or the assistant, a project with unsaved changes is kept and the call fails; save it first with save_project, or ask the user.
         discard_unsaved: Option<bool>,
     },
-    /// Open a project file (.ondina JSON). The transport stops and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). VST3 plug-ins whose path is not a .vst3 bundle on a local drive are not loaded and are listed in blocked_plugins. When an MCP client or the assistant opens the project, VST3 plug-ins outside the standard VST3 folders and the folders the user added in Ondina's VST3 library are not loaded either: they stay in the project and in the saved file, are listed in blocked_plugins, stay silent in playback and bounces, and load only when the user opens the project from the app. Refused when the current project has unsaved changes, unless discard_unsaved is true.
+    /// Open a project file (.ondina JSON). The transport stops and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). VST3 plug-ins whose path is not a .vst3 bundle on a local drive are not loaded and are listed in blocked_plugins. When an MCP client or the assistant opens the project, VST3 plug-ins outside the standard VST3 folders and the folders the user added in Ondina's VST3 library are not loaded either: they stay in the project and in the saved file, are listed in blocked_plugins, stay silent in playback and bounces, and load only when the user opens the project from the app. Refused when the current project has unsaved changes, unless discard_unsaved is true. The file must be on a local drive (no network shares). Audio files the project lists on a network share are not read either: they stay in the project and are listed in blocked_audio_files.
     OpenProject {
         path: String,
         /// true: replace the project even if it has unsaved changes, which are lost (no undo). Default false: from an MCP client or the assistant, a project with unsaved changes is kept and the call fails; save it first with save_project, or ask the user.
@@ -180,7 +180,7 @@ pub enum Command {
     SetPluginBypass { plugin_id: Id, bypass: bool },
     /// Get a plug-in with all its parameter values and their ranges.
     GetPlugin { plugin_id: Id },
-    /// Load an audio file into a Sampler instrument.
+    /// Load an audio file into a Sampler instrument. The file must be on a local drive (no network shares).
     SetSamplerSample { plugin_id: Id, path: String },
 
     // ------------------------------------------------------------------ regions
@@ -197,7 +197,7 @@ pub enum Command {
         rows: Option<Vec<PatternRow>>,
         name: Option<String>,
     },
-    /// Import an audio file (wav, aiff, flac, mp3, ogg, m4a) onto an audio track (creates one if track_id omitted) at a beat position.
+    /// Import an audio file (wav, aiff, flac, mp3, ogg, m4a) onto an audio track (creates one if track_id omitted) at a beat position. The file must be on a local drive (no network shares).
     ImportAudio { path: String, track_id: Option<Id>, start: Option<f64> },
     /// Delete a region.
     DeleteRegion { region_id: Id },
@@ -393,7 +393,7 @@ pub enum Command {
     BounceInPlace { track_id: Id },
     /// Export MIDI regions to a Standard MIDI File. The path must be a .mid or .midi file on a local drive (no network shares); .mid is added when the path has no extension.
     ExportMidi { path: String, track_ids: Option<Vec<Id>> },
-    /// Import a Standard MIDI File, creating instrument tracks (channel 10 becomes a drum track).
+    /// Import a Standard MIDI File, creating instrument tracks (channel 10 becomes a drum track). The file must be on a local drive (no network shares).
     ImportMidi { path: String, at_beat: Option<f64> },
 
     // ------------------------------------------------------------------ analysis / mastering

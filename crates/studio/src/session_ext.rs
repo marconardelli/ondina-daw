@@ -152,6 +152,35 @@ pub(crate) fn checked_output_path(source: Source, path: &str, allowed: &[&str], 
     }
 }
 
+/// The path a read command (import_audio, set_sampler_sample, import_midi, open_project) opens. From MCP and
+/// the assistant the file must be on a local drive, with the rules of `local_media_path`: opening
+/// `\\server\share\x.wav` makes Windows connect to that server and send the user's NTLM hash. The check is
+/// lexical first, then on the path Windows resolves (a junction or a mapped drive can lead to a share). The
+/// app's own dialogs and scripts started by the user keep full freedom, as for output paths.
+pub(crate) fn checked_input_path(source: Source, path: &str) -> Result<PathBuf, String> {
+    if !matches!(source, Source::Mcp | Source::Ai) {
+        return Ok(PathBuf::from(path));
+    }
+    let refused = |e: String| format!("input path refused: {e}");
+    let abs = local_media_path(path).map_err(refused)?;
+    if let Ok(resolved) = abs.canonicalize() {
+        let s = resolved.display().to_string();
+        let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+        let b = s.as_bytes();
+        let local = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/');
+        if !local {
+            return Err(refused(format!("{path} leads to {}, which is not on a local drive", resolved.display())));
+        }
+    }
+    Ok(abs)
+}
+
+/// Whether an audio file listed in a project opened from MCP or the assistant may be read: the same rule as
+/// `checked_input_path`. A refused file stays in the project (and in the saved file) and is reported as blocked.
+pub(crate) fn audio_file_allowed(source: Source, path: &str) -> bool {
+    checked_input_path(source, path).is_ok()
+}
+
 /// Why a plug-in or a scan folder from MCP or the assistant is refused.
 const NOT_IN_VST3_FOLDER: &str = "is not in a standard VST3 folder or a VST3 folder added in Ondina (VST3 library > Add folder…)";
 

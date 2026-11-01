@@ -37,6 +37,14 @@ remain: a drive letter mapped to a network share counts as a local drive, and a 
 file of its own type (for example a `.wav`). The app's own menus and dialogs are not restricted, so you can still save
 or bounce to a NAS from the Save dialog.
 
+Files read by MCP clients and the assistant follow the same rule. `import_audio`, `set_sampler_sample`, `import_midi`
+and `open_project` open only files on a local drive: network shares (`\\server\share`, `//server`, `\\?\UNC\`),
+device paths, URLs and NTFS streams are refused before anything is opened, so a tool call cannot make Windows connect
+to another machine and send it your credentials; the path is checked again after Windows resolves links and
+junctions. Audio files listed in a project that an MCP client or the assistant opens are read only from local drives:
+the others stay in the project and are listed in `blocked_audio_files`. Opening and importing from the app is not
+restricted.
+
 VST3 plug-ins are native code, so Ondina loads them only from a `.vst3` bundle on a local drive. `add_vst3`, projects
 that reference plug-ins, the native editor windows and the extra folders of `scan_vst3` all go through the same
 check: network shares, `\\?\` and `\\.\` device paths, URLs, NTFS streams and files that are not `.vst3` are refused

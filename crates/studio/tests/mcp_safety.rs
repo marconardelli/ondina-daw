@@ -111,3 +111,44 @@ fn the_window_still_replaces_the_project_after_asking_the_user_itself() {
     s.execute(cmd, Source::Gui).unwrap();
     assert_eq!(s.project.tempo.initial_bpm(), 120.0);
 }
+
+// ---------------------------------------------------------------- network paths
+
+const NETWORK_PATHS: [&str; 4] = [r"\\server\share\in.wav", "//server/share/in.wav", r"\\?\UNC\server\share\in.wav", r"\\.\pipe\in.wav"];
+const NETWORK_AUDIO: &str = r"\\server\share\loop.wav";
+
+#[test]
+fn incoming_files_on_network_shares_are_refused_before_they_are_opened() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "instrument": "sampler"}))["track_id"].as_u64().unwrap();
+    let sampler = s.project.track(t).unwrap().instrument.as_ref().unwrap().id;
+    let before = ok(&mut s, "get_project_json", json!({}));
+    for p in NETWORK_PATHS {
+        let mid = p.replace("in.wav", "in.mid");
+        let proj = p.replace("in.wav", "in.ondina");
+        for (tool, args) in [
+            ("import_audio", json!({"path": p})),
+            ("set_sampler_sample", json!({"plugin_id": sampler, "path": p})),
+            ("import_midi", json!({"path": mid})),
+            ("open_project", json!({"path": proj, "discard_unsaved": true})),
+        ] {
+            let err = call(&mut s, tool, args).unwrap_err();
+            assert!(err.contains("input path refused") && err.contains("local drive"), "{tool} {p}: {err}");
+        }
+    }
+    assert_eq!(ok(&mut s, "get_project_json", json!({})), before);
+}
+
+#[test]
+fn a_project_opened_from_mcp_does_not_read_audio_files_on_network_shares() {
+    let mut s = Session::new(false);
+    let mut doc: Value = serde_json::from_str(&ondina_core::save_project_string(&s.project).unwrap()).unwrap();
+    doc["project"]["audio_files"] = json!([{"id": 900, "path": NETWORK_AUDIO, "name": "loop", "sample_rate": 48000, "channels": 2, "duration_sec": 1.0}]);
+    let file = tmp("network-audio.ondina");
+    std::fs::write(&file, doc.to_string()).unwrap();
+    let v = ok(&mut s, "open_project", json!({"path": file.display().to_string()}));
+    assert_eq!(v["blocked_audio_files"], json!([NETWORK_AUDIO]), "{v}");
+    assert_eq!(v["missing_audio_files"], json!([]), "{v}");
+    // the reference stays in the project, as blocked plug-ins do
+    assert_eq!(s.project.audio_files.len(), 1);
+}
