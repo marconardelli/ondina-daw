@@ -66,6 +66,7 @@ pub fn reindex_command(c: &mut Command, old: &Project, new: &Project) {
         | Command::HumanizeNotes { region_id, indices, .. }
         | Command::SetNoteVelocities { region_id, indices, .. }
         | Command::SnapNotesToKey { region_id, indices, .. }
+        | Command::AddHarmony { region_id, indices, .. }
         | Command::TransformNotes { region_id, select: Some(NoteFilter { indices, .. }), .. } => {
             (*region_id, indices)
         }
@@ -266,6 +267,17 @@ pub fn result_indices(v: &serde_json::Value) -> Vec<usize> {
         .unwrap_or_default()
 }
 
+/// The selection after a command that adds notes to the selected region (add_harmony): the added notes, or
+/// `selected` unchanged when nothing was added, since then the region did not change and its indices still hold.
+pub fn select_added(selected: &HashSet<usize>, v: &serde_json::Value) -> HashSet<usize> {
+    let added = result_indices(v);
+    if added.is_empty() {
+        selected.clone()
+    } else {
+        added.into_iter().collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,6 +439,7 @@ mod tests {
             | Command::HumanizeNotes { indices, .. }
             | Command::SetNoteVelocities { indices, .. }
             | Command::SnapNotesToKey { indices, .. }
+            | Command::AddHarmony { indices, .. }
             | Command::TransformNotes { select: Some(NoteFilter { indices, .. }), .. } => indices.clone(),
             _ => None,
         }
@@ -653,5 +666,40 @@ mod tests {
         let (mut s, rid, sel) = draw_after_selecting_the_64(true);
         assert_eq!(sel, set(&[1, 2]));
         assert_eq!(after_arrow_up(&mut s, rid, &sel), vec![(60, 0.0), (68, 0.5), (65, 1.0)]);
+    }
+
+    #[test]
+    fn select_added_takes_the_new_notes() {
+        let (mut s, rid) = session_with(&four());
+        let args = json!({"region_id": rid, "interval": "3rd", "indices": [0, 2]});
+        let v = run(&mut s, "add_harmony", args, Source::Gui);
+        let sel = select_added(&set(&[0, 2]), &v);
+        assert_eq!(at(&s.project, rid, &sel), vec![(64, 0.0), (67, 2.0)]);
+        // C4 and E4 are now at 0 and 3: harmonizing them again adds nothing, so the selection and the region stay
+        let before = notes_of(&s.project, rid);
+        let again = json!({"region_id": rid, "interval": "3rd", "indices": [0, 3]});
+        let v2 = run(&mut s, "add_harmony", again, Source::Gui);
+        assert_eq!(v2["added"], json!(0), "{v2}");
+        assert_eq!(select_added(&sel, &v2), sel);
+        assert_eq!(notes_of(&s.project, rid), before);
+        assert_eq!(select_added(&set(&[1]), &json!({"ok": true})), set(&[1]));
+    }
+
+    #[test]
+    fn reindex_translates_add_harmony() {
+        use ondina_core::theory::HarmonyInterval;
+        let (mut s, rid) = session_with(&four());
+        let old = s.project.clone();
+        let mut shuffled = four();
+        shuffled.insert(0, n(59, 0.0, 0.5));
+        run(&mut s, "replace_notes", json!({"region_id": rid, "notes": notes_json(&shuffled)}), Source::Mcp);
+        let new = s.project.clone();
+        let harmony = |indices| Command::AddHarmony { region_id: rid, interval: HarmonyInterval::Third, below: None, indices };
+        let mut c = harmony(Some(vec![0, 2]));
+        reindex_command(&mut c, &old, &new);
+        assert_eq!(indices_of(&c), Some(vec![1, 3]));
+        let mut all = harmony(None);
+        reindex_command(&mut all, &old, &new);
+        assert_eq!(indices_of(&all), None);
     }
 }

@@ -529,6 +529,48 @@ fn note_tools_follow_the_selection() {
 }
 
 #[test]
+fn add_harmony_is_one_undo_step_and_reports_the_added_notes() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument"}))["track_id"].as_u64().unwrap();
+    let notes = json!([
+        {"pitch": 60, "velocity": 100, "start": 0.0, "length": 0.5},
+        {"pitch": 64, "velocity": 100, "start": 1.0, "length": 0.5},
+        {"pitch": 71, "velocity": 100, "start": 2.0, "length": 0.5}
+    ]);
+    let rid = ok(&mut s, "create_midi_region", json!({"track_id": t, "start": 0, "length": 4, "notes": notes}))["region_id"].as_u64().unwrap();
+    let before = ok(&mut s, "get_region", json!({"region_id": rid}))["notes"].clone();
+    let r = ok(&mut s, "add_harmony", json!({"region_id": rid, "interval": "3rd"}));
+    assert_eq!(r["indices"], json!([1, 3, 5]), "{r}");
+    let after = ok(&mut s, "get_region", json!({"region_id": rid}))["notes"].clone();
+    let pitches: Vec<u64> = [1, 3, 5].iter().map(|&i| after[i]["pitch"].as_u64().unwrap()).collect();
+    assert_eq!(pitches, vec![64, 67, 74]);
+    // one undo removes all three copies
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(ok(&mut s, "get_region", json!({"region_id": rid}))["notes"], before);
+    ok(&mut s, "redo", json!({}));
+    assert_eq!(ok(&mut s, "get_region", json!({"region_id": rid}))["notes"].as_array().unwrap().len(), 6);
+    let r = ok(&mut s, "add_harmony", json!({"region_id": rid, "interval": "6th", "below": true, "indices": [0]}));
+    let ix = r["indices"].as_array().unwrap();
+    assert_eq!(ix.len(), 1, "{r}");
+    let added = &ok(&mut s, "get_region", json!({"region_id": rid}))["notes"][ix[0].as_u64().unwrap() as usize];
+    assert_eq!(added["pitch"], json!(52), "{added}");
+    assert_eq!(added["start"].as_f64(), Some(0.0), "{added}");
+    assert!(call(&mut s, "add_harmony", json!({"region_id": rid, "interval": "2nd"})).is_err());
+    let spec = tool_specs().into_iter().find(|t| t.name == "add_harmony").expect("add_harmony is a tool");
+    let interval = spec.input_schema["properties"]["interval"].to_string();
+    for v in ["3rd", "5th", "6th", "octave"] {
+        assert!(interval.contains(&format!("\"{v}\"")), "interval schema lacks {v}: {interval}");
+    }
+    let req = spec.input_schema.get("required").and_then(|r| r.as_array()).cloned().unwrap_or_default();
+    for k in ["region_id", "interval"] {
+        assert!(req.iter().any(|x| x == k), "{k} must be required");
+    }
+    for k in ["below", "indices"] {
+        assert!(!req.iter().any(|x| x == k), "{k} must stay optional");
+    }
+}
+
+#[test]
 fn resize_region_is_one_undo_step() {
     let mut s = Session::new(false);
     let t = ok(&mut s, "add_track", json!({"kind": "instrument", "patch": "Lush Pad"}))["track_id"].as_u64().unwrap();
