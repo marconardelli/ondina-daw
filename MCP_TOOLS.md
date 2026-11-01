@@ -13,12 +13,12 @@ Get the complete raw project document as JSON (large). Prefer get_project / get_
 Parameters: none
 
 ### `new_project`
-Create a new empty project, replacing the current one.
+Create a new empty project, replacing the current one. The transport stops (Live Loops cells too) and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take).
 
 Parameters: `key, name, tempo, time_signature`
 
 ### `open_project`
-Open a project file (.ondina JSON). VST3 plug-ins whose path is not a .vst3 bundle on a local drive are not loaded and are listed in blocked_plugins.
+Open a project file (.ondina JSON). The transport stops and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). VST3 plug-ins whose path is not a .vst3 bundle on a local drive are not loaded and are listed in blocked_plugins.
 
 Parameters: `path`
 

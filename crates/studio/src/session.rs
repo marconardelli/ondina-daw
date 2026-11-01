@@ -337,10 +337,12 @@ impl Session {
                 Ok(json!({"redone": step.label}))
             }
             NewProject { .. } => {
+                self.refuse_while_recording(source)?;
                 let v = match ops::apply(&mut self.project, &cmd)? {
                     Outcome::Done(v) => v,
                     Outcome::NotHandled => return Err("internal".into()),
                 };
+                self.reset_transport_for_new_document();
                 self.path = None;
                 self.pool.clear();
                 self.engine.set_pool(Arc::new(AudioPool::new()));
@@ -349,7 +351,10 @@ impl Session {
                 self.selected_notes.clear();
                 Ok(v)
             }
-            OpenProject { path } => self.open(Path::new(&path)),
+            OpenProject { path } => {
+                self.refuse_while_recording(source)?;
+                self.open(Path::new(&path))
+            }
             SaveProject { path } => {
                 let p = match path {
                     Some(p) => PathBuf::from(p),
@@ -611,6 +616,27 @@ impl Session {
         Ok(id)
     }
 
+    /// Open and New replace the project a running recording would be written into. Callers outside the GUI get
+    /// an error and nothing changes, so the take stays with the project it was recorded for; the GUI stops the
+    /// recording itself before asking (`has_unsaved_work`).
+    fn refuse_while_recording(&self, source: Source) -> Result<(), String> {
+        if source != Source::Gui && self.engine.is_recording() {
+            return Err("recording in progress: call stop first (stop keeps the take)".into());
+        }
+        Ok(())
+    }
+
+    /// Open and New start the new document stopped at the beginning. A recording still running here (only the
+    /// GUI gets this far while recording, and it stops first) is stopped and its take dropped: writing it into the
+    /// project that replaces the one it was recorded for would put it in the wrong song.
+    fn reset_transport_for_new_document(&mut self) {
+        self.engine.stop();
+        if self.engine.is_recording() {
+            let _ = self.engine.stop_recording();
+        }
+        self.engine.locate(0.0);
+    }
+
     fn open(&mut self, path: &Path) -> Result<Value, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         let project = load_project_str(&text)?;
@@ -625,11 +651,10 @@ impl Session {
                 Err(_) => missing.push(f.path.clone()),
             }
         }
-        self.engine.stop();
+        self.reset_transport_for_new_document();
         self.project = project;
         self.pool = pool;
         self.engine.set_pool(Arc::new(self.pool.clone()));
-        self.engine.locate(0.0);
         self.path = Some(path.to_path_buf());
         self.selected_track = None;
         self.selected_region = None;

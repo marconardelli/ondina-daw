@@ -24,7 +24,7 @@ pub enum Command {
     GetProject {},
     /// Get the complete raw project document as JSON (large). Prefer get_project / get_track / get_region.
     GetProjectJson {},
-    /// Create a new empty project, replacing the current one.
+    /// Create a new empty project, replacing the current one. The transport stops (Live Loops cells too) and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take).
     NewProject {
         name: Option<String>,
         /// Tempo in BPM (default 120).
@@ -34,7 +34,7 @@ pub enum Command {
         /// Key like "C major", "A minor", "F# dorian".
         key: Option<String>,
     },
-    /// Open a project file (.ondina JSON). VST3 plug-ins whose path is not a .vst3 bundle on a local drive are not loaded and are listed in blocked_plugins.
+    /// Open a project file (.ondina JSON). The transport stops and the playhead goes back to the start. Refused while a recording is in progress: call stop first (stop keeps the take). VST3 plug-ins whose path is not a .vst3 bundle on a local drive are not loaded and are listed in blocked_plugins.
     OpenProject { path: String },
     /// Save the project. Without a path saves to the current file (or fails if never saved). The path must be a .ondina file (or an older .aurora one) on a local drive (no network shares); .ondina is added when the path has no extension. An existing file is overwritten only if it is an Ondina project.
     SaveProject { path: Option<String> },
