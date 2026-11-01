@@ -13,7 +13,7 @@ use ondina_core::ops::{self, Outcome};
 use ondina_core::{load_project_str, midi_io, save_project_string};
 use ondina_dsp::MidiKind;
 use ondina_engine::{load_audio_file, render_offline, write_wav, AudioPool, Engine, OfflineOptions};
-use ondina_engine::offline::{AUTO_TAIL_MAX_SEC, BOUNCE_TAIL_SEC};
+use ondina_engine::offline::{check_render_span, AUTO_TAIL_MAX_SEC, BOUNCE_TAIL_SEC};
 use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -539,6 +539,7 @@ impl Session {
                 }
                 let start = start.unwrap_or(0.0);
                 let end = end.unwrap_or_else(|| self.project.content_end()).max(start + 1.0);
+                check_render_span(&self.project.tempo, start, end)?;
                 let sr = self.engine.sample_rate();
                 // An exact tail when asked for one (0 cuts at `end`, for loops); otherwise render until the tails fade.
                 let (tail, auto_max) = match tail_sec {
@@ -611,6 +612,7 @@ impl Session {
                 if end <= 0.0 {
                     return Err("track has no regions".into());
                 }
+                check_render_span(&self.project.tempo, 0.0, end)?;
                 let sr = self.engine.sample_rate();
                 let mut solo_proj = self.engine_project();
                 // render the track pre-master-chain: bypass master inserts and reset master fader
@@ -969,6 +971,7 @@ impl Session {
         if end <= start {
             return Err("project is empty: nothing to analyze".into());
         }
+        check_render_span(&self.project.tempo, start, end)?;
         let res = render_offline(&self.engine_project(), Arc::new(self.pool.clone()), OfflineOptions { sample_rate: 44100, start, end, tail_sec: 1.0, auto_tail_max_sec: 0.0, solo: None, analyze: true, keep_audio: false });
         let a = res.analysis.unwrap_or_default();
         let master = a.get(&MASTER_ID).cloned();

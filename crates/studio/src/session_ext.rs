@@ -11,7 +11,7 @@ use ondina_core::model::*;
 use ondina_core::ops;
 use ondina_dsp::{audio_ops, AudioData, MidiKind};
 use ondina_engine::{load_audio_file, render_offline, render_surround, write_multichannel_wav, write_wav, OfflineOptions};
-use ondina_engine::offline::{AUTO_TAIL_MAX_SEC, BOUNCE_TAIL_SEC};
+use ondina_engine::offline::{check_render_span, AUTO_TAIL_MAX_SEC, BOUNCE_TAIL_SEC};
 use serde_json::{json, Value};
 
 use crate::session::{Session, Source};
@@ -450,6 +450,9 @@ impl Session {
                 if end <= 0.0 {
                     return Some(Err("project is empty".into()));
                 }
+                if let Err(e) = check_render_span(&self.project.tempo, 0.0, end) {
+                    return Some(Err(e));
+                }
                 let sr = self.engine.sample_rate();
                 let (names, chans) = render_surround(&self.engine_project(), Arc::new(self.pool.clone()), sr, 0.0, end, name, AUTO_TAIL_MAX_SEC);
                 if let Err(e) = write_multichannel_wav(&p, &chans, sr) {
@@ -466,6 +469,9 @@ impl Session {
                 let end = self.project.content_end();
                 if end <= 0.0 {
                     return Some(Err("project is empty".into()));
+                }
+                if let Err(e) = check_render_span(&self.project.tempo, 0.0, end) {
+                    return Some(Err(e));
                 }
                 let mut p = self.engine_project();
                 p.surround = SurroundFormat::Binaural;
@@ -514,6 +520,9 @@ impl Session {
                 let sr = self.engine.sample_rate();
                 let start = self.project.tempo.sec_to_beat(m.offset_sec);
                 let end = self.project.tempo.sec_to_beat(m.offset_sec + m.duration_sec.max(1.0));
+                if let Err(e) = check_render_span(&self.project.tempo, start, end) {
+                    return Some(Err(e));
+                }
                 let mut p = self.engine_project();
                 if let Some(aid) = m.audio_file_id {
                     // keep the guide audio out of the export
@@ -796,6 +805,7 @@ impl Session {
         if end <= start {
             return Err("project is empty".into());
         }
+        check_render_span(&self.project.tempo, start, end)?;
         let sr = 48000; // ADM/Atmos masters are 48 kHz
         let (bed_audio, objs) = ondina_engine::render_objects(&self.engine_project(), Arc::new(self.pool.clone()), sr, start, end);
         let defs = ondina_engine::adm::bed_712();
