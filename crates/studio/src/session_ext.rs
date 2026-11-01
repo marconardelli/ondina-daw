@@ -197,6 +197,24 @@ pub fn movie_frame_rgb(path: &str, t: f64, w: usize, h: usize) -> Result<Vec<u8>
     Ok(px)
 }
 
+/// VST3 plug-ins of a project whose path the plug-in check refuses: they stay in the project but
+/// are never loaded. Lexical only, so opening a project never touches a network path.
+pub fn blocked_plugins(project: &Project) -> Vec<Value> {
+    let mut owned: Vec<(Id, &PluginInstance)> = project.master.inserts.iter().map(|p| (MASTER_ID, p)).collect();
+    for t in &project.tracks {
+        owned.extend(t.instrument.iter().chain(&t.midi_fx).chain(&t.channel.inserts).map(|p| (t.id, p)));
+    }
+    owned
+        .into_iter()
+        .filter(|(_, pi)| pi.kind == "vst3")
+        .filter_map(|(tid, pi)| {
+            let p = pi.vst3_path.as_deref()?;
+            let reason = ondina_dsp::vst3::check_plugin_path(p).err()?;
+            Some(json!({"track_id": tid, "plugin_id": pi.id, "name": pi.preset, "path": p, "reason": reason}))
+        })
+        .collect()
+}
+
 impl Session {
     /// Returns `Some(result)` when the command is handled here.
     pub(crate) fn dispatch_ext(&mut self, cmd: &Command, source: Source) -> Option<Result<Value, String>> {
@@ -389,10 +407,19 @@ impl Session {
                 let _ = std::fs::remove_file(&tmp);
                 r.map(|_| json!({"path": path}))
             }
-            ScanVst3 { extra_paths } => match ondina_dsp::vst3::scan(extra_paths.as_deref().unwrap_or(&[])) {
-                Ok(list) => Ok(json!({"plugins": list.iter().map(|p| json!({"path": p.path, "name": p.name, "vendor": p.vendor, "version": p.version, "category": p.category, "instrument": p.is_instrument, "audio_inputs": p.audio_inputs, "audio_outputs": p.audio_outputs})).collect::<Vec<_>>()})),
-                Err(e) => Err(e),
-            },
+            ScanVst3 { extra_paths } => {
+                let (folders, skipped) = ondina_dsp::vst3::split_scan_paths(extra_paths.as_deref().unwrap_or(&[]));
+                match ondina_dsp::vst3::scan(&folders) {
+                    Ok(list) => {
+                        let mut v = json!({"plugins": list.iter().map(|p| json!({"path": p.path, "name": p.name, "vendor": p.vendor, "version": p.version, "category": p.category, "instrument": p.is_instrument, "audio_inputs": p.audio_inputs, "audio_outputs": p.audio_outputs})).collect::<Vec<_>>()});
+                        if !skipped.is_empty() {
+                            v["skipped_paths"] = json!(skipped.iter().map(|(p, r)| json!({"path": p, "reason": r})).collect::<Vec<_>>());
+                        }
+                        Ok(v)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
             AddVst3 { track_id, path, as_instrument, index } => self.add_vst3(*track_id, path, *as_instrument, *index),
             OpenPluginEditor { plugin_id } => {
                 let Some(p) = self.project.find_plugin(*plugin_id) else { return Some(Err("plug-in not found".into())) };
@@ -717,7 +744,7 @@ impl Session {
     }
 
     fn add_vst3(&mut self, track_id: Id, path: &str, as_instrument: Option<bool>, index: Option<usize>) -> Result<Value, String> {
-        let abs = ondina_dsp::vst3::absolute(path);
+        let abs = ondina_dsp::vst3::resolve_plugin_path(path)?;
         let path = abs.as_str();
         let (name, is_inst, params) = ondina_dsp::vst3::probe(path)?;
         let as_inst = as_instrument.unwrap_or(is_inst);
@@ -751,6 +778,20 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blocked_plugins_lists_only_refused_vst3_paths() {
+        let vst3 = |id: Id, path: &str| PluginInstance { id, kind: "vst3".into(), params: Default::default(), bypass: false, preset: Some("X".into()), sample: None, vst3_path: Some(path.into()), vst3_params: vec![], vst3_state: None };
+        let mut p = Project::new("t");
+        p.master.inserts.push(vst3(7, "C:\\VST3\\Ok.vst3"));
+        p.master.inserts.push(vst3(8, "\\\\server\\share\\Evil.vst3"));
+        let b = blocked_plugins(&p);
+        assert_eq!(b.len(), 1, "{b:?}");
+        assert_eq!(b[0]["track_id"], 0);
+        assert_eq!(b[0]["plugin_id"], 8);
+        assert_eq!(b[0]["path"], "\\\\server\\share\\Evil.vst3");
+        assert!(!b[0]["reason"].as_str().unwrap().is_empty());
+    }
 
     #[test]
     fn ffmpeg_input_refuses_options_urls_and_network_paths() {

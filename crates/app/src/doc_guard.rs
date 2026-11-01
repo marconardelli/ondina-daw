@@ -80,6 +80,22 @@ pub fn prompt_question(project_name: &str, action: &DocAction) -> String {
     format!("Save changes to '{name}' before {what}?")
 }
 
+/// The status bar line after a project was opened: what could not be loaded, so that a silent
+/// track has an explanation.
+pub fn open_status(path: &str, result: &serde_json::Value) -> String {
+    let count = |key: &str| result[key].as_array().map_or(0, Vec::len);
+    let mut s = format!("Opened {path}");
+    let n = count("blocked_plugins");
+    if n > 0 {
+        s += &format!(" · {n} VST3 {} not loaded (path refused)", if n == 1 { "plug-in" } else { "plug-ins" });
+    }
+    let m = count("missing_audio_files");
+    if m > 0 {
+        s += &format!(" · {m} audio {} missing", if m == 1 { "file" } else { "files" });
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +170,21 @@ mod tests {
             "Save changes to 'Lofi Beat' before opening another project?"
         );
         assert_eq!(prompt_question("  ", &DocAction::Open(None)), "Save changes to 'Untitled' before opening another project?");
+    }
+
+    #[test]
+    fn open_status_counts_blocked_plugins_and_missing_audio() {
+        use serde_json::json;
+        let p = "C:\\s.ondina";
+        assert_eq!(open_status(p, &json!({"opened": p, "missing_audio_files": []})), "Opened C:\\s.ondina");
+        assert_eq!(
+            open_status(p, &json!({"missing_audio_files": [], "blocked_plugins": [{"plugin_id": 1}]})),
+            "Opened C:\\s.ondina · 1 VST3 plug-in not loaded (path refused)"
+        );
+        assert_eq!(
+            open_status(p, &json!({"missing_audio_files": ["a", "b", "c"], "blocked_plugins": [{}, {}]})),
+            "Opened C:\\s.ondina · 2 VST3 plug-ins not loaded (path refused) · 3 audio files missing"
+        );
+        assert_eq!(open_status(p, &json!({"missing_audio_files": ["a"]})), "Opened C:\\s.ondina · 1 audio file missing");
     }
 }
