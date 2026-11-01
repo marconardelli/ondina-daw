@@ -169,11 +169,11 @@ impl OndinaApp {
                                 let playing = ls.playing.iter().any(|x| x.1 == c.id);
                                 let queued = ls.queued.iter().any(|x| x.2 == Some(c.id));
                                 let base = theme::rgb(t.color);
-                                ui.painter().rect_filled(rect, Rounding::same(5.0_f32), if playing { base } else { theme::darker(base, 0.45) });
+                                ui.painter().rect_filled(rect, Rounding::same(theme::R_MD), if playing { base } else { theme::darker(base, 0.45) });
                                 if queued {
                                     let blink = (ui.input(|i| i.time) * 4.0) as i64 % 2 == 0;
                                     if blink {
-                                        ui.painter().rect_stroke(rect, Rounding::same(5.0_f32), Stroke::new(2.0_f32, Color32::WHITE));
+                                        ui.painter().rect_stroke(rect, Rounding::same(theme::R_MD), Stroke::new(2.0_f32, Color32::WHITE));
                                     }
                                 }
                                 if playing {
@@ -198,7 +198,7 @@ impl OndinaApp {
                                 });
                             }
                             None => {
-                                ui.painter().rect_stroke(rect, Rounding::same(5.0_f32), Stroke::new(1.0_f32, theme::GRID));
+                                ui.painter().rect_stroke(rect, Rounding::same(theme::R_MD), Stroke::new(1.0_f32, theme::GRID));
                                 ui.painter().text(rect.center(), Align2::CENTER_CENTER, "+", FontId::proportional(16.0), theme::TEXT_DIM);
                                 let tid = t.id;
                                 let tkind = t.kind;
@@ -510,7 +510,7 @@ impl OndinaApp {
                 let r = if el > 0.0 { size * 0.25 } else { size * 0.45 };
                 let a = az.to_radians();
                 let pos = c + vec2(a.sin() * r, -a.cos() * r);
-                painter.circle_filled(pos, 4.0, if el > 0.0 { Color32::from_rgb(120, 140, 230) } else { theme::TEXT_DIM });
+                painter.circle_filled(pos, 4.0, if el > 0.0 { theme::ACCENT } else { theme::TEXT_DIM });
                 painter.text(pos + vec2(0.0, -9.0), Align2::CENTER_BOTTOM, name, FontId::proportional(8.5), theme::TEXT_DIM);
             }
             let radius = size * 0.45 * (1.0 - sp.elevation / 90.0 * 0.45);

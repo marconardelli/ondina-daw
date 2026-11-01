@@ -98,9 +98,9 @@ impl SlotLook {
     pub const NORMAL: SlotLook = SlotLook { fill: theme::CONTROL, border: theme::BORDER, text: theme::TEXT };
     /// The instrument slot, in the instrument blue of the design.
     pub const INSTRUMENT: SlotLook = SlotLook {
-        fill: Color32::from_rgb(0x23, 0x31, 0x50),
-        border: Color32::from_rgb(0x3A, 0x4E, 0x7A),
-        text: Color32::from_rgb(0xDC, 0xE6, 0xFF),
+        fill: theme::INSTRUMENT_BG,
+        border: theme::INSTRUMENT_BORDER,
+        text: theme::INSTRUMENT_TEXT,
     };
     /// A value box (send, output).
     pub const VALUE: SlotLook = SlotLook { fill: theme::CONTROL, border: theme::BORDER, text: theme::TEXT };

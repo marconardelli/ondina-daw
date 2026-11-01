@@ -86,6 +86,26 @@ pub const AI_BG: Color32 = hex(0x2A2443);
 pub const AI_BORDER: Color32 = hex(0x4B3F7A);
 /// Assistant text and icon on its tinted fill.
 pub const AI_TEXT: Color32 = hex(0xC4B5FD);
+/// The assistant's filled button ("Open settings") and the text on it.
+pub const AI_STRONG: Color32 = hex(0x7C5CE0);
+pub const ON_AI: Color32 = hex(0xFFFFFF);
+/// Instrument slots: fill, border and text in the instrument blue.
+pub const INSTRUMENT_BG: Color32 = hex(0x233150);
+pub const INSTRUMENT_BORDER: Color32 = hex(0x3A4E7A);
+pub const INSTRUMENT_TEXT: Color32 = hex(0xDCE6FF);
+/// Send and bus slots: fill and border in teal.
+pub const BUS_BG: Color32 = hex(0x1F2A2E);
+pub const BUS_BORDER: Color32 = hex(0x2F4A50);
+/// Dividers between the LCD's fields, and the fill of a field under the pointer.
+pub const LCD_DIVIDER: Color32 = hex(0x1E2226);
+pub const LCD_HOVER: Color32 = hex(0x14171A);
+/// The rubber band of a selection drag: fill and outline.
+pub const MARQUEE_FILL: Color32 = Color32::from_rgba_premultiplied(12, 30, 34, 40);
+pub const MARQUEE_LINE: Color32 = ACCENT;
+/// A disabled cycle band over the ruler.
+pub const CYCLE_OFF: Color32 = Color32::from_rgba_premultiplied(60, 62, 66, 90);
+/// The center line of a bipolar controller lane (pan, pitch bend).
+pub const CENTER_LINE: Color32 = RULER_BEAT_TICK;
 /// Bar chrome: the menu bar and the status bar.
 pub const CHROME: Color32 = hex(0x16181C);
 /// Lower end of the meter gradient.

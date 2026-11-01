@@ -228,7 +228,7 @@ impl OndinaApp {
             let (col, edge_col) = if p.cycle.enabled {
                 (theme::CYCLE, theme::SOLO)
             } else {
-                (Color32::from_rgba_premultiplied(60, 62, 66, 90), theme::TEXT_3)
+                (theme::CYCLE_OFF, theme::TEXT_3)
             };
             painter.rect_filled(
                 Rect::from_min_max(pos2(x0, strip.top() + 2.0), pos2(cx1, strip.bottom() - 2.0)),

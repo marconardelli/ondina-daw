@@ -311,7 +311,7 @@ pub fn paint(painter: &egui::Painter, rect: Rect, segs: &[Segment], controller: 
     let (top, bottom) = (rect.top() + 3.0, rect.bottom() - 3.0);
     if controller == PAN || controller == PITCH_BEND {
         let y = y_from_value(64, top, bottom);
-        painter.line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], Stroke::new(1.0_f32, Color32::from_gray(80)));
+        painter.line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], Stroke::new(1.0_f32, crate::theme::CENTER_LINE));
     }
     let line = Stroke::new(1.5_f32, color);
     for (i, s) in segs.iter().enumerate() {

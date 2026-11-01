@@ -255,8 +255,8 @@ impl OndinaApp {
                     .color(theme::TEXT_2),
                 );
                 ui.add_space(theme::SP_3);
-                let open = egui::Button::new(RichText::new("Open settings").color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0x7C, 0x5C, 0xE0))
+                let open = egui::Button::new(RichText::new("Open settings").color(theme::ON_AI))
+                    .fill(theme::AI_STRONG)
                     .stroke(Stroke::NONE)
                     .rounding(Rounding::same(theme::R_LG))
                     .min_size(vec2(0.0, 28.0));
@@ -387,7 +387,7 @@ impl OndinaApp {
                             }
                             return;
                         }
-                        let (fill, fg) = if controls.ask { (theme::AI_BORDER, Color32::WHITE) } else { (theme::BORDER, theme::TEXT_DISABLED) };
+                        let (fill, fg) = if controls.ask { (theme::AI_BORDER, theme::ON_AI) } else { (theme::BORDER, theme::TEXT_DISABLED) };
                         let send = egui::Button::new(RichText::new("Send").color(fg))
                             .fill(fill)
                             .stroke(Stroke::NONE)

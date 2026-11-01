@@ -50,8 +50,8 @@ const HOLDS_KEY: &str = "mixer-holds";
 
 /// The send / bus slot look of the design: teal fill and border.
 const BUS_LOOK: SlotLook = SlotLook {
-    fill: Color32::from_rgb(0x1F, 0x2A, 0x2E),
-    border: Color32::from_rgb(0x2F, 0x4A, 0x50),
+    fill: theme::BUS_BG,
+    border: theme::BUS_BORDER,
     text: theme::TEXT,
 };
 
