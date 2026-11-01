@@ -7,6 +7,71 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-01
+
+A new interface for the whole app: same features and the same MCP tools, laid out and drawn like a professional
+studio.
+
+### Added
+
+- New visual theme: graphite surfaces in layers with one water-blue accent for selection and focus, separate colors
+  for play, record, solo, mute, monitoring and the assistant, and buttons that look different when hovered and
+  when switched on. The app bundles the Inter and JetBrains Mono fonts (SIL Open Font License) and draws its own
+  vector icons, so no more empty squares or emoji.
+- Control bar: Library and Inspector buttons, transport drawn with the new icons (Play green while playing, Record
+  red, Cycle amber), and a display with fixed-width fields for position, time, tempo, time signature and key, so
+  nothing moves during playback. The tempo field shows the tempo in force at the playhead, including tempo
+  changes. On a narrow window the bar drops lower-priority items one step at a time instead of overlapping.
+- One control chooses the bottom panel: Editor, Mixer, Clip Grid or Hide.
+- Resizable panels: the side panel, the assistant and the bottom panel are resized by dragging a splitter with a
+  grip and closed from their header or the control bar. Sizes and which panels are open are kept for the next
+  start; the Mixer keeps its own height, tall enough for whole strips.
+- Inspector channel strip: track card (color, name, type, instrument, options), instrument, MIDI effects, audio
+  effects (bypassed ones struck through), sends, output, pan knob, fader with dB scale, stereo meter and Mute /
+  Solo. Presets, plug-in parameters, region, surround, project and master settings are in the menus and the
+  sections below.
+- Assistant panel with a status pill (Claude, local model or offline). With no model connected it explains how to
+  connect one, and the quick actions, Send and every other AI button in the app are disabled with the reason on
+  hover.
+- Mixer header with a filter (All / Tracks / Buses), the loudness and true peak of the last analysis and an
+  "Analyze mix" button. Strips all have the same size, with input, effects and sends, pan with its label, fader
+  with a dB scale, stereo meter with peak hold and clip light (click to clear), value and peak boxes and a
+  numbered footer; on a short panel they drop effect and send rows so the fader always stays in view. The Master
+  is pinned on the right with its loudness box.
+- Bounce dialog (File > Bounce to WAV, Ctrl+B) with range, bit depth and loudness target.
+- Library patch search, and empty states with a hint for an empty project, the editor with no region, the Clip
+  Grid and a search with no match.
+
+### Changed
+
+- Track headers: color bar, number, name and type, larger Mute / Solo / Record buttons in their own colors, a slim
+  volume slider with its dB value (double-click for 0 dB) and a quiet stereo meter; the selected track stands out.
+- Arrange window: bar numbers in monospace, amber cycle band, markers and chords as rounded chips, regions with
+  rounded corners, a border in the track color and a white ring when selected; drum and step-sequencer regions
+  show their hits on separate rows, audio waveforms are filled, the playhead has a triangle head.
+- New tracks take the twelve colors of the new palette in turn (existing projects keep their colors).
+- Piano roll: tools on one line with a "⋯" menu for the rest, a keyboard with clear black keys and every C
+  labelled, rows shaded by key with a line at each C, song bar numbers, notes in the track color, velocity stems.
+  The controller lane starts closed and has its own header, so about 18 rows show in the default panel; a region
+  opened in a small panel shows all its notes.
+- Step sequencer: visible off cells, groups of four, distinct ghost / normal / accent steps, the playing step
+  highlighted, and per-row M, sound and menu buttons.
+- The Score is a framed sheet on the dark background and numbers bars from the song.
+- Settings apply and save as you change them; the "Save settings" button is gone.
+- Dialogs, menus and tooltips share one look: dimmed backdrop under modal dialogs, a filled button for the main
+  action, shortcuts right-aligned in menus, tooltips after a short pause.
+- "Live Loops" is now called "Clip Grid", "Flex Time" "Time Warp" and "Flex Pitch" "Pitch Edit" in the app, the
+  guides and the MCP tool descriptions. MCP tool names, parameters and project files are unchanged.
+
+### Fixed
+
+- Clicking a track header on another track drops the selected region, so the Inspector never shows a region of a
+  different track.
+- A track scrolled half out of view no longer swallows clicks on the ruler, the marker lane and the chord lane.
+- Opening the Editor while the Clip Grid is shown works again.
+- The Mix Analysis window shows rounded numbers with units ("-17.8 LUFS").
+- Meter peak markers no longer rest on the floor of a silent meter after playback stops.
+
 ## [0.19.2] - 2026-11-01
 
 ### Changed
@@ -623,7 +688,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.19.2...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/marconardelli/ondina-daw/compare/v0.19.2...v0.20.0
 [0.19.2]: https://github.com/marconardelli/ondina-daw/compare/v0.19.1...v0.19.2
 [0.19.1]: https://github.com/marconardelli/ondina-daw/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/marconardelli/ondina-daw/compare/v0.18.0...v0.19.0
