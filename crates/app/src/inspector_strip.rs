@@ -339,7 +339,7 @@ impl OndinaApp {
                     if open {
                         self.cmd(Command::ClosePluginEditor { plugin_id: iid });
                     } else {
-                        self.exec(Command::OpenPluginEditor { plugin_id: iid });
+                        self.open_native_editor(iid);
                     }
                     ui.close_menu();
                 }

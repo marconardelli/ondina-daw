@@ -21,9 +21,20 @@ pub const MAX_PLUGIN_WINDOWS: usize = 8;
 /// Least inner size of a plug-in window.
 pub const MIN_SIZE: [f32; 2] = [360.0, 240.0];
 
+/// What a plug-in window shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowMode {
+    /// Header and every control.
+    #[default]
+    Full,
+    /// Only the header (with the AI bar), beside a VST3's own editor.
+    Companion,
+}
+
 #[derive(Debug, Clone)]
 pub struct OpenWindow {
     pub id: Id,
+    pub mode: WindowMode,
     /// Where it opened (decided at its first frame); the builder keeps it, so the window can be moved freely.
     pub initial: Option<WindowRect>,
     /// Why the native editor of a VST3 is not used (not loaded, no editor, could not open), shown in the header.
@@ -62,12 +73,29 @@ impl PluginWindows {
     }
 
     /// Opens the window of `id`, or brings it to the front when it is open (updating its note when one is given).
+    /// A compact window beside a VST3's own editor becomes the full one, at the full window's place and size.
     pub fn open(&mut self, id: Id, note: Option<String>) -> Opened {
-        if let Some(i) = self.open.iter().position(|w| w.id == id) {
-            let mut w = self.open.remove(i);
+        self.open_as(id, WindowMode::Full, note, |w, note| {
             if note.is_some() {
                 w.native_note = note;
             }
+            if w.mode == WindowMode::Companion {
+                w.mode = WindowMode::Full;
+                w.initial = None;
+            }
+        })
+    }
+
+    /// Opens the compact window of `id` beside its native editor, or brings its window to the front when it is
+    /// open (a full window stays full).
+    pub fn open_companion(&mut self, id: Id) -> Opened {
+        self.open_as(id, WindowMode::Companion, None, |_, _| {})
+    }
+
+    fn open_as(&mut self, id: Id, mode: WindowMode, note: Option<String>, update: impl FnOnce(&mut OpenWindow, Option<String>)) -> Opened {
+        if let Some(i) = self.open.iter().position(|w| w.id == id) {
+            let mut w = self.open.remove(i);
+            update(&mut w, note);
             self.open.push(w);
             self.focus.push(id);
             return Opened::Focused;
@@ -79,8 +107,21 @@ impl PluginWindows {
         } else {
             None
         };
-        self.open.push(OpenWindow { id, initial: None, native_note: note });
+        self.open.push(OpenWindow { id, mode, initial: None, native_note: note });
         Opened::New { closed }
+    }
+
+    /// Closes the compact windows whose native editor is no longer open, and returns them.
+    pub fn prune_companions(&mut self, native_open: &[Id]) -> Vec<Id> {
+        let gone: Vec<Id> = self.open.iter().filter(|w| w.mode == WindowMode::Companion && !native_open.contains(&w.id)).map(|w| w.id).collect();
+        for id in &gone {
+            self.close(*id);
+        }
+        gone
+    }
+
+    pub fn mode(&self, id: Id) -> Option<WindowMode> {
+        self.window(id).map(|w| w.mode)
     }
 
     pub fn close(&mut self, id: Id) {
@@ -196,6 +237,30 @@ pub fn default_size(inst: &PluginInstance) -> Vec2 {
         Some(_) => egui::vec2(560.0, 440.0),
         None => egui::vec2(640.0, 560.0),
     }
+}
+
+/// Size of the compact window beside a VST3's own editor: the header, the bundle path, the AI bar and its requests.
+pub const COMPANION_SIZE: [f32; 2] = [560.0, 250.0];
+
+/// Under which name the settings keep the compact window's place (apart from the full window of the same plug-in).
+pub fn companion_key(key: &str) -> String {
+    format!("{key}#ai")
+}
+
+/// The compact window's title.
+pub fn companion_title(title: &str) -> String {
+    format!("{title} \u{00B7} AI")
+}
+
+/// Where the compact window opens: where the settings remember it, else at the top right inside the main window
+/// (Ondina does not know where the plug-in's own editor is), stepping off the windows already there.
+pub fn companion_rect(saved: Option<WindowRect>, main: Option<egui::Rect>, taken: &[Pos2]) -> (Option<Pos2>, Vec2) {
+    if let Some(r) = saved.filter(|r| plausible(*r, main)) {
+        return (Some(step_off(egui::pos2(r.x, r.y), taken)), egui::vec2(r.w, r.h));
+    }
+    let size = egui::vec2(COMPANION_SIZE[0], COMPANION_SIZE[1]);
+    let pos = main.map(|m| step_off(egui::pos2((m.max.x - size.x - 24.0).max(m.min.x), m.min.y + 90.0), taken));
+    (pos, size)
 }
 
 /// Whether a remembered rectangle can be used: finite, a sensible size, and not far away from the main window (a
@@ -385,7 +450,13 @@ impl OndinaApp {
         let unloaded = self.view.unloaded_vst3.get(&pid).cloned();
         let note = match slot_click(&inst.kind, unloaded.is_some()) {
             SlotClick::Native => match self.exec_with(|s| s.execute(Command::OpenPluginEditor { plugin_id: pid }, Source::Gui)) {
-                None | Some(Ok(_)) => return,
+                None => return,
+                Some(Ok(_)) => {
+                    if self.settings.plugin_ai_beside_native {
+                        self.open_companion(pid);
+                    }
+                    return;
+                }
                 Some(Err(e)) => {
                     self.status = format!("\u{26A0} {e}: showing Ondina's controls");
                     Some(e)
@@ -402,8 +473,22 @@ impl OndinaApp {
         self.open_window(pid, None);
     }
 
+    /// "Open native window" of a VST3: its own editor and, beside it, the compact window with the AI bar.
+    pub(crate) fn open_native_editor(&mut self, pid: Id) {
+        self.exec(Command::OpenPluginEditor { plugin_id: pid });
+        if self.settings.plugin_ai_beside_native && ondina_dsp::vst3::open_editors().contains(&pid) {
+            self.open_companion(pid);
+        }
+    }
+
     fn open_window(&mut self, pid: Id, note: Option<String>) {
         if let Opened::New { closed: Some(_) } = self.plugin_windows.open(pid, note) {
+            self.status = format!("Closed the oldest plug-in window ({MAX_PLUGIN_WINDOWS} open at most)");
+        }
+    }
+
+    fn open_companion(&mut self, pid: Id) {
+        if let Opened::New { closed: Some(_) } = self.plugin_windows.open_companion(pid) {
             self.status = format!("Closed the oldest plug-in window ({MAX_PLUGIN_WINDOWS} open at most)");
         }
     }
@@ -413,6 +498,9 @@ impl OndinaApp {
         self.plugin_windows.follow_document(self.view.document);
         let p = self.project();
         self.plugin_windows.prune(&p);
+        if self.plugin_windows.ids().into_iter().any(|id| self.plugin_windows.mode(id) == Some(WindowMode::Companion)) {
+            self.plugin_windows.prune_companions(&ondina_dsp::vst3::open_editors());
+        }
         let main = ctx.input(|i| i.viewport().outer_rect);
         let separate = self.settings.plugin_windows_separate;
         for (k, id) in self.plugin_windows.ids().into_iter().enumerate() {
@@ -420,17 +508,28 @@ impl OndinaApp {
                 continue;
             };
             let key = settings_key(inst);
+            let mode = self.plugin_windows.mode(id).unwrap_or_default();
             let initial = match self.plugin_windows.initial(id) {
                 Some(r) => r,
                 None => {
-                    let saved = self.settings.plugin_windows.get(&key).copied();
-                    let taken = self.plugin_windows.taken_positions(id, |w| p.find_plugin(w.id).map(settings_key).as_deref() == Some(key.as_str()));
-                    let (pos, size) = initial_rect(self.plugin_windows.rect(id), saved, main, k, default_size(inst), &taken);
+                    let same = |w: &OpenWindow| w.mode == mode && p.find_plugin(w.id).map(settings_key).as_deref() == Some(key.as_str());
+                    let taken = self.plugin_windows.taken_positions(id, same);
+                    let (pos, size) = match mode {
+                        WindowMode::Full => {
+                            let saved = self.settings.plugin_windows.get(&key).copied();
+                            initial_rect(self.plugin_windows.rect(id), saved, main, k, default_size(inst), &taken)
+                        }
+                        WindowMode::Companion => companion_rect(self.settings.plugin_windows.get(&companion_key(&key)).copied(), main, &taken),
+                    };
                     let pos = pos.unwrap_or(Pos2::new(f32::NAN, f32::NAN));
                     let r = WindowRect { x: pos.x, y: pos.y, w: size.x, h: size.y };
                     self.plugin_windows.set_initial(id, r);
                     r
                 }
+            };
+            let title = match mode {
+                WindowMode::Full => title,
+                WindowMode::Companion => companion_title(&title),
             };
             let pos = (initial.x.is_finite() && initial.y.is_finite()).then(|| egui::pos2(initial.x, initial.y));
             let spec = WindowSpec { title: &title, pos, size: egui::vec2(initial.w, initial.h) };
@@ -443,8 +542,16 @@ impl OndinaApp {
                 self.plugin_windows.touch(id);
             }
             if let Some(r) = out.rect {
-                self.plugin_windows.remember(id, r);
-                self.settings.remember_plugin_window(&key, r);
+                match mode {
+                    WindowMode::Full => {
+                        self.plugin_windows.remember(id, r);
+                        self.settings.remember_plugin_window(&key, r);
+                    }
+                    // the session's place stays the full window's, so the upgrade does not inherit the small size
+                    WindowMode::Companion => {
+                        self.settings.remember_plugin_window(&companion_key(&key), r);
+                    }
+                }
             }
         }
         for id in self.plugin_windows.take_focus() {
@@ -475,6 +582,13 @@ impl OndinaApp {
                 }
             }
             self.plugin_header(ui, p, &inst);
+            if self.plugin_windows.mode(id) == Some(WindowMode::Companion) {
+                ui.add_space(theme::SP_3);
+                if ui.button("Generic controls").on_hover_text("Ondina's window with a knob for every parameter").clicked() {
+                    self.open_generic_window(id);
+                }
+                return;
+            }
             ui.add_space(theme::SP_3);
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
             ui.painter().hline(rect.x_range(), rect.center().y, egui::Stroke::new(1.0_f32, theme::CONTROL));
@@ -873,5 +987,70 @@ mod tests {
         w.set_initial(3, WindowRect { x: f32::NAN, y: f32::NAN, w: 400.0, h: 300.0 });
         assert!(!w.taken_positions(1, |_| true).iter().any(|p| !p.x.is_finite()));
         assert_eq!(w.taken_positions(1, |_| true), [egui::pos2(300.0, 400.0)]);
+    }
+
+    #[test]
+    fn a_companion_opens_once_and_upgrades_to_the_full_window() {
+        let mut w = PluginWindows::new(1);
+        assert_eq!(w.open_companion(5), Opened::New { closed: None });
+        assert_eq!(w.mode(5), Some(WindowMode::Companion));
+        assert_eq!(w.open_companion(5), Opened::Focused);
+        assert_eq!(w.mode(5), Some(WindowMode::Companion));
+        assert_eq!(w.take_focus(), [5]);
+        w.set_initial(5, WindowRect { x: 10.0, y: 10.0, w: 560.0, h: 250.0 });
+        assert_eq!(w.open(5, None), Opened::Focused);
+        assert_eq!(w.mode(5), Some(WindowMode::Full));
+        assert_eq!(w.initial(5), None);
+        assert_eq!(w.open_companion(5), Opened::Focused);
+        assert_eq!(w.mode(5), Some(WindowMode::Full));
+        w.open(6, None);
+        w.open_companion(6);
+        assert_eq!(w.mode(6), Some(WindowMode::Full));
+        assert_eq!(w.mode(99), None);
+        let mut full = PluginWindows::new(1);
+        for id in 1..=MAX_PLUGIN_WINDOWS as Id {
+            full.open(id, None);
+        }
+        assert_eq!(full.open_companion(100), Opened::New { closed: Some(1) });
+        assert_eq!(full.ids().len(), MAX_PLUGIN_WINDOWS);
+    }
+
+    #[test]
+    fn companions_close_with_the_native_editor() {
+        let mut w = PluginWindows::new(1);
+        w.open_companion(1);
+        w.open_companion(2);
+        w.open(3, None);
+        assert_eq!(w.prune_companions(&[2]), [1]);
+        assert_eq!(w.ids(), [2, 3]);
+        assert_eq!(w.prune_companions(&[]), [2]);
+        assert_eq!(w.ids(), [3]);
+    }
+
+    #[test]
+    fn companion_rect_sits_at_the_right_of_the_main_window() {
+        let main = Some(egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(1600.0, 900.0)));
+        let size = egui::vec2(COMPANION_SIZE[0], COMPANION_SIZE[1]);
+        let default = egui::pos2(100.0 + 1600.0 - 560.0 - 24.0, 140.0);
+        assert_eq!(companion_rect(None, main, &[]), (Some(default), size));
+        let saved = WindowRect { x: 300.0, y: 200.0, w: 600.0, h: 300.0 };
+        assert_eq!(companion_rect(Some(saved), main, &[]), (Some(egui::pos2(300.0, 200.0)), egui::vec2(600.0, 300.0)));
+        assert_eq!(companion_rect(Some(WindowRect { w: 0.0, ..saved }), main, &[]), (Some(default), size));
+        let stepped = default + egui::vec2(CASCADE_STEP, CASCADE_STEP);
+        assert_eq!(companion_rect(None, main, &[default]), (Some(stepped), size));
+        assert_eq!(companion_rect(None, None, &[]), (None, size));
+        let narrow = Some(egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(400.0, 900.0)));
+        assert_eq!(companion_rect(None, narrow, &[]).0.unwrap().x, 100.0);
+    }
+
+    #[test]
+    fn companion_keys_and_titles_differ_from_the_full_window() {
+        assert_ne!(companion_key("compressor"), "compressor");
+        let k = companion_key(&settings_key(&instance("vst3", Some(r"C:\VST3\A.vst3"))));
+        assert!(k.starts_with("vst3:"));
+        assert!(k.ends_with("#ai"));
+        let t = companion_title("Synth \u{2014} Keys");
+        assert!(t.contains("Synth \u{2014} Keys"));
+        assert_ne!(t, "Synth \u{2014} Keys");
     }
 }
