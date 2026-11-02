@@ -215,12 +215,16 @@ impl OndinaApp {
                 let name = plugins::plugin_label(fx);
                 let resp = widgets::effect_slot(ui, insert_slot(&name, fx.bypass, false), ui.available_width());
                 self.mark_selected(ui, &resp, fx.id);
-                let resp = resp.on_hover_text("Click: edit · Right-click: bypass or remove");
+                let resp = resp.on_hover_text("Click: open the plug-in window · Right-click: bypass or remove");
                 if resp.clicked() {
-                    self.selected_plugin = Some(fx.id);
+                    self.open_plugin(fx.id);
                 }
                 let (pid, byp) = (fx.id, fx.bypass);
                 resp.context_menu(|ui| {
+                    if ui.button("Open plug-in window").clicked() {
+                        self.open_plugin(pid);
+                        ui.close_menu();
+                    }
                     if ui.button(if byp { "Enable" } else { "Bypass" }).clicked() {
                         self.cmd(Command::SetPluginBypass { plugin_id: pid, bypass: !byp });
                         ui.close_menu();
@@ -274,10 +278,9 @@ impl OndinaApp {
         }
     }
 
-    /// The instrument slot: a menu with the parameters, the plug-in window, the instrument list, presets and the
-    /// sampler's sample.
+    /// The instrument slot: a click opens the instrument's window (or, with no instrument, the instrument list);
+    /// the right-click menu has the presets, the sampler's sample and the instrument list.
     pub(crate) fn instrument_slot(&mut self, ui: &mut egui::Ui, p: &Project, t: &Track, height: f32) {
-        let tid = t.id;
         let not_loaded = t.instrument.as_ref().and_then(|i| self.view.unloaded_vst3.get(&i.id).cloned());
         let label = match &t.instrument {
             Some(i) if i.kind == "vst3" => format!("VST3 · {}", plugins::plugin_label(i)),
@@ -288,76 +291,99 @@ impl OndinaApp {
         if not_loaded.is_some() {
             text = text.strikethrough();
         }
-        let ir = chrome::slot_menu(ui, SlotLook::INSTRUMENT, height, text, |ui| {
-            if let Some(inst) = &t.instrument {
-                let iid = inst.id;
-                if ui.selectable_label(self.selected_plugin == Some(iid), "Edit parameters").clicked() {
-                    self.selected_plugin = Some(iid);
-                    ui.close_menu();
-                }
-                if inst.kind == "vst3" {
-                    let open = ondina_dsp::vst3::open_editors().contains(&iid);
-                    let enabled = open || not_loaded.is_none();
-                    let text = if open { "Close plug-in window" } else { "Open plug-in window" };
-                    let resp = ui.add_enabled(enabled, egui::Button::new(text));
-                    if let Some(reason) = &not_loaded {
-                        resp.clone().on_disabled_hover_text(reason);
-                    }
-                    if resp.clicked() {
-                        if open {
-                            self.cmd(Command::ClosePluginEditor { plugin_id: iid });
-                        } else {
-                            self.exec(Command::OpenPluginEditor { plugin_id: iid });
-                        }
-                        ui.close_menu();
-                    }
-                }
-                let presets: Vec<_> = plugins::presets_for(&inst.kind).collect();
-                if !presets.is_empty() {
-                    ui.menu_button("Preset", |ui| {
-                        for pr in presets {
-                            if ui.selectable_label(inst.preset.as_deref() == Some(pr.name), pr.name).clicked() {
-                                self.cmd(Command::LoadPreset { plugin_id: iid, preset: pr.name.to_string() });
-                                ui.close_menu();
-                            }
-                        }
-                    });
-                }
-                if inst.kind == "sampler" {
-                    if ui.button("Load sample…").clicked() {
-                        ui.close_menu();
-                        if let Some(f) = rfd::FileDialog::new()
-                            .add_filter("Audio", &["wav", "aif", "aiff", "flac", "mp3", "ogg"])
-                            .pick_file()
-                        {
-                            self.exec(Command::SetSamplerSample { plugin_id: iid, path: f.display().to_string() });
-                        }
-                    }
-                    if let Some(s) = inst.sample.and_then(|id| p.audio_file(id)) {
-                        ui.label(RichText::new(&s.name).small().color(theme::TEXT_2));
-                    }
-                }
-                ui.separator();
-            }
-            let cur = t.instrument.as_ref().map(|i| i.kind.clone()).unwrap_or_default();
-            ui.menu_button("Instrument", |ui| {
-                for info in plugins::registry().iter().filter(|p| p.category == PluginCategory::Instrument) {
-                    if ui.selectable_label(cur == info.kind, info.name).on_hover_text(info.description).clicked() {
-                        self.cmd(Command::SetInstrument { track_id: tid, kind: info.kind.to_string(), preset: None });
-                        ui.close_menu();
-                    }
-                }
-            });
-        });
+        let gestures = "Click: open the instrument's window · Right-click: presets, sample, instrument";
         let tip = match (&not_loaded, &t.instrument) {
-            (Some(reason), _) => format!("Not loaded: {reason}"),
+            (Some(reason), _) => format!("Not loaded: {reason}\n{gestures}"),
             (None, Some(i)) => match &i.preset {
-                Some(pr) if i.kind != "vst3" => format!("Preset: {pr} · click for parameters, presets and instruments"),
-                _ => "Click for parameters, presets and instruments".into(),
+                Some(pr) if i.kind != "vst3" => format!("Preset: {pr} · {gestures}"),
+                _ => gestures.to_string(),
             },
             (None, None) => "Click to choose an instrument".into(),
         };
-        ir.response.on_hover_text(tip);
+        match &t.instrument {
+            Some(inst) => {
+                let iid = inst.id;
+                let resp = chrome::slot_button(ui, SlotLook::INSTRUMENT, height, text);
+                self.mark_selected(ui, &resp, iid);
+                let resp = resp.on_hover_text(tip);
+                if resp.clicked() {
+                    self.open_plugin(iid);
+                }
+                resp.context_menu(|ui| self.instrument_menu(ui, p, t, &not_loaded));
+            }
+            None => {
+                let ir = chrome::slot_menu(ui, SlotLook::INSTRUMENT, height, text, |ui| self.instrument_menu(ui, p, t, &not_loaded));
+                ir.response.on_hover_text(tip);
+            }
+        }
+    }
+
+    /// The instrument slot's menu: its window, presets, the sampler's sample and the instrument list.
+    fn instrument_menu(&mut self, ui: &mut egui::Ui, p: &Project, t: &Track, not_loaded: &Option<String>) {
+        let tid = t.id;
+        if let Some(inst) = &t.instrument {
+            let iid = inst.id;
+            if ui.button("Open plug-in window").clicked() {
+                self.open_plugin(iid);
+                ui.close_menu();
+            }
+            if inst.kind == "vst3" {
+                let open = ondina_dsp::vst3::open_editors().contains(&iid);
+                let enabled = open || not_loaded.is_none();
+                let text = if open { "Close native window" } else { "Open native window" };
+                let resp = ui.add_enabled(enabled, egui::Button::new(text));
+                if let Some(reason) = not_loaded {
+                    resp.clone().on_disabled_hover_text(reason);
+                }
+                if resp.clicked() {
+                    if open {
+                        self.cmd(Command::ClosePluginEditor { plugin_id: iid });
+                    } else {
+                        self.exec(Command::OpenPluginEditor { plugin_id: iid });
+                    }
+                    ui.close_menu();
+                }
+                if ui.button("Generic controls").on_hover_text("Ondina's window with a knob for every parameter").clicked() {
+                    self.open_generic_window(iid);
+                    ui.close_menu();
+                }
+            }
+            let presets: Vec<_> = plugins::presets_for(&inst.kind).collect();
+            if !presets.is_empty() {
+                ui.menu_button("Preset", |ui| {
+                    for pr in presets {
+                        if ui.selectable_label(inst.preset.as_deref() == Some(pr.name), pr.name).clicked() {
+                            self.cmd(Command::LoadPreset { plugin_id: iid, preset: pr.name.to_string() });
+                            ui.close_menu();
+                        }
+                    }
+                });
+            }
+            if inst.kind == "sampler" {
+                if ui.button("Load sample…").clicked() {
+                    ui.close_menu();
+                    if let Some(f) = rfd::FileDialog::new()
+                        .add_filter("Audio", &["wav", "aif", "aiff", "flac", "mp3", "ogg"])
+                        .pick_file()
+                    {
+                        self.exec(Command::SetSamplerSample { plugin_id: iid, path: f.display().to_string() });
+                    }
+                }
+                if let Some(s) = inst.sample.and_then(|id| p.audio_file(id)) {
+                    ui.label(RichText::new(&s.name).small().color(theme::TEXT_2));
+                }
+            }
+            ui.separator();
+        }
+        let cur = t.instrument.as_ref().map(|i| i.kind.clone()).unwrap_or_default();
+        ui.menu_button("Instrument", |ui| {
+            for info in plugins::registry().iter().filter(|p| p.category == PluginCategory::Instrument) {
+                if ui.selectable_label(cur == info.kind, info.name).on_hover_text(info.description).clicked() {
+                    self.cmd(Command::SetInstrument { track_id: tid, kind: info.kind.to_string(), preset: None });
+                    ui.close_menu();
+                }
+            }
+        });
     }
 
     /// The audio effect slots of `owner` (a track or the master) and the "+ Add" slot, `add_h` tall.
@@ -371,10 +397,7 @@ impl OndinaApp {
             let not_loaded = self.view.unloaded_vst3.get(&fx.id).cloned();
             let resp = widgets::effect_slot(ui, insert_slot(&label, fx.bypass, not_loaded.is_some()), ui.available_width());
             self.mark_selected(ui, &resp, fx.id);
-            let mut tip = String::from("Click: edit · Right-click: bypass, move, remove");
-            if fx.kind == "vst3" {
-                tip.push_str(" · Double-click: plug-in window");
-            }
+            let mut tip = String::from("Click: open the plug-in window · Right-click: bypass, move, remove");
             if fx.bypass {
                 tip = format!("Bypassed · {tip}");
             }
@@ -383,21 +406,17 @@ impl OndinaApp {
             }
             let resp = resp.on_hover_text(tip);
             if resp.clicked() {
-                self.selected_plugin = Some(fx.id);
-            }
-            if resp.double_clicked() && fx.kind == "vst3" {
-                match &not_loaded {
-                    Some(reason) => self.status = format!("⚠ Plug-in not loaded: {reason}"),
-                    None => {
-                        self.exec(Command::OpenPluginEditor { plugin_id: fx.id });
-                    }
-                }
+                self.open_plugin(fx.id);
             }
             let moves = (i > 0, i + 1 < inserts.len());
             let (pid, byp, vst3) = (fx.id, fx.bypass, fx.kind == "vst3");
             resp.context_menu(|ui| {
-                if vst3 && ui.add_enabled(not_loaded.is_none(), egui::Button::new("Open plug-in window")).clicked() {
-                    self.exec(Command::OpenPluginEditor { plugin_id: pid });
+                if ui.button("Open plug-in window").clicked() {
+                    self.open_plugin(pid);
+                    ui.close_menu();
+                }
+                if vst3 && ui.button("Generic controls").on_hover_text("Ondina's window with a knob for every parameter").clicked() {
+                    self.open_generic_window(pid);
                     ui.close_menu();
                 }
                 if ui.button(if byp { "Enable" } else { "Bypass" }).clicked() {
@@ -423,10 +442,14 @@ impl OndinaApp {
         });
     }
 
-    /// An accent outline on the slot of the plug-in whose parameters are open.
+    /// An accent outline on the slot of the selected plug-in, and an accent dot while its window is open.
     fn mark_selected(&self, ui: &egui::Ui, resp: &egui::Response, pid: Id) {
         if self.selected_plugin == Some(pid) {
             ui.painter().rect_stroke(resp.rect, Rounding::same(theme::R_SM), Stroke::new(1.0_f32, theme::ACCENT));
+        }
+        if self.plugin_windows.is_open(pid) {
+            let at = egui::pos2(resp.rect.right() - 6.0, resp.rect.center().y);
+            ui.painter().circle_filled(at, 2.5, theme::ACCENT);
         }
     }
 

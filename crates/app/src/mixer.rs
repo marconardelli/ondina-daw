@@ -7,7 +7,7 @@ use ondina_core::model::*;
 use ondina_core::plugins::{self, PluginCategory};
 use serde_json::Value;
 
-use crate::app::{LeftTab, OndinaApp};
+use crate::app::OndinaApp;
 use crate::chrome::{self, SlotLook};
 use crate::inspector_strip::{clear_clip, db_text};
 use crate::theme;
@@ -580,14 +580,10 @@ impl OndinaApp {
         }
     }
 
-    /// A click on a plug-in of the strip selected it: show its parameters in the Inspector.
+    /// A click on a plug-in of the strip opened its window: select the strip's track too.
     fn reveal_plugin(&mut self, before: Option<Id>, id: Id) {
-        if self.selected_plugin != before && self.selected_plugin.is_some() {
-            if id != MASTER_ID {
-                self.selected_track = Some(id);
-            }
-            self.left = LeftTab::Inspector;
-            self.show_left = true;
+        if self.selected_plugin != before && self.selected_plugin.is_some() && id != MASTER_ID {
+            self.selected_track = Some(id);
         }
     }
 

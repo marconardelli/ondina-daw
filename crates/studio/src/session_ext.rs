@@ -589,7 +589,7 @@ impl Session {
             OpenPluginEditor { plugin_id } => {
                 let Some(p) = self.project.find_plugin(*plugin_id) else { return Some(Err("plug-in not found".into())) };
                 if p.kind != "vst3" {
-                    return Some(Err("built-in plug-ins are edited in the Inspector; native editor windows are for VST3 plug-ins".into()));
+                    return Some(Err("built-in plug-ins open in Ondina's plug-in window; native editor windows are for VST3 plug-ins".into()));
                 }
                 // a native window would load the DLL that the engine keeps out after an MCP or assistant open
                 if let Some(s) = p.vst3_path.as_deref().filter(|s| self.is_untrusted_vst3(s)) {
