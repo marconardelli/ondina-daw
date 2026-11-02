@@ -74,7 +74,7 @@ Every row is available both in the GUI and as MCP tools (full list in [`MCP_TOOL
 | Video | linked movie (local file) with offset, movie audio, SMPTE timecode, video window, export with soundtrack (.mp4, .mov, .mkv, .m4v) | `load_movie` `set_frame_rate` `extract_movie_frame` `export_movie` |
 | Built-in instruments | Analog Synth, FM Synth, Drum Synth, Sampler, Tonewheel Organ, Plucked String | `set_instrument` `set_plugin_params` |
 | Built-in effects | 19 audio effects (EQ and a four-band dynamic EQ, dynamics with a de-esser, delay, reverb, modulation, distortion, filters, utility with a three-band stereo imager) + 4 MIDI effects | `add_effect` `add_midi_effect` |
-| VST3 plug-ins | scan and host third-party VST3 instruments and effects (`.vst3` bundles on local drives only; MCP clients and the assistant load them, also from projects they open, only from the standard VST3 folders and the folders added in the library), native editor windows, parameters set with `set_plugin_param` (not automatable yet), state saved in the project | `scan_vst3` `add_vst3` `open_plugin_editor` `set_plugin_param` |
+| VST3 plug-ins | scan and host third-party VST3 instruments and effects (`.vst3` bundles on local drives only; MCP clients and the assistant load them, also from projects they open, only from the standard VST3 folders and the folders added in the library), native editor windows, parameters set with `set_plugin_param` (not automatable yet), state saved in the project; a click on the slot opens the plug-in's native editor window or Ondina's generic window | `scan_vst3` `add_vst3` `open_plugin_editor` `set_plugin_param` |
 | Mastering and loudness | integrated LUFS, true peak, LRA, spectrum, correlation, advice; automatic mastering | `analyze_mix` `auto_master` |
 | Bounce and export | WAV 16/24/32-float with dither, peak or loudness normalization (-14/-16/-23 LUFS or any target from -30 to -6, with a true-peak ceiling), reverb and delay tails rendered until they fade (or an exact length with tail_sec), MIDI, bounce in place, multichannel surround | `bounce` `export_midi` `bounce_in_place` |
 
@@ -147,10 +147,20 @@ extension: Ondina opens both.
   selection by the snap step (1/16 with snap off), ↑/↓ by a semitone, Shift+↑/↓ by an octave; Alt+←/→ shorten or lengthen the selection by the snap step (never below one step); double-click or
   right-click deletes a single note; drag in the velocity lane to set velocities: every note the stroke crosses gets the value along the stroke, and a stroke that changes nothing leaves no undo step; below it the controller lane shows one controller of the region (pick it in the selector on the left, which also shows how many events each one has): the sustain pedal as bars where it is down, the others as a stepped line; drag to draw one event per snap step (1/32 with snap off), right-drag to erase, click to set or erase a single step; the curve after the stroke goes back to what it was, each stroke is one undo step and the CC button closes the lane (the built-in instruments respond only to sustain, which holds the notes on the Analog Synth, FM Synth, Tonewheel Organ, Plucked String and Sampler, while the Drum Synth ignores it; VST3 instruments get every controller); the selection stays on the same notes after Undo/Redo and assistant or MCP edits; the view opens on the region's notes (double-click the region to frame them again), the wheel scrolls pitch at the same speed both ways, Shift+wheel scrolls time, Ctrl+wheel zooms time around the pointer, Ctrl+Shift+wheel zooms pitch, and the playhead follows the repeats of a looped region.
 - **Score**: switch the editor to 𝄞 Score to see the selected region as notation, export MusicXML, assign lyrics.
-- **Mixer and inspector**: volume, pan, sends, inserts, plug-in parameters and native VST3 windows; third-party
-  plug-ins show their own name, a double-click on a VST3 slot opens its window, and plug-ins that are not loaded are
-  struck through with the reason on hover; the inspector's Region section renames and recolors the selected region
-  and sets its loop count and velocity offset.
+- **Mixer and inspector**: volume, pan, sends, inserts and plug-ins; third-party plug-ins show their own name, and
+  plug-ins that are not loaded are struck through with the reason on hover; the inspector shows the selected
+  plug-in as one row (name, track, Bypass, Open) and its Region section renames and recolors the selected region and
+  sets its loop count and velocity offset.
+- **Plug-in windows**: a click on an insert, instrument or MIDI FX slot (mixer or inspector) opens that plug-in in a
+  window of its own, separate and resizable, that comes back where you left it (also after a restart); a second
+  click brings it to the front, several stay open together (up to 8), Esc or the X closes it and it closes by itself
+  when the plug-in is removed. The header shows the plug-in and its track, Bypass, the factory presets, **Default**
+  (every parameter back to its default in one undo step) and the AI bar with its ready-made requests; below, every
+  parameter is a knob (log scale for frequencies and long times, value with its unit, Shift for fine steps,
+  double-click for the default, right-click to type a value) or a selector. A loaded VST3 opens its own editor; one
+  without it, or not loaded, opens Ondina's generic window with a knob per parameter and a filter by name
+  (right-click → **Generic controls** opens it anyway). Space and Ctrl+Z work in the window too; Settings → Display →
+  *Open plug-ins in separate windows* off keeps them inside the main window.
 - **Unsaved changes**: when the project has unsaved changes (the • in the title bar), closing the window, New,
   Open or a recent project first asks *Save*, *Don't Save* or *Cancel*. Esc cancels, Enter saves. A recording in
   progress is stopped and kept before the question.

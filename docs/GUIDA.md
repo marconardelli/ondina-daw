@@ -536,7 +536,7 @@ Da MCP e dall'assistente: il tool `add_effect` con `kind: "stereo_imager"` lo ag
 `track_id: 0` sul master) e `set_plugin_params` ne cambia i parametri (`low_freq`, `high_freq`,
 `low_width`, `mid_width`, `high_width`, `mono_bass`, `balance`, `listen`, `output`).
 
-Nella barra **Ask the AI** in fondo ai parametri ci sono tre richieste pronte: *Mono the low end*,
+Nella barra **Ask the AI** nell'intestazione della finestra del plug-in ci sono tre richieste pronte: *Mono the low end*,
 *Wider without losing mono* e *Check mono compatibility*. L'assistente legge la correlazione con
 `analyze_mix` prima e dopo, e risponde dicendo quali parametri ha cambiato, oppure perché non serviva
 cambiarli.
@@ -567,7 +567,7 @@ Da MCP e dall'assistente: il tool `add_effect` con `kind: "dynamic_eq"` lo aggiu
 `set_plugin_params` ne cambia i parametri (`b1_on`, `b1_type`, `b1_freq`, `b1_gain`, `b1_q`,
 `b1_threshold`, `b1_range` e gli stessi per le bande 2, 3 e 4, poi `attack`, `release`, `output`).
 
-Nella barra **Ask the AI** in fondo ai parametri ci sono tre richieste pronte: *Clean up the muddy
+Nella barra **Ask the AI** nell'intestazione della finestra del plug-in ci sono tre richieste pronte: *Clean up the muddy
 frequencies*, *Tame harsh resonances* e *More air on the vocal*. L'assistente sceglie la frequenza a
 orecchio (`analyze_mix` misura solo bassi, medi e acuti) e poi spiega quali bande ha cambiato e perché.
 
@@ -640,10 +640,49 @@ percorso non ha estensione, Ondina la aggiunge.
 - Dai menu e dalle finestre di salvataggio dell'app puoi continuare a scegliere qualsiasi cartella,
   anche su un NAS. Un progetto aperto da una cartella di rete si risalva con Ctrl+S, non dall'assistente.
 
+## Finestre dei plug-in
+
+Ogni plug-in (strumenti, effetti ed effetti MIDI di Ondina, plug-in VST3) si regola nella sua finestra.
+
+- **Aprire**: un clic su uno slot di effetto (nel mixer, nel channel strip dell'inspector, sul master), sullo slot
+  dello strumento o su uno slot MIDI FX apre la finestra di quel plug-in. Sullo slot dello strumento il menu
+  (preset, campione del Sampler, cambio di strumento) è sul clic destro; se la traccia non ha ancora uno strumento
+  il clic apre l'elenco degli strumenti. Anche il pulsante **Open** nella riga del plug-in selezionato
+  nell'inspector, e la voce **Open plug-in window** del clic destro, aprono la finestra.
+- Un secondo clic sullo stesso slot porta la finestra in primo piano (anche se era ridotta a icona), senza
+  aprirne un'altra. Puoi tenere aperte più finestre insieme, al massimo 8: oltre, si chiude quella che hai usato
+  meno di recente e la barra di stato lo dice. Uno slot con la finestra aperta ha un pallino azzurro a destra.
+- **Chiudere**: con la X della finestra o con Esc (se stai scrivendo un valore, Esc annulla prima la scrittura).
+  La finestra si chiude da sola quando togli il plug-in, quando annulli la sua aggiunta, quando cambi strumento o
+  quando apri un altro progetto.
+- La finestra è separata dalla principale: la puoi spostare anche su un altro monitor e ridimensionare. Riaprendo
+  lo stesso plug-in torna dov'era, anche dopo aver riavviato Ondina (la posizione si ricorda per tipo di plug-in,
+  e per i VST3 per bundle). Se il driver grafico non regge più finestre, togli **Settings → Display → Open
+  plug-ins in separate windows**: le finestre si aprono dentro quella principale.
+- **Intestazione**: colore e nome della traccia, nome del plug-in (passaci sopra per la descrizione),
+  **Bypass**, il menu dei preset di fabbrica, **Default** e, per i VST3, **Native window**. **Default** riporta
+  tutti i parametri al valore iniziale con un solo passo di annulla. Sotto c'è la barra **Ask the AI** (vedi
+  sotto).
+- **Manopole**: trascina in su o in giù; con Shift il movimento è dieci volte più fine. Sotto la manopola leggi
+  il valore con la sua unità (si colora mentre trascini), e passandoci sopra col mouse il tooltip ripete nome e
+  valore. Frequenze e tempi lunghi girano su una scala logaritmica. Doppio clic: valore di default. Clic destro:
+  compare un campo con il valore; scrivi per esempio `2.4k`, `-6` o `250ms` e premi Invio (il valore resta
+  nell'intervallo del parametro), Esc o un clic altrove annullano. Ogni trascinamento è un passo di annulla.
+- I parametri a scelta (forme d'onda, modi, on/off) sono pulsanti affiancati o un menu. I parametri con lo stesso
+  inizio di nome stanno insieme sotto un titolo (per esempio *Band 1*, *Filter*, *Low Shelf*). Allargando la
+  finestra le manopole si ridistribuiscono; se non ci stanno, la vista scorre.
+- **VST3**: un clic sullo slot di un VST3 caricato apre la sua finestra. Se il plug-in non è caricato, non ha una
+  finestra sua o non riesce ad aprirla, si apre la finestra di Ondina con una manopola per parametro (valori da 0 a
+  1), un filtro per nome e il motivo scritto in rosso. Con il tasto destro → **Generic controls** apri la finestra
+  di Ondina anche per un VST3 che ha la sua.
+- Con la finestra del plug-in in primo piano, Space avvia e ferma la riproduzione e Ctrl+Z / Ctrl+Shift+Z /
+  Ctrl+Y annullano e ripetono, come nella finestra principale.
+- Le modifiche fatte dall'assistente o da un agente MCP si vedono subito sulle manopole della finestra aperta.
+
 ## Barra AI dei plug-in
 
-In fondo ai parametri di ogni plug-in, nell'inspector, c'è la barra **Ask the AI**: vale per gli strumenti, gli
-effetti e gli effetti MIDI di Ondina e per i plug-in VST3.
+Nell'intestazione della finestra di ogni plug-in c'è la barra **Ask the AI**: vale per gli strumenti, gli
+effetti e gli effetti MIDI di Ondina e per la finestra generica dei plug-in VST3.
 
 - Scrivi cosa vuoi nella casella ("più aria sulla voce", "togli il rimbombo sotto i 200 Hz", "un pad caldo che si
   apre lentamente") e premi Invio o **Ask**. L'assistente regola proprio quel plug-in.
@@ -651,11 +690,11 @@ effetti e gli effetti MIDI di Ondina e per i plug-in VST3.
   frequencies*, per il limiter *Bring the master to -14 LUFS*, per gli strumenti *Design a sound* e altre.
 - L'assistente riceve con la richiesta il plug-in, la traccia su cui sta, il resto della catena e tutti i
   parametri con valori e intervalli (per un VST3 i primi 64). Quando serve misura il mix con `analyze_mix`.
-- Cambia i parametri solo con i comandi della sessione: i cursori del pannello si muovono subito e tutto quello
+- Cambia i parametri solo con i comandi della sessione: le manopole della finestra si muovono subito e tutto quello
   che ha fatto per una richiesta si annulla con un solo Ctrl+Z (o **Undo AI edit**).
 - Nel pannello dell'assistente risponde in poche righe: quali parametri ha cambiato e perché.
-- Funziona con Claude e con il modello locale; **Stop** interrompe. Senza modello la barra è disattivata, e
-  mentre l'assistente lavora i bottoni aspettano.
+- Funziona con Claude e con il modello locale; mentre l'assistente lavora, accanto ad **Ask** compare **Stop**,
+  che lo interrompe. Senza modello la barra è disattivata, e mentre l'assistente lavora i bottoni aspettano.
 - Un agente MCP legge le stesse informazioni con `get_plugin`: descrizione, valori, intervalli e default dei
   parametri, traccia e slot.
 
@@ -690,10 +729,12 @@ elenco.
 - Nel mixer e nell'inspector ogni VST3 si vede col suo nome: quello che il plug-in ha dato quando l'hai
   aggiunto, oppure il nome del bundle. Se il nome è troppo lungo per lo slot, passandoci sopra col mouse lo leggi
   intero.
-- Nel mixer un doppio clic su un insert VST3 o sullo strumento VST3 apre la finestra del plug-in. Sull'insert
-  puoi anche usare il tasto destro → **Open plug-in window**. Il clic singolo seleziona il plug-in come prima.
+- Nel mixer e nell'inspector un clic su un insert VST3 o sullo strumento VST3 apre la finestra del plug-in (la
+  sua, oppure quella generica di Ondina se non ne ha una). Con il tasto destro → **Generic controls** apri la
+  finestra di Ondina con una manopola per parametro; vedi *Finestre dei plug-in*.
 - Un plug-in che non viene caricato è barrato e in grigio, nel mixer e nell'inspector: passandoci sopra col
-  mouse leggi il motivo. La sua finestra non si apre.
+  mouse leggi il motivo. La sua finestra non si apre: il clic sullo slot apre la finestra generica di Ondina,
+  con il motivo scritto nell'intestazione.
 
 ## Assistente con OpenAI, Gemini o Kimi
 
@@ -896,6 +937,7 @@ cancellata. La finestra di recupero compare comunque se all'avvio trova copie ri
 | Alt+← / → | accorcia / allunga le note selezionate di un passo di snap |
 | Alt+trascinamento | copia le note trascinate (piano roll) |
 | Esc (mentre trascini) | annulla il trascinamento |
+| Esc (in una finestra di plug-in) | chiude la finestra |
 | A | mostra / nasconde l'automazione nell'arrangiamento |
 
 `,` e `.` da metà battuta portano all'inizio della battuta; durante la riproduzione, a meno di mezzo beat da una
