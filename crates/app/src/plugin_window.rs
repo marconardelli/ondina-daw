@@ -430,7 +430,9 @@ impl OndinaApp {
         };
         // two windows of the same kind draw the same widgets: their ids (and the text being typed) must differ
         ui.push_id(("plugin-window", id), |ui| {
-            if !ui.ctx().wants_keyboard_input() {
+            // a window inside the main one shares its keys, which the main window already handled this frame
+            let own_keys = ui.ctx().viewport_id() != egui::ViewportId::ROOT;
+            if own_keys && !ui.ctx().wants_keyboard_input() {
                 match ui.input_mut(window_shortcut) {
                     Some(WindowKey::PlayStop) => self.toggle_play(),
                     Some(WindowKey::Undo) => self.cmd(Command::Undo {}),
