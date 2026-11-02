@@ -1,6 +1,8 @@
-//! The AI bar at the bottom of every plug-in's parameters: a request box with its send button and the plug-in's
-//! ready-made requests. One component for the built-in plug-ins and the generic VST3 editor; the request goes to the
-//! assistant with the plug-in's settings as context.
+//! The AI bar drawn in the header of every plug-in window: a request box with its send button (Stop while the
+//! assistant works) and the plug-in's ready-made requests. One component for the built-in plug-ins and the generic
+//! VST3 window; the request goes to the assistant with the plug-in's settings as context.
+
+use std::sync::atomic::Ordering;
 
 use eframe::egui;
 use ondina_core::model::{Id, Project};
@@ -18,8 +20,14 @@ fn bar_request(pressed: bool, blocked: bool, text: &str) -> Option<String> {
     (pressed && !blocked && !t.is_empty()).then(|| t.to_string())
 }
 
+/// What the bar sends to the assistant: the request and, as context, the plug-in's id, kind, track and role and every
+/// parameter with its value and range (None when the plug-in is gone).
+fn bar_ask(project: &Project, pid: Id, request: String) -> (String, Option<String>) {
+    (request, prompts::plugin_bar_context(project, pid))
+}
+
 impl OndinaApp {
-    /// The AI bar of the plug-in `pid`, drawn by plugin_editor and vst3_editor.
+    /// The AI bar of the plug-in `pid`, drawn in the header of every plug-in window.
     pub(crate) fn plugin_ai_bar(&mut self, ui: &mut egui::Ui, project: &Project, pid: Id) {
         let Some(inst) = project.find_plugin(pid) else {
             return;
@@ -39,6 +47,9 @@ impl OndinaApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // right to left: the button is laid out first and the box takes the rest of the row
                 let clicked = self.ai_button(ui, "Ask");
+                if controls.stop && ui.button("Stop").on_hover_text("Stop the assistant").clicked() {
+                    self.ai.cancel.store(true, Ordering::Relaxed);
+                }
                 let hint = if controls.prompt { "Ask the AI to change this plug-in… (Enter)" } else { "Connect a model in Settings to ask the AI" };
                 let resp = ui.add_enabled(
                     controls.prompt,
@@ -60,7 +71,8 @@ impl OndinaApp {
         });
         ui.data_mut(|d| d.insert_temp(draft_id, text));
         if let Some(request) = send {
-            self.ask_ai_with(request, prompts::plugin_bar_context(project, pid));
+            let (request, context) = bar_ask(project, pid, request);
+            self.ask_ai_with(request, context);
         }
     }
 }
@@ -79,5 +91,23 @@ mod tests {
         assert_eq!(bar_request(true, true, "x"), None);
         assert_eq!(bar_request(true, false, "   "), None);
         assert_eq!(bar_request(false, false, "x"), None);
+    }
+
+    #[test]
+    fn bar_request_carries_the_plugin_context() {
+        use ondina_core::command::Command;
+        use ondina_studio::{Session, Source};
+        let mut s = Session::new(false);
+        let add = |s: &mut Session, name: &str, args: serde_json::Value| s.execute(Command::from_tool_call(name, &args).unwrap(), Source::Gui).unwrap();
+        let t = add(&mut s, "add_track", serde_json::json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
+        let fx = add(&mut s, "add_effect", serde_json::json!({"track_id": t, "kind": "compressor"}))["plugin_id"].as_u64().unwrap();
+        let (request, context) = bar_ask(&s.project, fx, "more glue".into());
+        assert_eq!(request, "more glue");
+        assert_eq!(context, prompts::plugin_bar_context(&s.project, fx));
+        let context = context.unwrap();
+        for part in [format!("AI bar of plug-in {fx}"), "Vox".to_string(), "- threshold".to_string()] {
+            assert!(context.contains(&part), "{part} missing from {context}");
+        }
+        assert_eq!(bar_ask(&s.project, 999_999, "x".into()).1, None);
     }
 }
