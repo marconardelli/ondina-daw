@@ -2935,3 +2935,24 @@ fn session_players_return_a_seed_that_repeats_the_part() {
     ok(&mut s, "undo", json!({}));
     assert!(s.project.find_region(second).is_none(), "one undo removes the last generated part");
 }
+
+#[test]
+fn dynamic_eq_quick_actions_are_covered_by_the_local_tools() {
+    use ondina_studio::local_ai::LOCAL_TOOLS;
+    use ondina_studio::prompts::DYNAMIC_EQ_ACTIONS;
+    let labels: Vec<&str> = DYNAMIC_EQ_ACTIONS.iter().map(|a| a.0).collect();
+    assert_eq!(labels, ["Clean up the muddy frequencies", "Tame harsh resonances", "More air on the vocal"]);
+    let all: Vec<String> = tool_specs().into_iter().map(|t| t.name).collect();
+    for (label, text) in DYNAMIC_EQ_ACTIONS {
+        for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            if all.iter().any(|t| t == word) {
+                assert!(LOCAL_TOOLS.contains(&word), "{word}, named by {label:?}, is not offered to the local model");
+            }
+        }
+        for tool in ["get_plugin", "set_plugin_params", "analyze_mix"] {
+            assert!(LOCAL_TOOLS.contains(&tool), "{tool} is needed by {label:?}");
+        }
+        assert!(text.contains("explain in a few lines which bands you changed and why"), "{label:?} must ask for an explanation");
+        assert!(text.contains("by ear"), "{label:?} must say the frequency is chosen by ear");
+    }
+}
