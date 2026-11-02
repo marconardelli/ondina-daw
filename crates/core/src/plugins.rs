@@ -198,7 +198,7 @@ pub static REGISTRY: &[PluginInfo] = &[
         name: "Channel EQ",
         category: Effect,
         group: "EQ",
-        description: "Six-band parametric equalizer: high-pass, low shelf, two peaking bands, high shelf, low-pass.",
+        description: "Six-band parametric equalizer: high-pass, low shelf, two peaking bands, high shelf, low-pass. High Pass and Low Pass (12 dB per octave, turned on by their switches) cut below or above their frequency. Low Shelf and High Shelf raise or lower everything below or above their Freq by their Gain. Mid 1 and Mid 2 are bells at Freq that add Gain dB, as narrow as their Q (a higher Q is narrower). A shelf or mid band at 0 dB does nothing. Output Gain is applied last.",
         params: &[
             c("hp_on", "High Pass", 0.0, ONOFF),
             p("hp_freq", "HP Freq", 20.0, 1000.0, 80.0, "Hz"),
@@ -706,6 +706,15 @@ pub fn find_patch(name: &str) -> Option<&'static Patch> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn channel_eq_description_explains_its_bands() {
+        let d = find("channel_eq").unwrap().description;
+        assert!(d.starts_with("Six-band parametric equalizer"), "{d}");
+        for word in ["Mid 1", "Q", "High Pass", "0 dB does nothing", "Output Gain"] {
+            assert!(d.contains(word), "missing {word:?} in {d}");
+        }
+    }
 
     fn inst(kind: &str, preset: Option<&str>, path: Option<&str>) -> crate::model::PluginInstance {
         crate::model::PluginInstance {
