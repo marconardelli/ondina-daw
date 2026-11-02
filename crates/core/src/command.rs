@@ -180,7 +180,7 @@ pub enum Command {
     LoadPreset { plugin_id: Id, preset: String },
     /// Bypass or enable a plug-in.
     SetPluginBypass { plugin_id: Id, bypass: bool },
-    /// Get a plug-in with all its parameter values and their ranges.
+    /// Get a plug-in with its description, all its parameter values with their ranges and defaults, and where it sits: track (id, name, kind; id 0 and kind "master" for the master channel), slot ("instrument", "midi_fx" or "insert") and index in that chain.
     GetPlugin { plugin_id: Id },
     /// Load an audio file into a Sampler instrument. The file must be on a local drive (no network shares).
     SetSamplerSample { plugin_id: Id, path: String },

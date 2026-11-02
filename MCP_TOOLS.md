@@ -278,7 +278,7 @@ Bypass or enable a plug-in.
 Parameters: `bypass, plugin_id`
 
 ### `get_plugin` · read-only
-Get a plug-in with all its parameter values and their ranges.
+Get a plug-in with its description, all its parameter values with their ranges and defaults, and where it sits: track (id, name, kind; id 0 and kind "master" for the master channel), slot ("instrument", "midi_fx" or "insert") and index in that chain.
 
 Parameters: `plugin_id`
 
