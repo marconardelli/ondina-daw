@@ -3301,3 +3301,77 @@ fn assistant_changes_to_the_stereo_imager_are_one_undo_step() {
     run(&mut s, "redo", json!({}), Source::Gui);
     assert_eq!(values(&mut s), after);
 }
+
+/// The parameter values of plug-in `fx` as get_plugin reports them (only the parameters, never the whole result).
+fn plugin_values(s: &mut Session, fx: u64) -> Vec<(String, f64)> {
+    let info = ok(s, "get_plugin", json!({"plugin_id": fx}));
+    info["params"].as_array().unwrap().iter().map(|p| (p["id"].as_str().unwrap().to_string(), p["value"].as_f64().unwrap())).collect()
+}
+
+fn plugin_value(s: &mut Session, fx: u64, id: &str) -> f64 {
+    plugin_values(s, fx).into_iter().find(|(k, _)| k == id).unwrap_or_else(|| panic!("no {id}")).1
+}
+
+#[test]
+fn plugin_window_default_is_one_undo_step() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
+    let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "compressor"}))["plugin_id"].as_u64().unwrap();
+    ok(&mut s, "set_plugin_param", json!({"plugin_id": fx, "param": "threshold", "value": -30}));
+    ok(&mut s, "set_plugin_param", json!({"plugin_id": fx, "param": "ratio", "value": 8}));
+    let defaults = ondina_core::plugins::default_params(s.project.find_plugin(fx).unwrap());
+    s.execute(Command::SetPluginParams { plugin_id: fx, params: defaults }, Source::Gui).unwrap();
+    let info = ondina_core::plugins::find("compressor").unwrap();
+    for pi in info.params {
+        assert!((plugin_value(&mut s, fx, pi.id) - pi.default as f64).abs() < 1e-6, "{} is not at its default", pi.id);
+    }
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!((plugin_value(&mut s, fx, "threshold"), plugin_value(&mut s, fx, "ratio")), (-30.0, 8.0), "one undo brings both back");
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(plugin_value(&mut s, fx, "threshold"), -30.0);
+    assert!((plugin_value(&mut s, fx, "ratio") - info.params.iter().find(|p| p.id == "ratio").unwrap().default as f64).abs() < 1e-6);
+}
+
+#[test]
+fn plugin_window_two_drags_are_two_undo_steps() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
+    let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "compressor"}))["plugin_id"].as_u64().unwrap();
+    // the merge keys have the format of the window's knob_merge_key: "pw{plugin}:{param}#{gesture}"
+    let set = |s: &mut Session, v: f32, key: &str| {
+        s.execute_coalesced(Command::SetPluginParam { plugin_id: fx, param: "threshold".into(), value: v }, key).unwrap();
+    };
+    let first = format!("pw{fx}:threshold#1");
+    let second = format!("pw{fx}:threshold#2");
+    for v in [-20.0, -24.0, -28.0] {
+        set(&mut s, v, &first);
+    }
+    for v in [-10.0, -12.0] {
+        set(&mut s, v, &second);
+    }
+    assert_eq!(plugin_value(&mut s, fx, "threshold"), -12.0);
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(plugin_value(&mut s, fx, "threshold"), -28.0, "the second drag is its own step");
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    let default = ondina_core::plugins::find("compressor").unwrap().params.iter().find(|p| p.id == "threshold").unwrap().default;
+    assert_eq!(plugin_value(&mut s, fx, "threshold"), default as f64, "the first drag is one step");
+}
+
+#[test]
+fn plugin_window_ai_and_mcp_changes_are_undoable() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
+    let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "compressor"}))["plugin_id"].as_u64().unwrap();
+    let before = plugin_values(&mut s, fx);
+    let params = [("threshold".to_string(), -30.0f32), ("ratio".to_string(), 6.0)].into_iter().collect();
+    s.execute(Command::SetPluginParams { plugin_id: fx, params }, Source::Ai).unwrap();
+    assert!(s.last_undo_is_ai());
+    // the window reads the project the session publishes every frame: these are the values its knobs show
+    assert_eq!((plugin_value(&mut s, fx, "threshold"), plugin_value(&mut s, fx, "ratio")), (-30.0, 6.0));
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(plugin_values(&mut s, fx), before);
+    ok(&mut s, "set_plugin_param", json!({"plugin_id": fx, "param": "knee", "value": 12}));
+    assert_eq!(plugin_value(&mut s, fx, "knee"), 12.0);
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(plugin_values(&mut s, fx), before);
+}
