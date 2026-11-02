@@ -3166,3 +3166,52 @@ fn dynamic_eq_panel_gets_its_quick_actions_and_full_context() {
     let bar = prompts::plugin_bar_context(&s.project, fx).expect("the dynamic EQ has a bar context");
     assert!(bar.contains("set_plugin_params") && bar.contains(&ctx), "{bar}");
 }
+
+#[test]
+fn stereo_imager_quick_actions_are_covered_by_the_local_tools() {
+    use ondina_studio::local_ai::LOCAL_TOOLS;
+    use ondina_studio::prompts::STEREO_IMAGER_ACTIONS;
+    let labels: Vec<&str> = STEREO_IMAGER_ACTIONS.iter().map(|a| a.0).collect();
+    assert_eq!(labels, ["Mono the low end", "Wider without losing mono", "Check mono compatibility"]);
+    let all: Vec<String> = tool_specs().into_iter().map(|t| t.name).collect();
+    for (label, text) in STEREO_IMAGER_ACTIONS {
+        for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            if all.iter().any(|t| t == word) {
+                assert!(LOCAL_TOOLS.contains(&word), "{word}, named by {label:?}, is not offered to the local model");
+            }
+        }
+        for tool in ["analyze_mix", "set_plugin_params"] {
+            assert!(text.contains(tool), "{label:?} must name {tool}");
+            assert!(LOCAL_TOOLS.contains(&tool), "{tool} is needed by {label:?}");
+        }
+        assert!(text.contains("stereo correlation"), "{label:?} must read the stereo correlation");
+        assert!(text.contains("which parameters you changed"), "{label:?} must ask for an explanation");
+    }
+    let check = STEREO_IMAGER_ACTIONS[2].1;
+    assert!(check.contains("change nothing") && check.contains("why nothing needed changing"), "{check}");
+}
+
+#[test]
+fn stereo_imager_panel_gets_its_quick_actions_and_full_context() {
+    use ondina_studio::prompts;
+    assert_eq!(prompts::plugin_quick_actions("stereo_imager"), prompts::STEREO_IMAGER_ACTIONS);
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Pad"}))["track_id"].as_u64().unwrap();
+    let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "stereo_imager"}))["plugin_id"].as_u64().unwrap();
+    let ctx = prompts::plugin_context(&s.project, fx).expect("the stereo imager has a context");
+    for want in [format!("Plug-in {fx}: Stereo Imager (kind stereo_imager)"), "insert at index 0".to_string(), format!("track {t} \"Pad\" (audio track)")] {
+        assert!(ctx.contains(&want), "missing {want:?} in:\n{ctx}");
+    }
+    for pi in ondina_core::plugins::find("stereo_imager").unwrap().params {
+        assert!(ctx.contains(&format!("- {} \"{}\" = ", pi.id, pi.name)), "{} missing from the context", pi.id);
+    }
+    for want in ["40..1000 Hz", "1000..16000 Hz", "0..2 x", "-1..1", "-24..24 dB", "0 Stereo, 1 Mid, 2 Side", "0 Off, 1 On"] {
+        assert!(ctx.contains(want), "missing {want:?} in:\n{ctx}");
+    }
+    let bar = prompts::plugin_bar_context(&s.project, fx).expect("the stereo imager has a bar context");
+    assert!(bar.starts_with(&prompts::plugin_bar_rules(fx, "Stereo Imager")), "{bar}");
+    assert!(bar.contains(&ctx));
+    let m = ok(&mut s, "add_effect", json!({"track_id": 0, "kind": "stereo_imager"}))["plugin_id"].as_u64().unwrap();
+    let ctx = prompts::plugin_context(&s.project, m).unwrap();
+    assert!(ctx.contains("on the master channel."), "{ctx}");
+}
