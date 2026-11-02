@@ -157,7 +157,10 @@ extension: Ondina opens both.
   when the plug-in is removed. The header shows the plug-in and its track, Bypass, the factory presets, **Default**
   (every parameter back to its default in one undo step) and the AI bar with its ready-made requests; below, every
   parameter is a knob (log scale for frequencies and long times, value with its unit, Shift for fine steps,
-  double-click for the default, right-click to type a value) or a selector. A loaded VST3 opens its own editor; one
+  double-click for the default, right-click to type a value) or a selector. Channel EQ and Dynamic EQ windows draw
+  the response curve with a point per band: drag for frequency and gain (Shift for fine steps), the wheel for Q,
+  double-click for the default, right-click to switch a band on or off; the Dynamic EQ shades how far each band can
+  move with its Range. A loaded VST3 opens its own editor; one
   without it, or not loaded, opens Ondina's generic window with a knob per parameter and a filter by name
   (right-click → **Generic controls** opens it anyway). Space and Ctrl+Z work in the window too; Settings → Display →
   *Open plug-ins in separate windows* off keeps them inside the main window.

@@ -555,7 +555,8 @@ risonanza della voce solo quando compare, senza svuotare il suono il resto del t
 - **Threshold**: il livello della zona della banda oltre il quale la banda comincia a muoversi.
 - **Range**: quanto si muove al massimo, in dB. Negativo taglia, positivo esalta, sempre e solo mentre la
   banda è sopra la soglia: per ogni dB sopra Threshold la banda si muove di un dB, fino a Range.
-  Con Range 0 la banda è un EQ fisso.
+  Con Range 0 la banda è un EQ fisso. Nella finestra del plug-in l'area ombreggiata di ogni banda mostra fin
+  dove può arrivare con Range quando il suono supera Threshold.
 - **Attack** e **Release**: quanto in fretta le bande seguono il livello. **Output Gain** regola
   l'uscita.
 - Con Gain e Range a 0, o con le bande spente, l'audio esce identico. Il Dynamic EQ non aggiunge latenza.
@@ -668,6 +669,14 @@ Ogni plug-in (strumenti, effetti ed effetti MIDI di Ondina, plug-in VST3) si reg
   valore. Frequenze e tempi lunghi girano su una scala logaritmica. Doppio clic: valore di default. Clic destro:
   compare un campo con il valore; scrivi per esempio `2.4k`, `-6` o `250ms` e premi Invio (il valore resta
   nell'intervallo del parametro), Esc o un clic altrove annullano. Ogni trascinamento è un passo di annulla.
+- **Curva dell'EQ**: Channel EQ e Dynamic EQ mostrano sopra le manopole la curva di risposta, da 20 Hz a 20 kHz
+  e da -24 a +24 dB, con un punto colorato per ogni banda (pieno se la banda è accesa, vuoto se è spenta).
+  Trascina un punto per cambiare frequenza e guadagno della banda (High Pass e Low Pass solo la frequenza); con
+  Shift il movimento è dieci volte più fine, e ogni trascinamento è un passo di annulla. La rotella sopra il punto
+  di una banda a campana ne cambia il Q (in su la stringe, in giù la allarga). Il doppio clic riporta frequenza,
+  guadagno e Q della banda al default, il clic destro accende o spegne la banda se ha un interruttore. Passando
+  sopra un punto ne leggi nome e valori con le unità; sullo sfondo, in alto a destra, la frequenza sotto il
+  mouse. Con il plug-in in Bypass la curva diventa grigia.
 - I parametri a scelta (forme d'onda, modi, on/off) sono pulsanti affiancati o un menu. I parametri con lo stesso
   inizio di nome stanno insieme sotto un titolo (per esempio *Band 1*, *Filter*, *Low Shelf*). Allargando la
   finestra le manopole si ridistribuiscono; se non ci stanno, la vista scorre.
