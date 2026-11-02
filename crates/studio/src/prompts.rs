@@ -261,7 +261,7 @@ pub fn plugin_context(project: &Project, plugin_id: Id) -> Option<String> {
 /// What every request from the AI bar of plug-in `plugin_id` (called `label`) asks besides the request itself.
 pub fn plugin_bar_rules(plugin_id: Id, label: &str) -> String {
     format!(
-        "This request comes from the AI bar of plug-in {plugin_id} ({label}) and is about that plug-in; its settings are listed below, so you do not need get_plugin to read them. If you change parameters, change them only with set_plugin_params (plugin_id {plugin_id}), all in one call when you can. When the request is about how the track or the mix sounds, measure it first with analyze_mix. Then answer in a few lines: which parameters you changed, from what value to what value, and why."
+        "This request comes from the AI bar of plug-in {plugin_id} ({label}) and is about that plug-in; its settings are listed below, so you do not need get_plugin to read them. If you change parameters, change them only with set_plugin_params (plugin_id {plugin_id}), all in one call when you can. When the request is about how the track or the mix sounds, measure it first with analyze_mix. While the song plays, get_plugin also returns meters: the live input and output peaks and, for a compressor, limiter, gate, de-esser or dynamic EQ, the gain reduction it applies; read them when you need to know how hard the plug-in is working (with the transport stopped they show silence). Then answer in a few lines: which parameters you changed, from what value to what value, and why."
     )
 }
 
@@ -411,6 +411,14 @@ mod tests {
             assert!(text.contains(&want), "missing {want:?}");
         }
         assert!(plugin_bar_context(&s.project, 9999).is_none());
+    }
+
+    #[test]
+    fn plugin_bar_rules_mention_the_live_meters() {
+        let text = plugin_bar_rules(7, "Compressor");
+        for want in ["get_plugin also returns meters", "gain reduction", "transport stopped"] {
+            assert!(text.contains(want), "missing {want:?}: {text}");
+        }
     }
 
     #[test]
