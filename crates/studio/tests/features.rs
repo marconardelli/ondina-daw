@@ -3301,3 +3301,90 @@ fn assistant_changes_to_the_stereo_imager_are_one_undo_step() {
     run(&mut s, "redo", json!({}), Source::Gui);
     assert_eq!(values(&mut s), after);
 }
+
+/// Polls the engine until `f` holds (at most 5 s): the null device renders in real time.
+fn wait_for_meter(s: &Session, id: u64, f: impl Fn(&ondina_engine::PluginMeter) -> bool) -> bool {
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < std::time::Duration::from_secs(5) {
+        if s.engine.plugin_meter(id).is_some_and(|m| f(&m)) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    false
+}
+
+#[test]
+fn live_plug_in_meters_show_what_a_compressor_does() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "name": "Keys", "instrument": "analog_synth"}))["track_id"].as_u64().unwrap();
+    let chord: Vec<Value> = [48, 55, 60, 64].iter().map(|p| json!({"pitch": p, "velocity": 127, "start": 0, "length": 16})).collect();
+    ok(&mut s, "create_midi_region", json!({"track_id": t, "start": 0, "length": 16, "notes": chord}));
+    let comp = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "compressor"}))["plugin_id"].as_u64().unwrap();
+    ok(&mut s, "set_plugin_params", json!({"plugin_id": comp, "params": {"threshold": -40, "ratio": 8, "knee": 0, "attack": 1}}));
+    let eq = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "channel_eq"}))["plugin_id"].as_u64().unwrap();
+    ok(&mut s, "play", json!({"from_beat": 0}));
+    assert!(wait_for_meter(&s, comp, |m| m.gain_reduction_db.is_some_and(|g| g < -1.0)), "the compressor never reduced");
+    assert!(wait_for_meter(&s, eq, |m| m.input_peak > 0.01), "the Channel EQ never saw the synth");
+
+    // get_plugin: the fields of today, plus the live meters
+    let v = ok(&mut s, "get_plugin", json!({"plugin_id": comp}));
+    for key in ["id", "kind", "name", "description", "params", "track"] {
+        assert!(v.get(key).is_some(), "{key} missing: {v}");
+    }
+    assert_eq!(v["track"], json!({"id": t, "name": "Keys", "kind": "instrument", "slot": "insert", "index": 0}));
+    assert_eq!(v["params"].as_array().unwrap().len(), ondina_core::plugins::find("compressor").unwrap().params.len());
+    let m = &v["meters"];
+    let (input, output) = (m["input_db"].as_f64().unwrap(), m["output_db"].as_f64().unwrap());
+    assert!(input > -60.0, "{m}");
+    assert!(output < input, "{m}");
+    assert!(m["gain_reduction_db"].as_f64().unwrap() < -1.0, "{m}");
+    let v = ok(&mut s, "get_plugin", json!({"plugin_id": eq}));
+    assert!(v["meters"]["input_db"].is_number() && v["meters"]["output_db"].is_number(), "{v}");
+    assert!(v["meters"].get("gain_reduction_db").is_none(), "{v}");
+
+    // get_meters: the track keys of today, plus every insert under "plugins"
+    let meters = ok(&mut s, "get_meters", json!({}));
+    let track = &meters[t.to_string()];
+    assert_eq!(track["name"], json!("Keys"));
+    assert!(track["peak_db_l"].is_number() && track["peak_db_r"].is_number(), "{meters}");
+    assert_eq!(meters["0"]["name"], json!("master"));
+    let c = &meters["plugins"][comp.to_string()];
+    assert_eq!(c["name"], json!("Compressor"));
+    assert_eq!(c["track_id"], json!(t));
+    assert!(c["gain_reduction_db"].as_f64().unwrap() < 0.0, "{meters}");
+    assert!(c["input_db"].is_number() && c["output_db"].is_number(), "{meters}");
+    let e = &meters["plugins"][eq.to_string()];
+    assert_eq!(e["track_id"], json!(t));
+    assert!(e.get("gain_reduction_db").is_none(), "{meters}");
+
+    // the assistant adjusts after reading the meters: one undo step, the meters made none
+    s.begin_undo_group("assistant: Gentle glue");
+    run(&mut s, "get_plugin", json!({"plugin_id": comp}), Source::Ai);
+    run(&mut s, "set_plugin_param", json!({"plugin_id": comp, "param": "threshold", "value": -20}), Source::Ai);
+    s.end_undo_group();
+    assert_eq!(s.can_undo(), Some("assistant: Gentle glue"));
+    assert_eq!(s.project.find_plugin(comp).unwrap().param("threshold"), -20.0);
+    run(&mut s, "undo", json!({}), Source::Gui);
+    assert_eq!(s.project.find_plugin(comp).unwrap().param("threshold"), -40.0);
+
+    // bypassed, the compressor reduces nothing
+    ok(&mut s, "set_plugin_bypass", json!({"plugin_id": comp, "bypass": true}));
+    assert!(wait_for_meter(&s, comp, |m| m.gain_reduction_db.is_none()), "a bypassed compressor still reports a reduction");
+    ok(&mut s, "stop", json!({}));
+}
+
+#[test]
+fn get_plugin_of_instruments_and_midi_effects_has_no_meters() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "name": "Lead", "instrument": "analog_synth"}))["track_id"].as_u64().unwrap();
+    let synth = ok(&mut s, "get_track", json!({"track_id": t}))["instrument"]["id"].as_u64().unwrap();
+    let arp = ok(&mut s, "add_midi_effect", json!({"track_id": t, "kind": "arpeggiator"}))["plugin_id"].as_u64().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    for id in [synth, arp] {
+        let v = ok(&mut s, "get_plugin", json!({"plugin_id": id}));
+        assert!(v.get("meters").is_none(), "{v}");
+    }
+    let meters = ok(&mut s, "get_meters", json!({}));
+    assert_eq!(meters["plugins"], json!({}));
+}

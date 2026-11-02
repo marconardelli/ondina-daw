@@ -180,7 +180,7 @@ pub enum Command {
     LoadPreset { plugin_id: Id, preset: String },
     /// Bypass or enable a plug-in.
     SetPluginBypass { plugin_id: Id, bypass: bool },
-    /// Get a plug-in with its description, all its parameter values with their ranges and defaults, and where it sits: track (id, name, kind; id 0 and kind "master" for the master channel), slot ("instrument", "midi_fx" or "insert") and index in that chain.
+    /// Get a plug-in with its description, all its parameter values with their ranges and defaults, and where it sits: track (id, name, kind; id 0 and kind "master" for the master channel), slot ("instrument", "midi_fx" or "insert") and index in that chain. Inserts (effects on a track or the master) also have meters while the engine runs: input_db and output_db (peak in dBFS of the last audio blocks, with a short release) and, for plug-ins that reduce gain (compressor, limiter, noise gate, de-esser, dynamic EQ), gain_reduction_db (<= 0, absent while bypassed). With the transport stopped the values fall to silence (-120).
     GetPlugin { plugin_id: Id },
     /// Load an audio file into a Sampler instrument. The file must be on a local drive (no network shares).
     SetSamplerSample { plugin_id: Id, path: String },
@@ -401,7 +401,7 @@ pub enum Command {
     // ------------------------------------------------------------------ analysis / mastering
     /// Render offline and analyze: integrated loudness (LUFS), true-peak estimate, RMS, crest factor, stereo correlation, low/mid/high spectral balance for the master and each track. Use it to "listen" to the mix. At most 60 minutes of song per render.
     AnalyzeMix { start: Option<f64>, end: Option<f64> },
-    /// Get live peak meters (dBFS) for every track and the master.
+    /// Get live peak meters (dBFS) for every track, keyed by track id ("0" = master), plus "plugins": every insert plug-in id with name, track_id, input_db, output_db and, for plug-ins that reduce gain, gain_reduction_db. With the transport stopped the values fall to silence.
     GetMeters {},
     /// Mastering assistant: analyze the mix and build a master chain (EQ, glue compressor, limiter) targeting a loudness (default -14 LUFS).
     AutoMaster { target_lufs: Option<f32>, character: Option<String> },
