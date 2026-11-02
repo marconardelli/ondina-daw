@@ -3215,3 +3215,89 @@ fn stereo_imager_panel_gets_its_quick_actions_and_full_context() {
     let ctx = prompts::plugin_context(&s.project, m).unwrap();
     assert!(ctx.contains("on the master channel."), "{ctx}");
 }
+
+#[test]
+fn stereo_imager_on_the_master_lifts_the_correlation_of_an_antiphase_bass() {
+    let mut s = Session::new(false);
+    let effects = ok(&mut s, "list_plugins", json!({"category": "effect"}));
+    let img = effects.as_array().unwrap().iter().find(|p| p["kind"] == "stereo_imager").expect("stereo_imager in list_plugins");
+    assert_eq!(img["group"], "Utility");
+    assert_eq!(img["name"], "Stereo Imager");
+    let desc = img["description"].as_str().unwrap();
+    assert!(desc.contains("Mono Bass") && desc.contains("analyze_mix"), "{desc}");
+    let ids: Vec<&str> = img["params"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["low_freq", "high_freq", "low_width", "mid_width", "high_width", "mono_bass", "balance", "listen", "output"]);
+    let presets = ok(&mut s, "list_presets", json!({"kind": "stereo_imager"}));
+    let names: Vec<&str> = presets.as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+    for n in ["Mono Low End", "Wide Synth", "Master Width Subtle"] {
+        assert!(names.contains(&n), "{presets}");
+    }
+
+    // Four seconds at 44.1 kHz: a 1 kHz tone in the middle and a 60 Hz bass in opposite phase on the two sides.
+    let sr = 44100usize;
+    let wave = |f: f64, n: usize| 0.3 * (2.0 * std::f64::consts::PI * f * n as f64 / sr as f64).sin();
+    let l: Vec<f32> = (0..4 * sr).map(|n| (wave(1000.0, n) + wave(60.0, n)) as f32).collect();
+    let r: Vec<f32> = (0..4 * sr).map(|n| (wave(1000.0, n) - wave(60.0, n)) as f32).collect();
+    let wav = tmp("stereo_imager_antiphase_bass.wav");
+    write_wav(&wav, &[l, r], sr as u32);
+    let t = ok(&mut s, "import_audio", json!({"path": wav.display().to_string(), "start": 0}))["track_id"].as_u64().unwrap();
+    let measure = |s: &mut Session| -> (f64, f64, Vec<String>) {
+        let a = ok(s, "analyze_mix", json!({}));
+        let track = a["tracks"].as_array().unwrap().iter().find(|x| x["track_id"] == json!(t)).expect("the track is analyzed");
+        let advice = a["advice"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect();
+        (a["master"]["stereo_correlation"].as_f64().unwrap(), track["analysis"]["stereo_correlation"].as_f64().unwrap(), advice)
+    };
+    let (before, track_before, advice) = measure(&mut s);
+    assert!(before < 0.2, "master correlation before: {before}");
+    assert!(advice.iter().any(|a| a.contains("Low stereo correlation")), "{advice:?}");
+
+    let fx = ok(&mut s, "add_effect", json!({"track_id": 0, "kind": "stereo_imager", "preset": "Mono Low End"}))["plugin_id"].as_u64().unwrap();
+    assert_eq!(s.can_undo(), Some("add_effect"));
+    let info = ok(&mut s, "get_plugin", json!({"plugin_id": fx}));
+    let len = info.to_string().chars().count();
+    assert!(len < 6000, "get_plugin is {len} characters");
+    assert_eq!(info["description"], json!(ondina_core::plugins::find("stereo_imager").unwrap().description));
+    assert_eq!(info["preset"], "Mono Low End");
+    assert_eq!(info["track"]["kind"], "master");
+    let param = |id: &str| info["params"].as_array().unwrap().iter().find(|p| p["id"] == id).unwrap_or_else(|| panic!("no {id}")).clone();
+    assert_eq!(param("mono_bass")["selected"], "On");
+    assert_eq!(param("listen")["choices"], json!(["Stereo", "Mid", "Side"]));
+    assert_eq!(param("low_freq")["unit"], "Hz");
+    assert_eq!(param("low_freq")["value"].as_f64(), Some(120.0));
+
+    let (after, track_after, advice) = measure(&mut s);
+    assert!(after > 0.9, "master correlation {before} -> {after}");
+    assert!((track_after - track_before).abs() < 0.05, "the imager is on the master, the track is unchanged: {track_before} -> {track_after}");
+    assert!(!advice.iter().any(|a| a.contains("Low stereo correlation")), "{advice:?}");
+
+    let set = ok(&mut s, "set_plugin_params", json!({"plugin_id": fx, "params": {"mono_bass": 0, "high_width": 1.5}}));
+    assert_eq!(set["mono_bass"].as_f64(), Some(0.0));
+    let (wide, _, _) = measure(&mut s);
+    assert!(wide < 0.2, "with Mono Bass off the bass is wide again: {wide}");
+}
+
+#[test]
+fn assistant_changes_to_the_stereo_imager_are_one_undo_step() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Pad"}))["track_id"].as_u64().unwrap();
+    let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "stereo_imager"}))["plugin_id"].as_u64().unwrap();
+    let values = |s: &mut Session| -> Vec<(String, f64)> {
+        let info = ok(s, "get_plugin", json!({"plugin_id": fx}));
+        info["params"].as_array().unwrap().iter().map(|p| (p["id"].as_str().unwrap().to_string(), p["value"].as_f64().unwrap())).collect()
+    };
+    let before = values(&mut s);
+    s.begin_undo_group("assistant: Wider without losing mono");
+    run(&mut s, "get_plugin", json!({"plugin_id": fx}), Source::Ai);
+    run(&mut s, "set_plugin_params", json!({"plugin_id": fx, "params": {"mono_bass": 1, "low_freq": 180, "mid_width": 1.2, "high_width": 1.6}}), Source::Ai);
+    s.end_undo_group();
+    let after = values(&mut s);
+    assert_ne!(after, before);
+    let p = s.project.find_plugin(fx).unwrap();
+    assert_eq!((p.param("mono_bass"), p.param("high_width")), (1.0, 1.6));
+    assert_eq!(s.can_undo(), Some("assistant: Wider without losing mono"));
+    assert!(s.last_undo_is_ai());
+    run(&mut s, "undo", json!({}), Source::Gui);
+    assert_eq!(values(&mut s), before, "one undo restores every parameter");
+    run(&mut s, "redo", json!({}), Source::Gui);
+    assert_eq!(values(&mut s), after);
+}
