@@ -719,6 +719,8 @@ impl Session {
             "dsp_load": (self.engine.shared.load() * 100.0).round() / 100.0,
             "dsp_overloads": self.engine.shared.overloads(),
             "sample_rate": self.engine.sample_rate(),
+            "output_device": self.engine.shared.device_name.lock().clone(),
+            "device_notice": self.engine.shared.device_notice(),
         })
     }
 

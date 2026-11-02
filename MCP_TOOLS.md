@@ -113,7 +113,7 @@ Set the number of count-in bars played before recording starts (0-4).
 Parameters: `bars`
 
 ### `get_transport` · read-only
-Get transport state: playing, recording, playhead position (beats, bar.beat.tick, seconds), cycle, metronome, metronome_level_db, metronome_only_while_recording, sample rate, dsp_load (share of the audio block time the last block used) and dsp_overloads (audio blocks since the last Play that took longer than the audio device allows; each one can be heard as a click).
+Get transport state: playing, recording, playhead position (beats, bar.beat.tick, seconds), cycle, metronome, metronome_level_db, metronome_only_while_recording, sample rate, dsp_load (share of the audio block time the last block used) dsp_overloads (audio blocks since the last Play that took longer than the audio device allows; each one can be heard as a click), output_device (where the sound goes) and device_notice (null, or what happened when the output device stopped working on its own, e.g. unplugged headphones: playback stops and sound moves to the default output).
 
 Parameters: none
 
