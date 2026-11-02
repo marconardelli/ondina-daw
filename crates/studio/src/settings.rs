@@ -50,6 +50,9 @@ pub struct Settings {
     /// Plug-in windows open as separate windows (true) or float inside the main window (false: for a graphics
     /// driver that does not cope with several windows).
     pub plugin_windows_separate: bool,
+    /// When a VST3 opens its own editor, a compact Ondina window with the common header and the AI bar opens beside
+    /// it.
+    pub plugin_ai_beside_native: bool,
     /// True when settings.json exists but could not be read (or could not be set aside after failing to parse):
     /// these are the defaults, and `save_to`/`try_save`/`save` leave the file alone until the person presses
     /// Save settings in the Settings window (`save_replacing`).
@@ -92,7 +95,7 @@ pub struct PanelSizes {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { api_key: None, model: crate::ai::DEFAULT_MODEL.into(), effort: "medium".into(), mcp_enabled: true, mcp_port: 3917, audio_output: None, recent_projects: vec![], ui_scale: 1.0, provider: "auto".into(), local_url: "http://127.0.0.1:8080/v1".into(), local_model: "local".into(), openai_api_key: String::new(), openai_model: String::new(), google_api_key: String::new(), google_model: String::new(), kimi_api_key: String::new(), kimi_model: String::new(), vst3_folders: vec![], autosave_minutes: 3, keep_save_backup: true, panels: PanelSizes::default(), plugin_windows: Default::default(), plugin_windows_separate: true, file_unread: false }
+        Settings { api_key: None, model: crate::ai::DEFAULT_MODEL.into(), effort: "medium".into(), mcp_enabled: true, mcp_port: 3917, audio_output: None, recent_projects: vec![], ui_scale: 1.0, provider: "auto".into(), local_url: "http://127.0.0.1:8080/v1".into(), local_model: "local".into(), openai_api_key: String::new(), openai_model: String::new(), google_api_key: String::new(), google_model: String::new(), kimi_api_key: String::new(), kimi_model: String::new(), vst3_folders: vec![], autosave_minutes: 3, keep_save_backup: true, panels: PanelSizes::default(), plugin_windows: Default::default(), plugin_windows_separate: true, plugin_ai_beside_native: true, file_unread: false }
     }
 }
 
@@ -543,6 +546,16 @@ mod tests {
         let partial: Settings = serde_json::from_str(r#"{"plugin_windows":{"reverb":{"x":10,"y":20}}}"#).unwrap();
         let r = partial.plugin_windows["reverb"];
         assert_eq!((r.x, r.y, r.w, r.h), (10.0, 20.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn plugin_ai_beside_native_is_on_by_default() {
+        assert!(Settings::default().plugin_ai_beside_native);
+        let old: Settings = serde_json::from_str(r#"{"model":"x"}"#).unwrap();
+        assert!(old.plugin_ai_beside_native);
+        let off = Settings { plugin_ai_beside_native: false, ..Settings::default() };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&off).unwrap()).unwrap();
+        assert!(!back.plugin_ai_beside_native);
     }
 
     #[test]

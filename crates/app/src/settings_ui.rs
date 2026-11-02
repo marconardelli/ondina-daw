@@ -255,6 +255,8 @@ impl OndinaApp {
         dialog::hint(ui, "The new scale applies at the next start.");
         ui.checkbox(&mut self.settings.plugin_windows_separate, "Open plug-ins in separate windows")
             .on_hover_text("Off: plug-in windows float inside the main window");
+        ui.checkbox(&mut self.settings.plugin_ai_beside_native, "Show the AI bar beside a plug-in's own window")
+            .on_hover_text("A compact Ondina window with Bypass, presets, Default and the AI bar opens next to a VST3's own editor");
     }
 
     /// File > Bounce to WAV and Ctrl+B: what the bounce covers, its bit depth and loudness, then the file.
