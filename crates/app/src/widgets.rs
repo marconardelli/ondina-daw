@@ -997,6 +997,7 @@ pub struct Knob<'a> {
     log: bool,
     unit: Option<&'a str>,
     label: Option<String>,
+    note: Option<String>,
     editable: bool,
     width: Option<f32>,
 }
@@ -1027,6 +1028,7 @@ impl<'a> Knob<'a> {
             log: false,
             unit: None,
             label: None,
+            note: None,
             editable: false,
             width: None,
         }
@@ -1073,6 +1075,12 @@ impl<'a> Knob<'a> {
         self
     }
 
+    /// A line added to the tooltip, under the value.
+    pub fn note(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
+        self
+    }
+
     /// A right-click opens a field to type the value.
     pub fn editable(mut self, on: bool) -> Self {
         self.editable = on;
@@ -1100,6 +1108,17 @@ impl<'a> Knob<'a> {
             unit_to_value(u, self.min, self.max)
         }
     }
+}
+
+/// A knob's tooltip: its name and value, an optional note, then the gestures.
+pub fn knob_tooltip(label: Option<&str>, value: &str, note: Option<&str>, editable: bool) -> String {
+    let head = match label {
+        Some(l) => format!("{l}: {value}"),
+        None => value.to_string(),
+    };
+    let note = note.map(|n| format!("\n{n}")).unwrap_or_default();
+    let typing = if editable { " · Right-click: type a value" } else { "" };
+    format!("{head}{note}\nDrag up or down · Shift: fine · Double-click: default{typing}")
 }
 
 fn arc_points(c: Pos2, r: f32, a0: f32, a1: f32) -> Vec<Pos2> {
@@ -1227,12 +1246,7 @@ impl Widget for Knob<'_> {
         match self.unit {
             Some(unit) => {
                 let value = format_param_value(*self.value, unit);
-                let head = match &self.label {
-                    Some(l) => format!("{l}: {value}"),
-                    None => value,
-                };
-                let typing = if self.editable { " · Right-click: type a value" } else { "" };
-                resp.on_hover_text(format!("{head}\nDrag up or down · Shift: fine · Double-click: default{typing}"))
+                resp.on_hover_text(knob_tooltip(self.label.as_deref(), &value, self.note.as_deref(), self.editable))
             }
             None => resp,
         }
@@ -2208,5 +2222,21 @@ mod tests {
         }
         assert_eq!(ctx.memory(|m| m.focused()), None);
         assert_eq!(v, 0.25);
+    }
+
+    #[test]
+    fn knob_tooltip_lists_value_note_and_gestures() {
+        let note = "Normalized 0..1 \u{00B7} the plug-in shows it in dB";
+        let t = knob_tooltip(Some("Gain (dB)"), "0.53", Some(note), true);
+        let lines: Vec<&str> = t.lines().collect();
+        assert_eq!(lines[0], "Gain (dB): 0.53");
+        assert_eq!(lines[1], note);
+        assert!(lines[2].contains("Double-click: default"));
+        assert!(lines[2].contains("Right-click: type a value"));
+        assert_eq!(
+            knob_tooltip(Some("Cutoff"), "2.4 kHz", None, false),
+            "Cutoff: 2.4 kHz\nDrag up or down \u{00B7} Shift: fine \u{00B7} Double-click: default"
+        );
+        assert!(knob_tooltip(None, "0.53", None, true).starts_with("0.53\n"));
     }
 }

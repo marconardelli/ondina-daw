@@ -212,6 +212,22 @@ pub fn builtin_controls(ui: &mut egui::Ui, pid: Id, info: &PluginInfo, inst: &Pl
     edits
 }
 
+/// A generic VST3 knob's caption: the parameter's name and, when the plug-in reports one, its unit ("Gain (dB)").
+pub fn vst3_knob_label(name: &str, unit: &str) -> String {
+    match unit.trim() {
+        "" => name.to_string(),
+        u => format!("{name} ({u})"),
+    }
+}
+
+/// The tooltip line of a generic VST3 knob with a unit: the knob shows the normalized value, not the plug-in's.
+pub fn vst3_knob_note(unit: &str) -> Option<String> {
+    match unit.trim() {
+        "" => None,
+        u => Some(format!("Normalized 0..1 \u{00B7} the plug-in shows it in {u}")),
+    }
+}
+
 /// Normalized knobs (0..1) for the parameters a VST3 reported, with a filter by name.
 pub fn vst3_controls(ui: &mut egui::Ui, pid: Id, inst: &PluginInstance, filter: &mut String, gesture: &mut u64) -> Vec<ParamEdit> {
     let mut edits = Vec::new();
@@ -238,10 +254,14 @@ pub fn vst3_controls(ui: &mut egui::Ui, pid: Id, inst: &PluginInstance, filter: 
                 let knob = Knob::new(&mut x, 0.0..=1.0)
                     .default_value(vp.default.clamp(0.0, 1.0))
                     .unit("")
-                    .label(vp.name.as_str())
+                    .label(vst3_knob_label(&vp.name, &vp.unit))
                     .editable(true)
                     .diameter(KNOB_D)
                     .width(CELL_W);
+                let knob = match vst3_knob_note(&vp.unit) {
+                    Some(note) => knob.note(note),
+                    None => knob,
+                };
                 let r = ui.add(knob);
                 edits.extend(knob_edit(pid, &vp.id, x, KnobFlags::of(&r), gesture));
             });
@@ -460,5 +480,14 @@ mod tests {
         let mut filter = String::new();
         let mut g = 0;
         assert!(draw_headless(|ui| vst3_controls(ui, 3, &inst, &mut filter, &mut g)).is_empty());
+    }
+
+    #[test]
+    fn vst3_knobs_name_the_reported_unit() {
+        assert_eq!(vst3_knob_label("Gain", "dB"), "Gain (dB)");
+        assert_eq!(vst3_knob_label("Mix", ""), "Mix");
+        assert_eq!(vst3_knob_label("Mix", "  "), "Mix");
+        assert_eq!(vst3_knob_note("dB").as_deref(), Some("Normalized 0..1 \u{00B7} the plug-in shows it in dB"));
+        assert_eq!(vst3_knob_note(""), None);
     }
 }
