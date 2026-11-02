@@ -7,12 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-11-02
+
 ### Fixed
 
 - When the audio output stops working on its own (headphones unplugged or disabled), playback stops where it was
   and sound moves to the same device if it comes back, else to the default output, else to the null device. The
   status bar says what happened, and `get_transport` reports `output_device` and `device_notice`. Before, the
   transport stayed in Play with the playhead frozen and no sound.
+- `load_movie`, `extract_movie_frame` and `export_movie` called from MCP clients or the assistant check the movie
+  path where Windows resolves it, as every other file they make Ondina read: a path that leads to a network share
+  is refused.
 
 ## [0.20.0] - 2026-11-01
 
@@ -695,7 +700,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.20.1...HEAD
+[0.20.1]: https://github.com/marconardelli/ondina-daw/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/marconardelli/ondina-daw/compare/v0.19.2...v0.20.0
 [0.19.2]: https://github.com/marconardelli/ondina-daw/compare/v0.19.1...v0.19.2
 [0.19.1]: https://github.com/marconardelli/ondina-daw/compare/v0.19.0...v0.19.1
