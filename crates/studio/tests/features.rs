@@ -2995,3 +2995,37 @@ fn get_plugin_reports_description_defaults_and_track() {
     }
 }
 
+#[test]
+fn plugin_bar_edits_undo_in_one_step() {
+    let mut s = Session::new(false);
+    let vocals = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vocals"}))["track_id"].as_u64().unwrap();
+    let eq = ok(&mut s, "add_effect", json!({"track_id": vocals, "kind": "channel_eq"}))["plugin_id"].as_u64().unwrap();
+    let changed = [("hp_on", 1.0), ("hp_freq", 120.0), ("low_gain", -4.0), ("low_freq", 250.0), ("mid1_gain", -3.0)];
+
+    s.begin_undo_group("assistant: Clean up the muddy frequencies");
+    run(&mut s, "get_plugin", json!({"plugin_id": eq}), Source::Ai);
+    run(&mut s, "set_plugin_params", json!({"plugin_id": eq, "params": {"hp_on": 1, "hp_freq": 120, "low_gain": -4, "low_freq": 250}}), Source::Ai);
+    run(&mut s, "set_plugin_param", json!({"plugin_id": eq, "param": "mid1_gain", "value": -3}), Source::Ai);
+    s.end_undo_group();
+
+    // the plug-in panel reads its sliders from the project, so it shows the change at once
+    let p = s.project.find_plugin(eq).unwrap();
+    for (id, v) in changed {
+        assert_eq!(p.param(id), v, "{id}");
+    }
+    assert_eq!(s.can_undo(), Some("assistant: Clean up the muddy frequencies"));
+    assert!(s.last_undo_is_ai());
+
+    run(&mut s, "undo", json!({}), Source::Gui);
+    let v = ok(&mut s, "get_plugin", json!({"plugin_id": eq}));
+    for o in v["params"].as_array().unwrap() {
+        assert_eq!(o["value"], o["default"], "{o}");
+    }
+    assert_eq!(s.can_undo().map(|l| l.starts_with("assistant")), Some(false));
+
+    run(&mut s, "redo", json!({}), Source::Gui);
+    let p = s.project.find_plugin(eq).unwrap();
+    for (id, v) in changed {
+        assert_eq!(p.param(id), v, "{id}");
+    }
+}
