@@ -127,6 +127,7 @@ pub fn create_effect(kind: &str, sample_rate: f32) -> Option<Box<dyn Effect>> {
     use effects::*;
     Some(match kind {
         "channel_eq" => Box::new(ChannelEq::new(sample_rate)),
+        "dynamic_eq" => Box::new(DynamicEq::new(sample_rate)),
         "compressor" => Box::new(Compressor::new(sample_rate)),
         "limiter" => Box::new(Limiter::new(sample_rate)),
         "noise_gate" => Box::new(NoiseGate::new(sample_rate)),
