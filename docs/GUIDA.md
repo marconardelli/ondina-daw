@@ -506,6 +506,32 @@ Da MCP e dall'assistente: il tool `add_effect` con `kind: "de_esser"` lo aggiung
 chiedere all'assistente "de-ess the vocal". La patch **Lead Vocal** non lo contiene: va aggiunto a
 mano.
 
+## Dynamic EQ
+
+Il Dynamic EQ ha quattro bande che si abbassano (o si alzano) da sole solo quando la loro zona di
+frequenze diventa troppo forte: toglie il rimbombo di un basso solo sulle note che rimbombano, o una
+risonanza della voce solo quando compare, senza svuotare il suono il resto del tempo.
+
+- Dove si trova: nel mixer, menu **+** di uno slot insert, oppure nell'inspector con **Add effect**,
+  poi **EQ** e **Dynamic EQ**. Ci sono tre preset: **Tame Resonance**, **Vocal Mud Control** e
+  **Bass Boom Control**.
+- Ogni banda ha **Band n** (accesa o spenta), **Type** (**Bell**, **Low Shelf**, **High Shelf**),
+  **Freq**, **Gain** (un guadagno fisso, come in un EQ normale) e **Q** (solo per le Bell).
+- **Threshold**: il livello della zona della banda oltre il quale la banda comincia a muoversi.
+- **Range**: quanto si muove al massimo, in dB. Negativo taglia, positivo esalta, sempre e solo mentre la
+  banda è sopra la soglia: per ogni dB sopra Threshold la banda si muove di un dB, fino a Range.
+  Con Range 0 la banda è un EQ fisso.
+- **Attack** e **Release**: quanto in fretta le bande seguono il livello. **Output Gain** regola
+  l'uscita.
+- Con Gain e Range a 0, o con le bande spente, l'audio esce identico. Il Dynamic EQ non aggiunge latenza.
+
+In pratica: per il fango di una voce metti una Bell verso 300 Hz con Range -6 dB e abbassa Threshold
+finché la banda lavora solo nei passaggi pieni; per il rimbombo di un basso usa un Low Shelf a 150 Hz.
+
+Da MCP e dall'assistente: il tool `add_effect` con `kind: "dynamic_eq"` lo aggiunge a una traccia e
+`set_plugin_params` ne cambia i parametri (`b1_on`, `b1_type`, `b1_freq`, `b1_gain`, `b1_q`,
+`b1_threshold`, `b1_range` e gli stessi per le bande 2, 3 e 4, poi `attack`, `release`, `output`).
+
 ## Bounce
 
 - **File > Bounce to WAV…** (Ctrl+B) scrive il mix in un file WAV: tutta la canzone, oppure solo
