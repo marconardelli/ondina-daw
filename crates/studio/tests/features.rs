@@ -3029,3 +3029,140 @@ fn plugin_bar_edits_undo_in_one_step() {
         assert_eq!(p.param(id), v, "{id}");
     }
 }
+
+#[test]
+fn dynamic_eq_quick_actions_are_covered_by_the_local_tools() {
+    use ondina_studio::local_ai::LOCAL_TOOLS;
+    use ondina_studio::prompts::DYNAMIC_EQ_ACTIONS;
+    let labels: Vec<&str> = DYNAMIC_EQ_ACTIONS.iter().map(|a| a.0).collect();
+    assert_eq!(labels, ["Clean up the muddy frequencies", "Tame harsh resonances", "More air on the vocal"]);
+    let all: Vec<String> = tool_specs().into_iter().map(|t| t.name).collect();
+    for (label, text) in DYNAMIC_EQ_ACTIONS {
+        for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            if all.iter().any(|t| t == word) {
+                assert!(LOCAL_TOOLS.contains(&word), "{word}, named by {label:?}, is not offered to the local model");
+            }
+        }
+        for tool in ["get_plugin", "set_plugin_params", "analyze_mix"] {
+            assert!(LOCAL_TOOLS.contains(&tool), "{tool} is needed by {label:?}");
+        }
+        assert!(text.contains("explain in a few lines which bands you changed and why"), "{label:?} must ask for an explanation");
+        assert!(text.contains("by ear"), "{label:?} must say the frequency is chosen by ear");
+    }
+}
+
+#[test]
+fn dynamic_eq_is_listed_added_and_applied_in_a_bounce() {
+    let mut s = Session::new(false);
+    let effects = ok(&mut s, "list_plugins", json!({"category": "effect"}));
+    let deq = effects.as_array().unwrap().iter().find(|p| p["kind"] == "dynamic_eq").expect("dynamic_eq in list_plugins");
+    assert_eq!(deq["group"], "EQ");
+    assert_eq!(deq["name"], "Dynamic EQ");
+    let desc = deq["description"].as_str().unwrap();
+    assert!(desc.contains("Threshold") && desc.contains("Range"), "{desc}");
+    let params = deq["params"].as_array().unwrap();
+    assert_eq!(params.len(), 31);
+    for p in params {
+        for field in ["id", "name", "min", "max", "default", "unit", "choices"] {
+            assert!(p.get(field).is_some(), "{} has no {field}", p["id"]);
+        }
+    }
+    let param = |id: &str| params.iter().find(|p| p["id"] == id).unwrap_or_else(|| panic!("no {id}")).clone();
+    assert_eq!(param("b2_type")["choices"], json!(["Bell", "Low Shelf", "High Shelf"]));
+    assert_eq!(param("b4_freq")["unit"], "Hz");
+    assert_eq!(param("b1_range")["min"].as_f64(), Some(-24.0));
+    assert_eq!(param("attack")["unit"], "ms");
+    let presets = ok(&mut s, "list_presets", json!({"kind": "dynamic_eq"}));
+    let names: Vec<&str> = presets.as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+    for n in ["Tame Resonance", "Vocal Mud Control", "Bass Boom Control"] {
+        assert!(names.contains(&n), "{presets}");
+    }
+
+    // Three seconds of a loud 300 Hz tone (-6 dBFS) and a quiet 3 kHz one.
+    let sr_in = 48000usize;
+    let x: Vec<f32> = (0..3 * sr_in)
+        .map(|n| {
+            let t = n as f64 / sr_in as f64;
+            (0.5 * (2.0 * std::f64::consts::PI * 300.0 * t).sin() + 0.05 * (2.0 * std::f64::consts::PI * 3000.0 * t).sin()) as f32
+        })
+        .collect();
+    let wav = tmp("dynamic_eq.wav");
+    write_wav(&wav, &[x], sr_in as u32);
+    let rid = ok(&mut s, "import_audio", json!({"path": wav.display().to_string(), "start": 0}))["region_id"].as_u64().unwrap();
+    let t = s.project.find_region(rid).unwrap().0.id;
+    let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "dynamic_eq"}))["plugin_id"].as_u64().unwrap();
+    assert_eq!(s.can_undo(), Some("add_effect"));
+    let set = ok(&mut s, "set_plugin_params", json!({"plugin_id": fx, "params": {"b2_threshold": -20, "b2_range": -12, "b3_range": 99}}));
+    assert_eq!(set["b3_range"].as_f64(), Some(24.0), "values are clamped to the registry range");
+    ok(&mut s, "set_plugin_param", json!({"plugin_id": fx, "param": "b3_range", "value": 0}));
+    let info = ok(&mut s, "get_plugin", json!({"plugin_id": fx}));
+    let got = |id: &str| info["params"].as_array().unwrap().iter().find(|p| p["id"] == id).unwrap().clone();
+    assert_eq!(got("b2_range")["value"].as_f64(), Some(-12.0));
+    assert_eq!(got("b2_range")["unit"], "dB");
+    assert_eq!(got("b2_type")["selected"], "Bell");
+    assert_eq!(info["params"].as_array().unwrap().len(), 31);
+
+    let bounce = |s: &mut Session, name: &str| {
+        let path = tmp(name);
+        let r = ok(s, "bounce", json!({"path": path.display().to_string(), "bit_depth": 32, "tail_sec": 0}));
+        let sr = r["sample_rate"].as_u64().unwrap() as usize;
+        let reader = hound::WavReader::open(&path).unwrap();
+        let channels = reader.spec().channels as usize;
+        let left: Vec<f32> = reader.into_samples::<f32>().map(|x| x.unwrap()).step_by(channels).collect();
+        let window = &left[sr..2 * sr];
+        (tone_level(window, 300.0, sr as f64), tone_level(window, 3000.0, sr as f64))
+    };
+    let (low_on, high_on) = bounce(&mut s, "dynamic_eq_on.wav");
+    ok(&mut s, "set_plugin_bypass", json!({"plugin_id": fx, "bypass": true}));
+    let (low_off, high_off) = bounce(&mut s, "dynamic_eq_off.wav");
+    let low = 20.0 * (low_on / low_off).log10();
+    let high = 20.0 * (high_on / high_off).log10();
+    assert!((-13.0..=-6.0).contains(&low), "300 Hz changed by {low} dB");
+    assert!(high.abs() < 0.5, "3 kHz changed by {high} dB");
+}
+
+#[test]
+fn assistant_changes_to_the_dynamic_eq_are_one_undo_step() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio"}))["track_id"].as_u64().unwrap();
+    let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "dynamic_eq"}))["plugin_id"].as_u64().unwrap();
+    let values = |s: &mut Session| -> Vec<(String, f64)> {
+        let info = ok(s, "get_plugin", json!({"plugin_id": fx}));
+        info["params"].as_array().unwrap().iter().map(|p| (p["id"].as_str().unwrap().to_string(), p["value"].as_f64().unwrap())).collect()
+    };
+    let before = values(&mut s);
+    s.begin_undo_group("assistant: Clean up the muddy frequencies");
+    run(&mut s, "set_plugin_params", json!({"plugin_id": fx, "params": {"b2_freq": 320, "b2_q": 1.4, "b2_threshold": -28, "b2_range": -6, "b4_gain": 3}}), Source::Ai);
+    run(&mut s, "set_plugin_param", json!({"plugin_id": fx, "param": "release", "value": 200}), Source::Ai);
+    s.end_undo_group();
+    let after = values(&mut s);
+    assert_ne!(after, before);
+    assert_eq!(s.can_undo(), Some("assistant: Clean up the muddy frequencies"));
+    assert!(s.last_undo_is_ai());
+    run(&mut s, "undo", json!({}), Source::Gui);
+    assert_eq!(values(&mut s), before, "one undo restores every band");
+    run(&mut s, "redo", json!({}), Source::Gui);
+    assert_eq!(values(&mut s), after);
+}
+
+#[test]
+fn dynamic_eq_panel_gets_its_quick_actions_and_full_context() {
+    use ondina_studio::prompts;
+    assert_eq!(prompts::plugin_quick_actions("dynamic_eq"), prompts::DYNAMIC_EQ_ACTIONS);
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vocals"}))["track_id"].as_u64().unwrap();
+    let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "dynamic_eq"}))["plugin_id"].as_u64().unwrap();
+    let ctx = prompts::plugin_context(&s.project, fx).expect("the dynamic EQ has a context");
+    assert!(ctx.contains("(kind dynamic_eq)") && ctx.contains("\"Vocals\""), "{ctx}");
+    for n in 1..=4 {
+        for k in ["on", "type", "freq", "gain", "q", "threshold", "range"] {
+            assert!(ctx.contains(&format!("- b{n}_{k} ")), "b{n}_{k} missing from the context");
+        }
+    }
+    for id in ["attack", "release", "output"] {
+        assert!(ctx.contains(&format!("- {id} ")), "{id} missing from the context");
+    }
+    assert!(ctx.contains("1 Low Shelf"), "selector choices are in the context");
+    let bar = prompts::plugin_bar_context(&s.project, fx).expect("the dynamic EQ has a bar context");
+    assert!(bar.contains("set_plugin_params") && bar.contains(&ctx), "{bar}");
+}

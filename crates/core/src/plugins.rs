@@ -47,6 +47,7 @@ const fn c(id: &'static str, name: &'static str, default: f32, choices: &'static
 const ONOFF: &[&str] = &["Off", "On"];
 const WAVES: &[&str] = &["Saw", "Square", "Triangle", "Sine", "Noise"];
 const FILTERS: &[&str] = &["Lowpass", "Highpass", "Bandpass"];
+const DEQ_TYPES: &[&str] = &["Bell", "Low Shelf", "High Shelf"];
 
 use PluginCategory::*;
 
@@ -212,6 +213,46 @@ pub static REGISTRY: &[PluginInfo] = &[
             p("high_freq", "High Shelf Freq", 1000.0, 16000.0, 8000.0, "Hz"),
             c("lp_on", "Low Pass", 0.0, ONOFF),
             p("lp_freq", "LP Freq", 1000.0, 20000.0, 16000.0, "Hz"),
+            p("output", "Output Gain", -24.0, 24.0, 0.0, "dB"),
+        ],
+    },
+    PluginInfo {
+        kind: "dynamic_eq",
+        name: "Dynamic EQ",
+        category: Effect,
+        group: "EQ",
+        description: "Four-band dynamic equalizer. Each band is a Bell (shaped by Q) or a Low or High Shelf at Freq with a static Gain, and moves further only while its own frequencies are loud: when the level around Freq goes above Threshold the band adds up to Range dB on top of Gain, 1 dB for every dB over Threshold. A negative Range cuts the band only when it gets too loud (mud, boom, resonances), a positive Range boosts it only then. With Range 0 a band is a plain static EQ band. Attack and Release set how fast the bands follow the level. No latency.",
+        params: &[
+            c("b1_on", "Band 1", 1.0, ONOFF),
+            c("b1_type", "Band 1 Type", 1.0, DEQ_TYPES),
+            p("b1_freq", "Band 1 Freq", 20.0, 20000.0, 100.0, "Hz"),
+            p("b1_gain", "Band 1 Gain", -24.0, 24.0, 0.0, "dB"),
+            p("b1_q", "Band 1 Q", 0.1, 10.0, 0.7, ""),
+            p("b1_threshold", "Band 1 Threshold", -60.0, 0.0, -24.0, "dB"),
+            p("b1_range", "Band 1 Range", -24.0, 24.0, 0.0, "dB"),
+            c("b2_on", "Band 2", 1.0, ONOFF),
+            c("b2_type", "Band 2 Type", 0.0, DEQ_TYPES),
+            p("b2_freq", "Band 2 Freq", 20.0, 20000.0, 300.0, "Hz"),
+            p("b2_gain", "Band 2 Gain", -24.0, 24.0, 0.0, "dB"),
+            p("b2_q", "Band 2 Q", 0.1, 10.0, 1.0, ""),
+            p("b2_threshold", "Band 2 Threshold", -60.0, 0.0, -24.0, "dB"),
+            p("b2_range", "Band 2 Range", -24.0, 24.0, 0.0, "dB"),
+            c("b3_on", "Band 3", 1.0, ONOFF),
+            c("b3_type", "Band 3 Type", 0.0, DEQ_TYPES),
+            p("b3_freq", "Band 3 Freq", 20.0, 20000.0, 2500.0, "Hz"),
+            p("b3_gain", "Band 3 Gain", -24.0, 24.0, 0.0, "dB"),
+            p("b3_q", "Band 3 Q", 0.1, 10.0, 1.0, ""),
+            p("b3_threshold", "Band 3 Threshold", -60.0, 0.0, -24.0, "dB"),
+            p("b3_range", "Band 3 Range", -24.0, 24.0, 0.0, "dB"),
+            c("b4_on", "Band 4", 1.0, ONOFF),
+            c("b4_type", "Band 4 Type", 2.0, DEQ_TYPES),
+            p("b4_freq", "Band 4 Freq", 20.0, 20000.0, 8000.0, "Hz"),
+            p("b4_gain", "Band 4 Gain", -24.0, 24.0, 0.0, "dB"),
+            p("b4_q", "Band 4 Q", 0.1, 10.0, 0.7, ""),
+            p("b4_threshold", "Band 4 Threshold", -60.0, 0.0, -24.0, "dB"),
+            p("b4_range", "Band 4 Range", -24.0, 24.0, 0.0, "dB"),
+            p("attack", "Attack", 0.1, 200.0, 10.0, "ms"),
+            p("release", "Release", 10.0, 2000.0, 150.0, "ms"),
             p("output", "Output Gain", -24.0, 24.0, 0.0, "dB"),
         ],
     },
@@ -574,6 +615,9 @@ pub static PRESETS: &[Preset] = &[
     Preset { name: "Kick Punch", kind: "channel_eq", params: &[("low_gain", 3.0), ("low_freq", 60.0), ("mid1_gain", -4.0), ("mid1_freq", 350.0), ("mid2_gain", 3.0), ("mid2_freq", 4000.0)] },
     Preset { name: "Low Cut 100", kind: "channel_eq", params: &[("hp_on", 1.0), ("hp_freq", 100.0)] },
     Preset { name: "Master Polish", kind: "channel_eq", params: &[("hp_on", 1.0), ("hp_freq", 25.0), ("low_gain", 1.0), ("low_freq", 80.0), ("mid1_gain", -1.0), ("mid1_freq", 350.0), ("high_gain", 1.5), ("high_freq", 12000.0)] },
+    Preset { name: "Tame Resonance", kind: "dynamic_eq", params: &[("b3_freq", 3000.0), ("b3_q", 5.0), ("b3_threshold", -30.0), ("b3_range", -8.0), ("attack", 2.0), ("release", 80.0)] },
+    Preset { name: "Vocal Mud Control", kind: "dynamic_eq", params: &[("b2_freq", 300.0), ("b2_q", 1.2), ("b2_threshold", -30.0), ("b2_range", -6.0), ("attack", 10.0), ("release", 150.0)] },
+    Preset { name: "Bass Boom Control", kind: "dynamic_eq", params: &[("b1_type", 1.0), ("b1_freq", 150.0), ("b1_threshold", -20.0), ("b1_range", -8.0), ("attack", 15.0), ("release", 200.0)] },
     Preset { name: "Warm Drive", kind: "overdrive", params: &[("mode", 3.0), ("drive", 0.3), ("tone", 0.4)] },
     Preset { name: "Fuzz Box", kind: "overdrive", params: &[("mode", 2.0), ("drive", 0.85), ("tone", 0.6), ("output", -9.0)] },
     Preset { name: "Lo-Fi", kind: "bitcrusher", params: &[("bits", 10.0), ("downsample", 3.0), ("mix", 0.6)] },
@@ -689,5 +733,50 @@ mod tests {
         }
         let lead = find_patch("Lead Vocal").unwrap();
         assert_eq!(lead.effects.iter().map(|e| e.0).collect::<Vec<_>>(), ["channel_eq", "compressor", "reverb"]);
+    }
+
+    #[test]
+    fn dynamic_eq_is_registered_with_its_presets() {
+        let info = find("dynamic_eq").expect("dynamic_eq in the registry");
+        assert_eq!(info.category, PluginCategory::Effect);
+        assert_eq!(info.group, "EQ");
+        assert_eq!(info.name, "Dynamic EQ");
+        let mut expected: Vec<String> = Vec::new();
+        for n in 1..=4 {
+            for k in ["on", "type", "freq", "gain", "q", "threshold", "range"] {
+                expected.push(format!("b{n}_{k}"));
+            }
+        }
+        expected.extend(["attack", "release", "output"].map(String::from));
+        let ids: Vec<&str> = info.params.iter().map(|p| p.id).collect();
+        assert_eq!(ids, expected);
+        for p in info.params {
+            assert!((p.min..=p.max).contains(&p.default), "{}: default out of range", p.id);
+            if p.id.ends_with("_type") {
+                assert_eq!(p.choices, ["Bell", "Low Shelf", "High Shelf"]);
+            }
+            if p.id.ends_with("_freq") {
+                assert_eq!((p.min, p.max, p.unit), (20.0, 20000.0, "Hz"), "{}", p.id);
+            }
+            if p.id.ends_with("_threshold") {
+                assert_eq!((p.min, p.max, p.unit), (-60.0, 0.0, "dB"), "{}", p.id);
+            }
+            if p.id.ends_with("_range") {
+                assert_eq!((p.min, p.max, p.default, p.unit), (-24.0, 24.0, 0.0, "dB"), "{}", p.id);
+            }
+            if p.id.ends_with("_gain") {
+                assert_eq!(p.default, 0.0, "{}: a new Dynamic EQ must not change the sound", p.id);
+            }
+        }
+        assert!(info.description.contains("Threshold") && info.description.contains("Range"), "the description explains Threshold and Range");
+        let names: Vec<&str> = presets_for("dynamic_eq").map(|p| p.name).collect();
+        assert_eq!(names, ["Tame Resonance", "Vocal Mud Control", "Bass Boom Control"]);
+        for preset in presets_for("dynamic_eq") {
+            assert!(preset.params.iter().any(|(id, v)| id.ends_with("_range") && *v < 0.0), "{}: no band works", preset.name);
+            for (id, v) in preset.params {
+                let p = info.params.iter().find(|p| p.id == *id).unwrap_or_else(|| panic!("{}: no parameter {id}", preset.name));
+                assert!((p.min..=p.max).contains(v), "{}: {id} = {v} out of range", preset.name);
+            }
+        }
     }
 }

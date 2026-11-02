@@ -1193,6 +1193,282 @@ impl Effect for DeEsser {
     }
 }
 
+// ============================================================================ Dynamic EQ
+
+const DEQ_BANDS: usize = 4;
+/// Parameters per band, in registry order after the `b<n>_` prefix: on, type, freq, gain, q, threshold, range.
+const DEQ_BAND_PARAMS: usize = 7;
+const DEQ_IDS: [&str; 31] = [
+    "b1_on", "b1_type", "b1_freq", "b1_gain", "b1_q", "b1_threshold", "b1_range",
+    "b2_on", "b2_type", "b2_freq", "b2_gain", "b2_q", "b2_threshold", "b2_range",
+    "b3_on", "b3_type", "b3_freq", "b3_gain", "b3_q", "b3_threshold", "b3_range",
+    "b4_on", "b4_type", "b4_freq", "b4_gain", "b4_q", "b4_threshold", "b4_range",
+    "attack", "release", "output",
+];
+/// The registry defaults, in `DEQ_IDS` order (a test keeps them equal).
+const DEQ_DEFAULTS: [f32; 31] = [
+    1.0, 1.0, 100.0, 0.0, 0.7, -24.0, 0.0,
+    1.0, 0.0, 300.0, 0.0, 1.0, -24.0, 0.0,
+    1.0, 0.0, 2500.0, 0.0, 1.0, -24.0, 0.0,
+    1.0, 2.0, 8000.0, 0.0, 0.7, -24.0, 0.0,
+    10.0, 150.0, 0.0,
+];
+const DEQ_ATTACK: usize = 28;
+const DEQ_RELEASE: usize = 29;
+const DEQ_OUTPUT: usize = 30;
+/// Offset of the threshold inside a band: changing it needs no new filter coefficients.
+const DEQ_THRESHOLD: usize = 5;
+/// The band filters follow the level at most once every this many samples, and only when the gain moved this much.
+const DEQ_STEP: usize = 16;
+const DEQ_EPS_DB: f32 = 0.05;
+/// Most a band moves the signal, static and dynamic gain together.
+const DEQ_MAX_DB: f32 = 30.0;
+/// Shelves and their detectors use a fixed slope, like the Channel EQ; Q shapes only the bells.
+const DEQ_SHELF_Q: f32 = 0.707;
+
+/// The registry range of parameter `i` (`DEQ_IDS` order), applied again here because automation reaches
+/// `set_param` without going through the session.
+fn deq_clamp(i: usize, v: f32) -> f32 {
+    let (lo, hi) = match i {
+        DEQ_ATTACK => (0.1, 200.0),
+        DEQ_RELEASE => (10.0, 2000.0),
+        DEQ_OUTPUT => (-24.0, 24.0),
+        _ => match i % DEQ_BAND_PARAMS {
+            0 => (0.0, 1.0),
+            1 => (0.0, 2.0),
+            2 => (20.0, 20000.0),
+            3 => (-24.0, 24.0),
+            4 => (0.1, 10.0),
+            5 => (-60.0, 0.0),
+            _ => (-24.0, 24.0),
+        },
+    };
+    let v = v.clamp(lo, hi);
+    if i < DEQ_ATTACK && i % DEQ_BAND_PARAMS < 2 {
+        v.round()
+    } else {
+        v
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct DeqBand {
+    on: bool,
+    /// 0 Bell, 1 Low Shelf, 2 High Shelf.
+    kind: u8,
+    freq: f32,
+    gain: f32,
+    q: f32,
+    threshold: f32,
+    /// `threshold` as a linear level, so a band below it needs no logarithm.
+    threshold_lin: f32,
+    range: f32,
+    /// On the input, one per channel: band-pass for a bell, low-pass for a low shelf, high-pass for a high shelf.
+    detect: [Biquad; 2],
+    /// The band itself, one per channel; at 0 dB its coefficients are an exact identity.
+    eq: [Biquad; 2],
+    env: f32,
+    /// Dynamic gain the band wants now, in dB, with the sign of `range`.
+    dyn_db: f32,
+    /// Static plus dynamic gain the `eq` coefficients hold now.
+    applied_db: f32,
+}
+
+impl DeqBand {
+    /// A band with no gain and no range is skipped: its filter would be an identity.
+    fn active(&self) -> bool {
+        self.on && (self.gain != 0.0 || self.range != 0.0)
+    }
+    fn eq_shape(&self) -> (BiquadKind, f32) {
+        match self.kind {
+            1 => (BiquadKind::LowShelf, DEQ_SHELF_Q),
+            2 => (BiquadKind::HighShelf, DEQ_SHELF_Q),
+            _ => (BiquadKind::Peak, self.q),
+        }
+    }
+    /// A shelf listens to everything on its side of `freq`, a bell to the band around it.
+    fn detect_shape(&self) -> (BiquadKind, f32) {
+        match self.kind {
+            1 => (BiquadKind::LowPass, DEQ_SHELF_Q),
+            2 => (BiquadKind::HighPass, DEQ_SHELF_Q),
+            _ => (BiquadKind::BandPass, self.q),
+        }
+    }
+    fn target_db(&self) -> f32 {
+        (self.gain + self.dyn_db).clamp(-DEQ_MAX_DB, DEQ_MAX_DB)
+    }
+    fn set_eq(&mut self, db: f32, sr: f32) {
+        let (kind, q) = self.eq_shape();
+        for b in self.eq.iter_mut() {
+            b.set(kind, self.freq, q, db, sr);
+        }
+        self.applied_db = db;
+    }
+    fn clear_detector(&mut self) {
+        for b in self.detect.iter_mut() {
+            b.reset();
+        }
+        self.env = 0.0;
+        self.dyn_db = 0.0;
+    }
+    fn clear(&mut self) {
+        self.clear_detector();
+        for b in self.eq.iter_mut() {
+            b.reset();
+        }
+    }
+}
+
+pub struct DynamicEq {
+    sr: f32,
+    p: [f32; 31],
+    bands: [DeqBand; DEQ_BANDS],
+    att: f32,
+    rel: f32,
+    out: f32,
+    since_update: usize,
+    dirty: bool,
+    /// Dynamic gain of each band (dB, without its static gain) with the largest size in the last block: negative
+    /// while a band cuts, positive while it boosts, 0 below threshold or when the band is off.
+    pub dynamic_gain_db: [f32; DEQ_BANDS],
+}
+
+impl DynamicEq {
+    pub fn new(sr: f32) -> Self {
+        let mut d = DynamicEq {
+            sr,
+            p: DEQ_DEFAULTS,
+            bands: [DeqBand::default(); DEQ_BANDS],
+            att: 0.0,
+            rel: 0.0,
+            out: 1.0,
+            since_update: 0,
+            dirty: false,
+            dynamic_gain_db: [0.0; DEQ_BANDS],
+        };
+        d.att = d.coef(DEQ_DEFAULTS[DEQ_ATTACK]);
+        d.rel = d.coef(DEQ_DEFAULTS[DEQ_RELEASE]);
+        d.out = db_to_gain(DEQ_DEFAULTS[DEQ_OUTPUT]);
+        d.update();
+        d
+    }
+    fn coef(&self, ms: f32) -> f32 {
+        1.0 - (-1.0 / (ms * 0.001 * self.sr)).exp()
+    }
+    fn update(&mut self) {
+        let sr = self.sr;
+        for (k, band) in self.bands.iter_mut().enumerate() {
+            let p = &self.p[k * DEQ_BAND_PARAMS..(k + 1) * DEQ_BAND_PARAMS];
+            band.on = p[0] >= 0.5;
+            band.kind = p[1] as u8;
+            band.freq = p[2];
+            band.gain = p[3];
+            band.q = p[4];
+            band.threshold = p[DEQ_THRESHOLD];
+            band.threshold_lin = db_to_gain(p[DEQ_THRESHOLD]);
+            band.range = p[6];
+            let (kind, q) = band.detect_shape();
+            for b in band.detect.iter_mut() {
+                b.set(kind, band.freq, q, 0.0, sr);
+            }
+            if !band.active() {
+                band.clear();
+            } else if band.range == 0.0 {
+                band.clear_detector();
+            }
+            // Keeps the dynamic gain it has, so moving a band while it works does not jump.
+            band.set_eq(band.target_db(), sr);
+        }
+        self.dirty = false;
+    }
+}
+
+impl Effect for DynamicEq {
+    fn set_param(&mut self, id: &str, v: f32) {
+        if !v.is_finite() {
+            return;
+        }
+        let Some(i) = DEQ_IDS.iter().position(|x| *x == id) else {
+            return;
+        };
+        let v = deq_clamp(i, v);
+        if self.p[i] == v {
+            return;
+        }
+        self.p[i] = v;
+        match i {
+            DEQ_ATTACK => self.att = self.coef(v),
+            DEQ_RELEASE => self.rel = self.coef(v),
+            DEQ_OUTPUT => self.out = db_to_gain(v),
+            _ if i % DEQ_BAND_PARAMS == DEQ_THRESHOLD => {
+                let band = &mut self.bands[i / DEQ_BAND_PARAMS];
+                band.threshold = v;
+                band.threshold_lin = db_to_gain(v);
+            }
+            _ => self.dirty = true,
+        }
+    }
+    fn process(&mut self, l: &mut [f32], r: &mut [f32], _ctx: &ProcessContext) {
+        if self.dirty {
+            self.update();
+        }
+        let (att, rel, sr, out) = (self.att, self.rel, self.sr, self.out);
+        let mut peak = [0.0f32; DEQ_BANDS];
+        for (a, b) in l.iter_mut().zip(r.iter_mut()) {
+            let (xl, xr) = (*a, *b);
+            self.since_update += 1;
+            let step = self.since_update >= DEQ_STEP;
+            if step {
+                self.since_update = 0;
+            }
+            let (mut yl, mut yr) = (xl, xr);
+            for (band, pk) in self.bands.iter_mut().zip(peak.iter_mut()) {
+                if !band.active() {
+                    continue;
+                }
+                if band.range != 0.0 {
+                    // The detectors listen to the input, so one band moving never changes what another hears.
+                    let level = band.detect[0].process(xl).abs().max(band.detect[1].process(xr).abs());
+                    let coef = if level > band.env { att } else { rel };
+                    band.env += (level - band.env) * coef;
+                    if band.env < 1e-9 {
+                        band.env = 0.0;
+                    }
+                    band.dyn_db = if band.env > band.threshold_lin {
+                        (gain_to_db(band.env) - band.threshold).clamp(0.0, band.range.abs()).copysign(band.range)
+                    } else {
+                        0.0
+                    };
+                    if band.dyn_db.abs() > pk.abs() {
+                        *pk = band.dyn_db;
+                    }
+                    if step {
+                        let t = band.target_db();
+                        // Back to exactly the static gain once the band stops working.
+                        if t != band.applied_db && ((t - band.applied_db).abs() >= DEQ_EPS_DB || band.dyn_db == 0.0) {
+                            band.set_eq(t, sr);
+                        }
+                    }
+                }
+                yl = band.eq[0].process(yl);
+                yr = band.eq[1].process(yr);
+            }
+            *a = yl * out;
+            *b = yr * out;
+        }
+        self.dynamic_gain_db = peak;
+    }
+    fn reset(&mut self) {
+        let sr = self.sr;
+        for band in self.bands.iter_mut() {
+            band.clear();
+            band.set_eq(band.target_db(), sr);
+        }
+        self.since_update = 0;
+        self.dynamic_gain_db = [0.0; DEQ_BANDS];
+    }
+}
+
 #[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
     use super::*;
@@ -1482,5 +1758,313 @@ mod de_esser_tests {
             d.process(&mut l, &mut r, &ctx);
         }
         assert_eq!(d.gain_reduction_db, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod dynamic_eq_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    const SR: f32 = 48000.0;
+    /// Half a second at 48 kHz.
+    const LEN: usize = 24000;
+    /// The window the tone levels are measured on: whole periods of every test frequency, so no leakage.
+    const WIN: usize = 4800;
+
+    fn tone(freq: f64, amp: f32, len: usize) -> Vec<f32> {
+        (0..len).map(|n| amp * (2.0 * std::f64::consts::PI * freq * n as f64 / SR as f64).sin() as f32).collect()
+    }
+
+    fn sum(a: &[f32], b: &[f32]) -> Vec<f32> {
+        a.iter().zip(b).map(|(x, y)| x + y).collect()
+    }
+
+    /// A dynamic EQ set up the way the engine does it: registry defaults, then `params`.
+    fn deq(params: &[(&str, f32)]) -> DynamicEq {
+        let mut d = DynamicEq::new(SR);
+        let map: BTreeMap<String, f32> = params.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        crate::configure("dynamic_eq", &map, |k, v| d.set_param(k, v));
+        d
+    }
+
+    /// Copies `input` to both channels and processes it in blocks of 512.
+    fn run(d: &mut DynamicEq, input: &[f32]) -> (Vec<f32>, Vec<f32>) {
+        let mut l = input.to_vec();
+        let mut r = input.to_vec();
+        let ctx = ProcessContext::idle(SR);
+        for (a, b) in l.chunks_mut(512).zip(r.chunks_mut(512)) {
+            d.process(a, b, &ctx);
+        }
+        (l, r)
+    }
+
+    /// Amplitude of the `freq` component over the last `WIN` samples (single-bin DFT).
+    fn level(x: &[f32], freq: f64) -> f32 {
+        let w = &x[x.len() - WIN..];
+        let (mut re, mut im) = (0.0f64, 0.0f64);
+        for (n, v) in w.iter().enumerate() {
+            let ph = 2.0 * std::f64::consts::PI * freq * n as f64 / SR as f64;
+            re += *v as f64 * ph.cos();
+            im -= *v as f64 * ph.sin();
+        }
+        (2.0 / WIN as f64 * (re * re + im * im).sqrt()) as f32
+    }
+
+    fn db(a: f32, b: f32) -> f32 {
+        20.0 * (a / b).log10()
+    }
+
+    fn max_diff(a: &[f32], b: &[f32]) -> f32 {
+        a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn defaults_and_ids_match_the_registry() {
+        let info = ondina_core::plugins::find("dynamic_eq").expect("dynamic_eq in the registry");
+        let ids: Vec<&str> = info.params.iter().map(|p| p.id).collect();
+        assert_eq!(ids, DEQ_IDS);
+        let defaults: Vec<f32> = info.params.iter().map(|p| p.default).collect();
+        assert_eq!(defaults, DEQ_DEFAULTS);
+        assert_eq!(DynamicEq::new(SR).p, DEQ_DEFAULTS);
+    }
+
+    #[test]
+    fn set_param_clamps_like_the_registry() {
+        let info = ondina_core::plugins::find("dynamic_eq").unwrap();
+        let mut d = DynamicEq::new(SR);
+        for (i, p) in info.params.iter().enumerate() {
+            d.set_param(p.id, p.min - 1000.0);
+            assert_eq!(d.p[i], p.min, "{} below its range", p.id);
+            d.set_param(p.id, p.max + 1000.0);
+            assert_eq!(d.p[i], p.max, "{} above its range", p.id);
+            d.set_param(p.id, f32::NAN);
+            d.set_param(p.id, f32::INFINITY);
+            assert_eq!(d.p[i], p.max, "{} took a value that is not finite", p.id);
+        }
+        let before = d.p;
+        d.set_param("b5_freq", 1000.0);
+        d.set_param("", 1.0);
+        assert_eq!(d.p, before);
+    }
+
+    #[test]
+    fn a_loud_bell_band_is_cut_by_up_to_range() {
+        let input = tone(300.0, 0.5, LEN);
+        let mut d = deq(&[("b2_threshold", -20.0), ("b2_range", -12.0)]);
+        let (l, r) = run(&mut d, &input);
+        for out in [&l, &r] {
+            let change = db(level(out, 300.0), level(&input, 300.0));
+            assert!((-13.0..=-6.0).contains(&change), "300 Hz changed by {change} dB");
+        }
+        assert!((d.dynamic_gain_db[1] + 12.0).abs() < 0.5, "band 2 moved by {} dB", d.dynamic_gain_db[1]);
+        for k in [0, 2, 3] {
+            assert_eq!(d.dynamic_gain_db[k], 0.0, "band {} moved", k + 1);
+        }
+    }
+
+    #[test]
+    fn below_threshold_the_band_leaves_the_tone_alone() {
+        let input = tone(300.0, 0.01, LEN);
+        let mut d = deq(&[("b2_threshold", -20.0), ("b2_range", -12.0)]);
+        let (l, r) = run(&mut d, &input);
+        for out in [&l, &r] {
+            let change = db(level(out, 300.0), level(&input, 300.0));
+            assert!(change.abs() < 0.5, "300 Hz changed by {change} dB");
+            assert!(max_diff(out, &input) < 1e-4);
+        }
+        assert_eq!(d.dynamic_gain_db[1], 0.0);
+    }
+
+    #[test]
+    fn a_positive_range_boosts_a_loud_band() {
+        let input = tone(300.0, 0.5, LEN);
+        let mut d = deq(&[("b2_threshold", -20.0), ("b2_range", 6.0)]);
+        let (l, r) = run(&mut d, &input);
+        for out in [&l, &r] {
+            let change = db(level(out, 300.0), level(&input, 300.0));
+            assert!((5.0..=7.0).contains(&change), "300 Hz changed by {change} dB");
+        }
+        assert!(d.dynamic_gain_db[1] > 5.0, "band 2 moved by {} dB", d.dynamic_gain_db[1]);
+    }
+
+    #[test]
+    fn transparent_when_bands_are_off_or_flat() {
+        let input = sum(&sum(&tone(80.0, 0.3, LEN), &tone(1000.0, 0.3, LEN)), &tone(8000.0, 0.3, LEN));
+        let mut d = deq(&[]);
+        let (l, r) = run(&mut d, &input);
+        assert!(max_diff(&l, &input) < 1e-4 && max_diff(&r, &input) < 1e-4, "the defaults change the sound");
+
+        let off = [("b1_on", 0.0), ("b2_on", 0.0), ("b3_on", 0.0), ("b4_on", 0.0), ("b2_gain", 6.0), ("b2_range", -12.0), ("b2_threshold", -60.0), ("b4_gain", -6.0)];
+        let mut d = deq(&off);
+        let (l, r) = run(&mut d, &input);
+        assert!(max_diff(&l, &input) < 1e-4 && max_diff(&r, &input) < 1e-4, "bands that are off change the sound");
+
+        let flat: Vec<(&str, f32)> = DEQ_IDS.iter().filter(|id| id.ends_with("_threshold")).map(|id| (*id, -60.0)).collect();
+        let mut d = deq(&flat);
+        let (l, r) = run(&mut d, &input);
+        assert!(max_diff(&l, &input) < 1e-4 && max_diff(&r, &input) < 1e-4, "flat bands change the sound");
+        assert_eq!(d.dynamic_gain_db, [0.0; 4]);
+    }
+
+    #[test]
+    fn static_gain_works_without_dynamics() {
+        let input = tone(1000.0, 0.1, LEN);
+        let mut d = deq(&[("b3_freq", 1000.0), ("b3_gain", 6.0)]);
+        let (l, r) = run(&mut d, &input);
+        for out in [&l, &r] {
+            let change = db(level(out, 1000.0), level(&input, 1000.0));
+            assert!((change - 6.0).abs() < 0.3, "1 kHz changed by {change} dB");
+        }
+        assert_eq!(d.dynamic_gain_db, [0.0; 4]);
+    }
+
+    #[test]
+    fn a_low_shelf_reacts_to_lows_only() {
+        let shelf = [("b1_freq", 150.0), ("b1_threshold", -20.0), ("b1_range", -10.0)];
+        let input = tone(60.0, 0.5, LEN);
+        let mut d = deq(&shelf);
+        let (l, _) = run(&mut d, &input);
+        let change = db(level(&l, 60.0), level(&input, 60.0));
+        assert!(change <= -6.0, "a loud 60 Hz changed by {change} dB");
+        assert!(d.dynamic_gain_db[0] < -9.0, "band 1 moved by {} dB", d.dynamic_gain_db[0]);
+
+        let input = sum(&tone(60.0, 0.01, LEN), &tone(2000.0, 0.5, LEN));
+        let mut d = deq(&shelf);
+        let (l, _) = run(&mut d, &input);
+        let change = db(level(&l, 60.0), level(&input, 60.0));
+        assert!(change.abs() < 0.5, "a quiet 60 Hz under a loud 2 kHz changed by {change} dB");
+        assert_eq!(d.dynamic_gain_db[0], 0.0);
+    }
+
+    #[test]
+    fn extreme_parameters_stay_finite() {
+        let ctx = ProcessContext::idle(SR);
+        let mut seed = 12345u32;
+        let mut noise = move || {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+        };
+        let signal: Vec<f32> = (0..512 * 20).map(|n| (2.0 * std::f32::consts::PI * 1000.0 * n as f32 / SR).sin() + noise()).collect();
+        let check = |d: &mut DynamicEq, what: &str| {
+            for block in signal.chunks(512) {
+                let (mut l, mut r) = (block.to_vec(), block.to_vec());
+                d.process(&mut l, &mut r, &ctx);
+                assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()), "{what}");
+            }
+        };
+        for gain in [-24.0, 24.0] {
+            for range in [-24.0, 24.0] {
+                for threshold in [-60.0, 0.0] {
+                    for q in [0.1, 10.0] {
+                        for freq in [20.0, 20000.0] {
+                            for kind in [0.0, 1.0, 2.0] {
+                                for (attack, release) in [(0.1, 10.0), (200.0, 2000.0)] {
+                                    let mut params = vec![("attack", attack), ("release", release), ("output", 24.0)];
+                                    for (i, id) in DEQ_IDS[..DEQ_ATTACK].iter().enumerate() {
+                                        let v = match i % DEQ_BAND_PARAMS {
+                                            0 => 1.0,
+                                            1 => kind,
+                                            2 => freq,
+                                            3 => gain,
+                                            4 => q,
+                                            5 => threshold,
+                                            _ => range,
+                                        };
+                                        params.push((*id, v));
+                                    }
+                                    let mut d = deq(&params);
+                                    check(&mut d, &format!("{params:?}"));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut d = deq(&[]);
+        for v in [1e9, -1e9, f32::NAN, f32::INFINITY] {
+            for id in DEQ_IDS {
+                d.set_param(id, v);
+            }
+            check(&mut d, &format!("every parameter set to {v}"));
+        }
+    }
+
+    #[test]
+    fn silence_settles_to_zero() {
+        let ctx = ProcessContext::idle(SR);
+        let working = [("b2_range", -12.0), ("b2_threshold", -60.0)];
+        let mut d = deq(&working);
+        for _ in 0..200 {
+            let mut l = [0.0f32; 512];
+            let mut r = [0.0f32; 512];
+            d.process(&mut l, &mut r, &ctx);
+            assert!(l.iter().chain(r.iter()).all(|x| *x == 0.0));
+        }
+
+        let mut d = deq(&working);
+        let s = tone(300.0, 0.9, 512);
+        let (mut l, mut r) = (s.clone(), s);
+        d.process(&mut l, &mut r, &ctx);
+        assert!(d.dynamic_gain_db[1] < 0.0);
+        for _ in 0..(5 * 48000 / 512) {
+            let mut l = [0.0f32; 512];
+            let mut r = [0.0f32; 512];
+            d.process(&mut l, &mut r, &ctx);
+            assert!(l.iter().chain(r.iter()).all(|x| x.is_finite()));
+        }
+        for band in &d.bands {
+            assert!(band.env == 0.0 || band.env.is_normal(), "envelope {}", band.env);
+        }
+        assert_eq!(d.dynamic_gain_db, [0.0; 4]);
+
+        let tiny = [f32::from_bits(1), f32::MIN_POSITIVE * 0.5];
+        let mut d = deq(&working);
+        for _ in 0..100 {
+            let mut l: [f32; 512] = std::array::from_fn(|i| if i % 4 < 2 { tiny[i % 2] } else { -tiny[i % 2] });
+            let mut r = l;
+            d.process(&mut l, &mut r, &ctx);
+            assert!(l.iter().chain(r.iter()).all(|x| x.is_finite() && x.abs() < 1e-30));
+            for band in &d.bands {
+                assert!(!band.env.is_subnormal(), "envelope {}", band.env);
+            }
+        }
+    }
+
+    #[test]
+    fn no_latency() {
+        let mut impulse = vec![0.0f32; 2048];
+        impulse[0] = 1.0;
+        let mut d = deq(&[]);
+        let (l, r) = run(&mut d, &impulse);
+        assert_eq!(l, impulse);
+        assert_eq!(r, impulse);
+
+        let mut d = deq(&[("b3_freq", 1000.0), ("b3_gain", 6.0)]);
+        let (l, _) = run(&mut d, &impulse);
+        assert!(l[0] >= 0.5, "the response starts late: first sample {}", l[0]);
+        let peak = l.iter().enumerate().fold((0, 0.0f32), |best, (i, x)| if x.abs() > best.1 { (i, x.abs()) } else { best });
+        assert_eq!(peak.0, 0, "the response peaks at sample {}", peak.0);
+    }
+
+    #[test]
+    fn reset_clears_the_bands() {
+        let mut d = deq(&[("b2_threshold", -20.0), ("b2_range", -12.0)]);
+        let loud = tone(300.0, 0.5, 512);
+        let ctx = ProcessContext::idle(SR);
+        for _ in 0..100 {
+            let (mut l, mut r) = (loud.clone(), loud.clone());
+            d.process(&mut l, &mut r, &ctx);
+            if d.dynamic_gain_db[1] < -11.0 {
+                break;
+            }
+        }
+        assert!(d.dynamic_gain_db[1] < -11.0, "band 2 never reached its range");
+        d.reset();
+        assert_eq!(d.dynamic_gain_db, [0.0; 4]);
+        let input = tone(300.0, 0.01, LEN);
+        let (l, r) = run(&mut d, &input);
+        assert!(max_diff(&l, &input) < 1e-4 && max_diff(&r, &input) < 1e-4);
     }
 }
