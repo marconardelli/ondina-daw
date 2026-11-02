@@ -7,8 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-11-02
+
 ### Added
 
+- Stereo Imager: a new utility effect that widens or narrows the stereo image in three bands (low, mid, high)
+  split at two crossover frequencies. Widen pads, choirs and synths without widening the bass, put everything
+  below the low crossover in mono with Mono Bass, shift the image with Balance and listen to Mid or Side only to
+  find problems. Width changes only the Side, so the mix keeps its level in mono; no latency. It works on tracks,
+  buses and the master and comes with three presets: Mono Low End, Wide Synth and Master Width Subtle. MCP clients
+  and the assistant add it with `add_effect` (`kind: "stereo_imager"`).
+- The Stereo Imager's AI bar offers three ready-made requests: "Mono the low end", "Wider without losing mono"
+  and "Check mono compatibility". The assistant reads the stereo correlation before and after, and tells you
+  what it changed or why nothing needed changing.
 - More AI providers for the assistant: besides Claude and the local model, Settings → Provider now offers OpenAI,
   Google Gemini and Kimi (Moonshot). Each has its own API key and model (defaults `gpt-6-astra`,
   `gemini-3.6-flash` and `kimi-k3.1-pro`); the keys can also come from `OPENAI_API_KEY`, `GEMINI_API_KEY` /
@@ -730,7 +741,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/marconardelli/ondina-daw/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/marconardelli/ondina-daw/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/marconardelli/ondina-daw/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/marconardelli/ondina-daw/compare/v0.19.2...v0.20.0
