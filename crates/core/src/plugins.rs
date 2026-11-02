@@ -48,6 +48,7 @@ const ONOFF: &[&str] = &["Off", "On"];
 const WAVES: &[&str] = &["Saw", "Square", "Triangle", "Sine", "Noise"];
 const FILTERS: &[&str] = &["Lowpass", "Highpass", "Bandpass"];
 const DEQ_TYPES: &[&str] = &["Bell", "Low Shelf", "High Shelf"];
+const LISTEN_MS: &[&str] = &["Stereo", "Mid", "Side"];
 
 use PluginCategory::*;
 
@@ -470,6 +471,24 @@ pub static REGISTRY: &[PluginInfo] = &[
         ],
     },
     PluginInfo {
+        kind: "stereo_imager",
+        name: "Stereo Imager",
+        category: Effect,
+        group: "Utility",
+        description: "Three-band stereo width. Two crossovers at Low Freq and High Freq (24 dB/oct, they sum back flat in level) split the sound into low, mid and high bands, each with its own Width: 0 is mono, 1 leaves the band as it is, 2 doubles its Side. Width changes only the Side (L-R), so the mono sum keeps its level; measure the result with the stereo correlation of analyze_mix (1 is mono, below 0 parts cancel in mono). Mono Bass makes everything below Low Freq mono, which keeps the low end steady. Balance turns the left (positive) or the right (negative) side down. Listen plays only the Mid (L+R) or only the Side (L-R) to find problems; set it back to Stereo. Like any crossover, the bands shift the phase a little around the two frequencies. No latency.",
+        params: &[
+            p("low_freq", "Low Freq", 40.0, 1000.0, 150.0, "Hz"),
+            p("high_freq", "High Freq", 1000.0, 16000.0, 4000.0, "Hz"),
+            p("low_width", "Low Width", 0.0, 2.0, 1.0, "x"),
+            p("mid_width", "Mid Width", 0.0, 2.0, 1.0, "x"),
+            p("high_width", "High Width", 0.0, 2.0, 1.0, "x"),
+            c("mono_bass", "Mono Bass", 0.0, ONOFF),
+            p("balance", "Balance", -1.0, 1.0, 0.0, ""),
+            c("listen", "Listen", 0.0, LISTEN_MS),
+            p("output", "Output Gain", -24.0, 24.0, 0.0, "dB"),
+        ],
+    },
+    PluginInfo {
         kind: "exciter",
         name: "Exciter",
         category: Effect,
@@ -618,6 +637,9 @@ pub static PRESETS: &[Preset] = &[
     Preset { name: "Tame Resonance", kind: "dynamic_eq", params: &[("b3_freq", 3000.0), ("b3_q", 5.0), ("b3_threshold", -30.0), ("b3_range", -8.0), ("attack", 2.0), ("release", 80.0)] },
     Preset { name: "Vocal Mud Control", kind: "dynamic_eq", params: &[("b2_freq", 300.0), ("b2_q", 1.2), ("b2_threshold", -30.0), ("b2_range", -6.0), ("attack", 10.0), ("release", 150.0)] },
     Preset { name: "Bass Boom Control", kind: "dynamic_eq", params: &[("b1_type", 1.0), ("b1_freq", 150.0), ("b1_threshold", -20.0), ("b1_range", -8.0), ("attack", 15.0), ("release", 200.0)] },
+    Preset { name: "Mono Low End", kind: "stereo_imager", params: &[("low_freq", 120.0), ("mono_bass", 1.0)] },
+    Preset { name: "Wide Synth", kind: "stereo_imager", params: &[("low_freq", 200.0), ("low_width", 0.7), ("mid_width", 1.4), ("high_width", 1.6)] },
+    Preset { name: "Master Width Subtle", kind: "stereo_imager", params: &[("low_freq", 100.0), ("mono_bass", 1.0), ("mid_width", 1.05), ("high_width", 1.15)] },
     Preset { name: "Warm Drive", kind: "overdrive", params: &[("mode", 3.0), ("drive", 0.3), ("tone", 0.4)] },
     Preset { name: "Fuzz Box", kind: "overdrive", params: &[("mode", 2.0), ("drive", 0.85), ("tone", 0.6), ("output", -9.0)] },
     Preset { name: "Lo-Fi", kind: "bitcrusher", params: &[("bits", 10.0), ("downsample", 3.0), ("mix", 0.6)] },
@@ -778,5 +800,42 @@ mod tests {
                 assert!((p.min..=p.max).contains(v), "{}: {id} = {v} out of range", preset.name);
             }
         }
+    }
+
+    #[test]
+    fn stereo_imager_is_registered_with_its_presets() {
+        let info = find("stereo_imager").expect("stereo_imager in the registry");
+        assert_eq!(info.category, PluginCategory::Effect);
+        assert_eq!(info.group, "Utility");
+        assert_eq!(info.name, "Stereo Imager");
+        let ids: Vec<&str> = info.params.iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["low_freq", "high_freq", "low_width", "mid_width", "high_width", "mono_bass", "balance", "listen", "output"]);
+        for p in info.params {
+            assert!((p.min..=p.max).contains(&p.default), "{}: default out of range", p.id);
+            if p.id.ends_with("_width") {
+                assert_eq!((p.min, p.max, p.default, p.unit), (0.0, 2.0, 1.0, "x"), "{}: a new Stereo Imager must not change the width", p.id);
+            }
+        }
+        let param = |id: &str| info.params.iter().find(|p| p.id == id).unwrap();
+        assert_eq!((param("low_freq").min, param("low_freq").max, param("low_freq").unit), (40.0, 1000.0, "Hz"));
+        assert_eq!((param("high_freq").min, param("high_freq").max, param("high_freq").unit), (1000.0, 16000.0, "Hz"));
+        assert_eq!(param("mono_bass").choices, ["Off", "On"]);
+        assert_eq!(param("mono_bass").default, 0.0);
+        assert_eq!(param("listen").choices, ["Stereo", "Mid", "Side"]);
+        assert_eq!(param("listen").default, 0.0);
+        for word in ["Width", "Mono Bass", "Listen", "phase", "analyze_mix", "No latency"] {
+            assert!(info.description.contains(word), "the description must mention {word}");
+        }
+        let names: Vec<&str> = presets_for("stereo_imager").map(|p| p.name).collect();
+        assert_eq!(names, ["Mono Low End", "Wide Synth", "Master Width Subtle"]);
+        for preset in presets_for("stereo_imager") {
+            assert!(!preset.params.is_empty(), "{}", preset.name);
+            for (id, v) in preset.params {
+                let p = info.params.iter().find(|p| p.id == *id).unwrap_or_else(|| panic!("{}: no parameter {id}", preset.name));
+                assert!((p.min..=p.max).contains(v), "{}: {id} = {v} out of range", preset.name);
+            }
+        }
+        let mono = find_preset("stereo_imager", "Mono Low End").unwrap();
+        assert!(mono.params.contains(&("mono_bass", 1.0)));
     }
 }

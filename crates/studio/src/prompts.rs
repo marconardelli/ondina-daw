@@ -43,6 +43,23 @@ pub const DYNAMIC_EQ_ACTIONS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Quick requests of the Stereo Imager panel, as (button label, request). Each one reads the stereo correlation with
+/// analyze_mix before and after, so the answer can say what changed in numbers.
+pub const STEREO_IMAGER_ACTIONS: &[(&str, &str)] = &[
+    (
+        "Mono the low end",
+        "Make the low end mono with this Stereo Imager: first read the stereo correlation with analyze_mix, then turn Mono Bass on and set Low Freq between 100 and 200 Hz (about 120 Hz on a full mix, up to 200 Hz on a wide pad or synth), leaving the other widths as they are. Change the parameters with set_plugin_params, measure again with analyze_mix, then report the stereo correlation before and after and which parameters you changed.",
+    ),
+    (
+        "Wider without losing mono",
+        "Make this sound wider without losing mono compatibility with this Stereo Imager: first read the stereo correlation with analyze_mix, then raise High Width (up to about 1.6) and Mid Width a little (up to about 1.3), and keep the low end narrow with Mono Bass on or Low Width at 1 or less. Width changes only the Side, so the mono sum keeps its level; if the stereo correlation drops below 0.2, back the widths off. Change the parameters with set_plugin_params, measure again with analyze_mix, then report the stereo correlation before and after and which parameters you changed.",
+    ),
+    (
+        "Check mono compatibility",
+        "Check the mono compatibility of what this Stereo Imager processes: read the stereo correlation of the master, and of this plug-in's track if it is on a track, with analyze_mix (near 1 is almost mono, below 0.2 the sound loses energy in mono, below 0 parts cancel out). If it is fine, change nothing and say why. If it is too low, lower the widths that are above 1 or turn Mono Bass on with set_plugin_params, then measure again with analyze_mix. Report the stereo correlation values you read and which parameters you changed, or why nothing needed changing.",
+    ),
+];
+
 /// Plug-in AI bar: "Design a sound" for the plug-in `plugin_id` called `name`.
 pub fn design_sound(plugin_id: Id, name: &str) -> String {
     format!("Adjust the parameters of plug-in {plugin_id} ({name}) to get a great sound for this track's role in the song. Explain briefly.")
@@ -65,6 +82,7 @@ pub fn plugin_quick_actions(kind: &str) -> &'static [(&'static str, &'static str
         "de_esser" => DE_ESSER_ACTIONS,
         "reverb" => REVERB_ACTIONS,
         "stereo_delay" | "tape_delay" => DELAY_ACTIONS,
+        "stereo_imager" => STEREO_IMAGER_ACTIONS,
         _ => GENERIC_ACTIONS,
     }
 }

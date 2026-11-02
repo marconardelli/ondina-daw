@@ -1469,6 +1469,210 @@ impl Effect for DynamicEq {
     }
 }
 
+// ============================================================================ Stereo Imager
+
+const IMG_IDS: [&str; 9] = ["low_freq", "high_freq", "low_width", "mid_width", "high_width", "mono_bass", "balance", "listen", "output"];
+/// The registry defaults and ranges, in `IMG_IDS` order (a test keeps them equal). The ranges are applied again here
+/// because automation reaches `set_param` without going through the session.
+const IMG_DEFAULTS: [f32; 9] = [150.0, 4000.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+const IMG_RANGES: [(f32, f32); 9] = [(40.0, 1000.0), (1000.0, 16000.0), (0.0, 2.0), (0.0, 2.0), (0.0, 2.0), (0.0, 1.0), (-1.0, 1.0), (0.0, 2.0), (-24.0, 24.0)];
+const IMG_LOW_FREQ: usize = 0;
+const IMG_HIGH_FREQ: usize = 1;
+const IMG_LOW_WIDTH: usize = 2;
+const IMG_MID_WIDTH: usize = 3;
+const IMG_HIGH_WIDTH: usize = 4;
+const IMG_MONO_BASS: usize = 5;
+const IMG_BALANCE: usize = 6;
+const IMG_LISTEN: usize = 7;
+const IMG_OUTPUT: usize = 8;
+/// Butterworth Q: two such filters in series make a 4th-order Linkwitz-Riley crossover.
+const LR_Q: f32 = std::f32::consts::FRAC_1_SQRT_2;
+/// Widths, balance and output glide over about this time, so automation and slider moves do not click.
+const IMG_SMOOTH_MS: f32 = 10.0;
+
+/// A 4th-order Linkwitz-Riley split: its low and high outputs are in phase and sum to an all-pass, flat in level.
+#[derive(Clone, Copy, Default)]
+struct Lr4 {
+    lp: [Biquad; 2],
+    hp: [Biquad; 2],
+}
+
+impl Lr4 {
+    fn set(&mut self, freq: f32, sr: f32) {
+        for b in self.lp.iter_mut() {
+            b.set(BiquadKind::LowPass, freq, LR_Q, 0.0, sr);
+        }
+        for b in self.hp.iter_mut() {
+            b.set(BiquadKind::HighPass, freq, LR_Q, 0.0, sr);
+        }
+    }
+
+    #[inline]
+    fn split(&mut self, x: f32) -> (f32, f32) {
+        let low = self.lp[0].process(x);
+        let high = self.hp[0].process(x);
+        (self.lp[1].process(low), self.hp[1].process(high))
+    }
+
+    fn reset(&mut self) {
+        for b in self.lp.iter_mut().chain(self.hp.iter_mut()) {
+            b.reset();
+        }
+    }
+}
+
+/// The all-pass an `Lr4` at the same frequency makes when its two outputs are summed: x - 2 * band-pass at the
+/// Butterworth Q. The RBJ low-, high- and band-pass share one bilinear transform, so the identity holds exactly.
+#[derive(Clone, Copy, Default)]
+struct Lr4AllPass(Biquad);
+
+impl Lr4AllPass {
+    fn set(&mut self, freq: f32, sr: f32) {
+        self.0.set(BiquadKind::BandPass, freq, LR_Q, 0.0, sr);
+    }
+
+    #[inline]
+    fn process(&mut self, x: f32) -> f32 {
+        x - 2.0 * self.0.process(x)
+    }
+
+    fn reset(&mut self) {
+        self.0.reset();
+    }
+}
+
+pub struct StereoImager {
+    sr: f32,
+    p: [f32; 9],
+    /// Side path: split at Low Freq, the rest split again at High Freq. The low band also goes through the High Freq
+    /// all-pass, so the three bands add up in phase.
+    split_low: Lr4,
+    split_high: Lr4,
+    low_ap: Lr4AllPass,
+    /// Mid path: the all-passes of both crossovers, so the Mid stays aligned with the Side and width 1 changes no level.
+    mid_ap: [Lr4AllPass; 2],
+    /// A crossover frequency changed: new coefficients at the next block.
+    dirty: bool,
+    /// Gains the parameters ask for and the ones in use now: low, mid, high width, left and right balance, output.
+    target: [f32; 6],
+    current: [f32; 6],
+    smooth: f32,
+    /// Jump straight to the targets at the next block (after `new` or `reset`), so a project opens without a glide.
+    snap: bool,
+    /// 0 Stereo, 1 Mid, 2 Side.
+    listen: u8,
+}
+
+impl StereoImager {
+    pub fn new(sr: f32) -> Self {
+        let mut s = StereoImager {
+            sr,
+            p: IMG_DEFAULTS,
+            split_low: Lr4::default(),
+            split_high: Lr4::default(),
+            low_ap: Lr4AllPass::default(),
+            mid_ap: [Lr4AllPass::default(); 2],
+            dirty: false,
+            target: [1.0; 6],
+            current: [1.0; 6],
+            smooth: 1.0 - (-1.0 / (IMG_SMOOTH_MS * 0.001 * sr)).exp(),
+            snap: true,
+            listen: 0,
+        };
+        s.update_crossovers();
+        s.retarget();
+        s
+    }
+
+    fn update_crossovers(&mut self) {
+        let (lo, hi, sr) = (self.p[IMG_LOW_FREQ], self.p[IMG_HIGH_FREQ], self.sr);
+        self.split_low.set(lo, sr);
+        self.split_high.set(hi, sr);
+        self.low_ap.set(hi, sr);
+        self.mid_ap[0].set(lo, sr);
+        self.mid_ap[1].set(hi, sr);
+        self.dirty = false;
+    }
+
+    fn retarget(&mut self) {
+        let p = &self.p;
+        let low = if p[IMG_MONO_BASS] >= 0.5 { 0.0 } else { p[IMG_LOW_WIDTH] };
+        let b = p[IMG_BALANCE];
+        self.target = [low, p[IMG_MID_WIDTH], p[IMG_HIGH_WIDTH], (1.0 - b).min(1.0), (1.0 + b).min(1.0), db_to_gain(p[IMG_OUTPUT])];
+        self.listen = p[IMG_LISTEN] as u8;
+    }
+}
+
+impl Effect for StereoImager {
+    fn set_param(&mut self, id: &str, v: f32) {
+        if !v.is_finite() {
+            return;
+        }
+        let Some(i) = IMG_IDS.iter().position(|x| *x == id) else {
+            return;
+        };
+        let (lo, hi) = IMG_RANGES[i];
+        let mut v = v.clamp(lo, hi);
+        if i == IMG_MONO_BASS || i == IMG_LISTEN {
+            v = v.round();
+        }
+        if self.p[i] == v {
+            return;
+        }
+        self.p[i] = v;
+        if i == IMG_LOW_FREQ || i == IMG_HIGH_FREQ {
+            self.dirty = true;
+        } else {
+            self.retarget();
+        }
+    }
+
+    fn process(&mut self, l: &mut [f32], r: &mut [f32], _ctx: &ProcessContext) {
+        if self.dirty {
+            self.update_crossovers();
+        }
+        if self.snap {
+            self.current = self.target;
+            self.snap = false;
+        }
+        let (target, k, listen) = (self.target, self.smooth, self.listen);
+        let mut g = self.current;
+        for (a, b) in l.iter_mut().zip(r.iter_mut()) {
+            for (c, t) in g.iter_mut().zip(target) {
+                let d = t - *c;
+                // Lands exactly on the target, so the gains never creep through subnormal numbers.
+                *c = if d.abs() < 1e-6 { t } else { *c + d * k };
+            }
+            let m = (*a + *b) * 0.5;
+            let s = (*a - *b) * 0.5;
+            let (s_low, s_rest) = self.split_low.split(s);
+            let s_low = self.low_ap.process(s_low);
+            let (s_mid, s_high) = self.split_high.split(s_rest);
+            let m = self.mid_ap[0].process(m);
+            let m = self.mid_ap[1].process(m);
+            let s = g[0] * s_low + g[1] * s_mid + g[2] * s_high;
+            let (yl, yr) = match listen {
+                1 => (m, m),
+                2 => (s, s),
+                _ => ((m + s) * g[3], (m - s) * g[4]),
+            };
+            *a = yl * g[5];
+            *b = yr * g[5];
+        }
+        self.current = g;
+    }
+
+    fn reset(&mut self) {
+        self.split_low.reset();
+        self.split_high.reset();
+        self.low_ap.reset();
+        for ap in self.mid_ap.iter_mut() {
+            ap.reset();
+        }
+        self.snap = true;
+    }
+}
+
 #[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
     use super::*;
@@ -2066,5 +2270,376 @@ mod dynamic_eq_tests {
         let input = tone(300.0, 0.01, LEN);
         let (l, r) = run(&mut d, &input);
         assert!(max_diff(&l, &input) < 1e-4 && max_diff(&r, &input) < 1e-4);
+    }
+}
+
+#[cfg(test)]
+mod stereo_imager_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    const SR: f32 = 48000.0;
+    /// One second at 48 kHz: the crossovers have settled long before the window.
+    const LEN: usize = 48000;
+    /// The last 0.2 s: whole periods of every test frequency (all multiples of 5 Hz), so no leakage.
+    const WIN: usize = 9600;
+    const BLOCK: usize = 512;
+
+    fn tone(freq: f64, amp: f32, len: usize) -> Vec<f32> {
+        (0..len).map(|n| amp * (2.0 * std::f64::consts::PI * freq * n as f64 / SR as f64).sin() as f32).collect()
+    }
+
+    fn sum(a: &[f32], b: &[f32]) -> Vec<f32> {
+        a.iter().zip(b).map(|(x, y)| x + y).collect()
+    }
+
+    fn neg(a: &[f32]) -> Vec<f32> {
+        a.iter().map(|x| -x).collect()
+    }
+
+    fn mid(l: &[f32], r: &[f32]) -> Vec<f32> {
+        l.iter().zip(r).map(|(a, b)| (a + b) * 0.5).collect()
+    }
+
+    fn side(l: &[f32], r: &[f32]) -> Vec<f32> {
+        l.iter().zip(r).map(|(a, b)| (a - b) * 0.5).collect()
+    }
+
+    /// A stereo imager set up the way the engine does it: registry defaults, then `params`.
+    fn img(params: &[(&str, f32)]) -> StereoImager {
+        let mut d = StereoImager::new(SR);
+        let map: BTreeMap<String, f32> = params.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        crate::configure("stereo_imager", &map, |k, v| d.set_param(k, v));
+        d
+    }
+
+    /// Processes `l` and `r` in blocks of 512.
+    fn run(d: &mut StereoImager, l: &[f32], r: &[f32]) -> (Vec<f32>, Vec<f32>) {
+        let (mut l, mut r) = (l.to_vec(), r.to_vec());
+        let ctx = ProcessContext::idle(SR);
+        for (a, b) in l.chunks_mut(BLOCK).zip(r.chunks_mut(BLOCK)) {
+            d.process(a, b, &ctx);
+        }
+        (l, r)
+    }
+
+    /// Amplitude of the `freq` component over the last `WIN` samples (single-bin DFT).
+    fn level(x: &[f32], freq: f64) -> f32 {
+        let w = &x[x.len() - WIN..];
+        let (mut re, mut im) = (0.0f64, 0.0f64);
+        for (n, v) in w.iter().enumerate() {
+            let ph = 2.0 * std::f64::consts::PI * freq * n as f64 / SR as f64;
+            re += *v as f64 * ph.cos();
+            im -= *v as f64 * ph.sin();
+        }
+        (2.0 / WIN as f64 * (re * re + im * im).sqrt()) as f32
+    }
+
+    fn db(a: f32, b: f32) -> f32 {
+        20.0 * (a / b).log10()
+    }
+
+    fn max_abs(x: &[f32]) -> f32 {
+        x.iter().fold(0.0, |m, v| m.max(v.abs()))
+    }
+
+    /// Deterministic pink noise: white noise from an LCG through a three-pole pinking filter.
+    fn pink(len: usize, seed: u32) -> Vec<f32> {
+        let mut state = seed;
+        let (mut b0, mut b1, mut b2) = (0.0f32, 0.0f32, 0.0f32);
+        (0..len)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let white = (state >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0;
+                b0 = 0.99765 * b0 + white * 0.099046;
+                b1 = 0.963 * b1 + white * 0.296516;
+                b2 = 0.57 * b2 + white * 1.052691;
+                (b0 + b1 + b2 + white * 0.1848) * 0.05
+            })
+            .collect()
+    }
+
+    /// Energy of `x` in the third-octave band around `fc`, after the first `skip` samples.
+    fn band_energy(x: &[f32], fc: f32, skip: usize) -> f64 {
+        let mut bp = Biquad::new(BiquadKind::BandPass, fc, 4.32, 0.0, SR);
+        x.iter().enumerate().map(|(n, v)| (n, bp.process(*v))).filter(|(n, _)| *n >= skip).map(|(_, y)| f64::from(y) * f64::from(y)).sum()
+    }
+
+    #[test]
+    fn defaults_and_ranges_match_the_registry() {
+        let info = ondina_core::plugins::find("stereo_imager").expect("stereo_imager in the registry");
+        let ids: Vec<&str> = info.params.iter().map(|p| p.id).collect();
+        assert_eq!(ids, IMG_IDS);
+        let defaults: Vec<f32> = info.params.iter().map(|p| p.default).collect();
+        assert_eq!(defaults, IMG_DEFAULTS);
+        let ranges: Vec<(f32, f32)> = info.params.iter().map(|p| (p.min, p.max)).collect();
+        assert_eq!(ranges, IMG_RANGES);
+        assert_eq!(StereoImager::new(SR).p, IMG_DEFAULTS);
+    }
+
+    #[test]
+    fn unity_widths_keep_the_level_flat_on_pink_noise() {
+        let l = pink(3 * 48000, 1);
+        let r = pink(3 * 48000, 2);
+        let (ol, or) = run(&mut img(&[]), &l, &r);
+        let skip = 24000;
+        let centres = [31.5, 40.0, 50.0, 63.0, 80.0, 100.0, 125.0, 160.0, 200.0, 250.0, 315.0, 400.0, 500.0, 630.0, 800.0, 1000.0, 1250.0, 1600.0, 2000.0, 2500.0, 3150.0, 4000.0, 5000.0, 6300.0, 8000.0, 10000.0, 12500.0, 16000.0];
+        for fc in centres {
+            for (name, input, out) in [("left", &l, &ol), ("right", &r, &or)] {
+                let change = 10.0 * (band_energy(out, fc, skip) / band_energy(input, fc, skip)).log10();
+                assert!(change.abs() <= 0.5, "{fc} Hz, {name} channel: {change:.2} dB");
+            }
+        }
+    }
+
+    #[test]
+    fn unity_widths_keep_a_hard_left_tone_on_the_left() {
+        for f in [30.0, 60.0, 100.0, 150.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 12000.0, 16000.0] {
+            let l = tone(f, 0.5, LEN);
+            let r = vec![0.0; LEN];
+            let (ol, or) = run(&mut img(&[]), &l, &r);
+            let change = db(level(&ol, f), level(&l, f));
+            assert!(change.abs() < 0.1, "{f} Hz: the left channel changed by {change:.3} dB");
+            let leak = db(level(&or, f), level(&l, f));
+            assert!(level(&or, f) < level(&l, f) * 10f32.powf(-50.0 / 20.0), "{f} Hz: {leak:.1} dB leaked to the right");
+        }
+    }
+
+    #[test]
+    fn mono_bass_folds_the_low_antiphase_and_keeps_the_rest() {
+        let set = [("mono_bass", 1.0), ("low_freq", 150.0)];
+        let l = tone(60.0, 0.5, LEN);
+        let (ol, or) = run(&mut img(&set), &l, &neg(&l));
+        for out in [&ol, &or] {
+            let change = db(level(out, 60.0), level(&l, 60.0));
+            assert!(change <= -30.0, "60 Hz antiphase: {change:.1} dB");
+        }
+        let l = tone(2000.0, 0.5, LEN);
+        let (ol, or) = run(&mut img(&set), &l, &neg(&l));
+        for out in [&ol, &or] {
+            let change = db(level(out, 2000.0), level(&l, 2000.0));
+            assert!(change.abs() <= 1.0, "2 kHz antiphase: {change:.2} dB");
+        }
+        let l = tone(60.0, 0.5, LEN);
+        let (ol, or) = run(&mut img(&set), &l, &l);
+        for out in [&ol, &or] {
+            let change = db(level(out, 60.0), level(&l, 60.0));
+            assert!(change.abs() < 0.1, "60 Hz mono: {change:.3} dB");
+        }
+    }
+
+    #[test]
+    fn listen_plays_only_the_mid_or_only_the_side() {
+        let mono = sum(&tone(100.0, 0.4, LEN), &tone(3000.0, 0.3, LEN));
+        let (ol, or) = run(&mut img(&[("listen", 2.0)]), &mono, &mono);
+        assert!(max_abs(&ol) < 1e-6 && max_abs(&or) < 1e-6, "Side of a mono signal: {} {}", max_abs(&ol), max_abs(&or));
+        let (ol, or) = run(&mut img(&[("listen", 1.0)]), &mono, &neg(&mono));
+        assert!(max_abs(&ol) < 1e-6 && max_abs(&or) < 1e-6, "Mid of an antiphase signal: {} {}", max_abs(&ol), max_abs(&or));
+        let l = tone(1000.0, 0.5, LEN);
+        let r = vec![0.0; LEN];
+        for listen in [1.0, 2.0] {
+            let (ol, or) = run(&mut img(&[("listen", listen)]), &l, &r);
+            assert_eq!(ol, or, "listen {listen}: both outputs carry the same signal");
+            let change = db(level(&ol, 1000.0), level(&l, 1000.0));
+            assert!((change + 6.02).abs() < 0.1, "listen {listen}: {change:.3} dB");
+        }
+    }
+
+    #[test]
+    fn high_width_widens_only_above_high_freq() {
+        let s_in = sum(&tone(60.0, 0.3, LEN), &tone(10000.0, 0.3, LEN));
+        let m_in = tone(1000.0, 0.3, LEN);
+        let l = sum(&m_in, &s_in);
+        let r = sum(&m_in, &neg(&s_in));
+        let (ol, or) = run(&mut img(&[("high_width", 2.0)]), &l, &r);
+        let (so, mo) = (side(&ol, &or), mid(&ol, &or));
+        let high = db(level(&so, 10000.0), level(&s_in, 10000.0));
+        assert!((5.5..=6.5).contains(&high), "Side at 10 kHz: {high:.2} dB");
+        let low = db(level(&so, 60.0), level(&s_in, 60.0));
+        assert!(low.abs() < 0.1, "Side at 60 Hz: {low:.3} dB");
+        let m = db(level(&mo, 1000.0), level(&m_in, 1000.0));
+        assert!(m.abs() < 0.1, "Mid at 1 kHz: {m:.3} dB");
+    }
+
+    #[test]
+    fn low_and_mid_widths_act_on_their_own_bands() {
+        let l = sum(&sum(&tone(60.0, 0.3, LEN), &tone(1000.0, 0.3, LEN)), &tone(10000.0, 0.3, LEN));
+        let r = neg(&l);
+        let side_change = |params: &[(&str, f32)], f: f64| {
+            let (ol, or) = run(&mut img(params), &l, &r);
+            db(level(&side(&ol, &or), f), level(&l, f))
+        };
+        let low = [("low_width", 0.0)];
+        let at60 = side_change(&low, 60.0);
+        assert!(at60 <= -30.0, "low width 0 at 60 Hz: {at60:.1} dB");
+        for f in [1000.0, 10000.0] {
+            let change = side_change(&low, f);
+            assert!(change.abs() < 0.1, "low width 0 at {f} Hz: {change:.3} dB");
+        }
+        let mid_half = [("mid_width", 0.5)];
+        let at1k = side_change(&mid_half, 1000.0);
+        assert!((at1k + 6.0).abs() < 0.5, "mid width 0.5 at 1 kHz: {at1k:.2} dB");
+        for f in [60.0, 10000.0] {
+            let change = side_change(&mid_half, f);
+            assert!(change.abs() < 0.3, "mid width 0.5 at {f} Hz: {change:.3} dB");
+        }
+    }
+
+    #[test]
+    fn width_zero_makes_it_mono() {
+        let (l, r) = (pink(LEN, 3), pink(LEN, 4));
+        let (ol, or) = run(&mut img(&[("low_width", 0.0), ("mid_width", 0.0), ("high_width", 0.0)]), &l, &r);
+        let diff = ol.iter().zip(&or).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
+        assert!(diff < 1e-6, "left and right differ by {diff}");
+    }
+
+    #[test]
+    fn balance_turns_the_other_side_down() {
+        let m = tone(1000.0, 0.5, LEN);
+        let (ol, or) = run(&mut img(&[("balance", 0.5)]), &m, &m);
+        let (dl, dr) = (db(level(&ol, 1000.0), level(&m, 1000.0)), db(level(&or, 1000.0), level(&m, 1000.0)));
+        assert!((dl + 6.02).abs() < 0.1, "balance 0.5, left: {dl:.3} dB");
+        assert!(dr.abs() < 0.1, "balance 0.5, right: {dr:.3} dB");
+        let (ol, or) = run(&mut img(&[("balance", -1.0)]), &m, &m);
+        assert!(max_abs(&or) < 1e-6, "balance -1, right: {}", max_abs(&or));
+        let dl = db(level(&ol, 1000.0), level(&m, 1000.0));
+        assert!(dl.abs() < 0.1, "balance -1, left: {dl:.3} dB");
+    }
+
+    #[test]
+    fn output_gain_scales_both_channels() {
+        let (l, r) = (tone(1000.0, 0.5, LEN), tone(500.0, 0.4, LEN));
+        let (ol, or) = run(&mut img(&[("output", -6.0)]), &l, &r);
+        let (dl, dr) = (db(level(&ol, 1000.0), level(&l, 1000.0)), db(level(&or, 500.0), level(&r, 500.0)));
+        assert!((dl + 6.0).abs() < 0.1, "left: {dl:.3} dB");
+        assert!((dr + 6.0).abs() < 0.1, "right: {dr:.3} dB");
+    }
+
+    #[test]
+    fn set_param_clamps_like_the_registry() {
+        let info = ondina_core::plugins::find("stereo_imager").unwrap();
+        let mut d = img(&[]);
+        for (i, p) in info.params.iter().enumerate() {
+            assert_eq!(IMG_IDS[i], p.id);
+            d.set_param(p.id, p.min - 1000.0);
+            assert_eq!(d.p[i], p.min, "{} below the range", p.id);
+            d.set_param(p.id, p.max + 1000.0);
+            assert_eq!(d.p[i], p.max, "{} above the range", p.id);
+            d.set_param(p.id, f32::NAN);
+            assert_eq!(d.p[i], p.max, "{}: NaN is ignored", p.id);
+            d.set_param(p.id, f32::INFINITY);
+            assert_eq!(d.p[i], p.max, "{}: infinity is ignored", p.id);
+        }
+        let before = d.p;
+        d.set_param("no_such_param", 0.5);
+        assert_eq!(d.p, before);
+        d.set_param("mono_bass", 0.7);
+        assert_eq!(d.p[IMG_MONO_BASS], 1.0);
+        d.set_param("listen", 1.4);
+        assert_eq!(d.p[IMG_LISTEN], 1.0);
+    }
+
+    #[test]
+    fn parameter_changes_glide() {
+        let (mut a, mut b) = (img(&[]), img(&[]));
+        let (l, r) = (pink(20 * BLOCK, 5), pink(20 * BLOCK, 6));
+        let ctx = ProcessContext::idle(SR);
+        let (mut out_a, mut out_b) = (Vec::new(), Vec::new());
+        for (n, (cl, cr)) in l.chunks(BLOCK).zip(r.chunks(BLOCK)).enumerate() {
+            if n == 10 {
+                b.set_param("mono_bass", 1.0);
+            }
+            let (mut al, mut ar) = (cl.to_vec(), cr.to_vec());
+            a.process(&mut al, &mut ar, &ctx);
+            let (mut bl, mut br) = (cl.to_vec(), cr.to_vec());
+            b.process(&mut bl, &mut br, &ctx);
+            out_a.extend(al);
+            out_b.extend(bl);
+        }
+        let diff: Vec<f32> = out_b.iter().zip(&out_a).skip(10 * BLOCK).map(|(x, y)| x - y).collect();
+        let first = max_abs(&diff[..8]);
+        let last = max_abs(&diff[diff.len() - 2048..]);
+        assert!(last > 0.0, "Mono Bass changed nothing");
+        assert!(first < 0.1 * last, "the change jumped: {first} at once, {last} at the end");
+    }
+
+    #[test]
+    fn extreme_parameters_stay_finite() {
+        let ctx = ProcessContext::idle(SR);
+        let mut state = 7u32;
+        let mut noise = move || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+        };
+        let mut blocks = |d: &mut StereoImager, n: usize| {
+            for k in 0..n {
+                let mut l: Vec<f32> = (0..BLOCK).map(|i| (2.0 * std::f32::consts::PI * 1000.0 * (k * BLOCK + i) as f32 / SR).sin()).collect();
+                let mut r: Vec<f32> = (0..BLOCK).map(|_| noise()).collect();
+                d.process(&mut l, &mut r, &ctx);
+                assert!(l.iter().chain(&r).all(|v| v.is_finite()), "not finite with {:?}", d.p);
+            }
+        };
+        for low_freq in [40.0, 1000.0] {
+            for high_freq in [1000.0, 16000.0] {
+                for widths in 0..8u32 {
+                    for mono_bass in [0.0, 1.0] {
+                        for balance in [-1.0, 1.0] {
+                            for listen in [0.0, 1.0, 2.0] {
+                                let w = |bit: u32| if widths & bit != 0 { 2.0 } else { 0.0 };
+                                let mut d = img(&[("low_freq", low_freq), ("high_freq", high_freq), ("low_width", w(1)), ("mid_width", w(2)), ("high_width", w(4)), ("mono_bass", mono_bass), ("balance", balance), ("listen", listen), ("output", 24.0)]);
+                                blocks(&mut d, 5);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut d = img(&[]);
+        blocks(&mut d, 2);
+        for v in [1e9, -1e9, f32::NAN, f32::INFINITY] {
+            for id in IMG_IDS {
+                d.set_param(id, v);
+            }
+            blocks(&mut d, 5);
+        }
+    }
+
+    #[test]
+    fn silence_and_subnormals_settle() {
+        let mut d = img(&[("high_width", 2.0), ("output", 24.0)]);
+        let zeros = vec![0.0; 100 * BLOCK];
+        let (ol, or) = run(&mut d, &zeros, &zeros);
+        assert!(ol.iter().chain(&or).all(|v| *v == 0.0), "silence in, silence out");
+        let tiny: Vec<f32> = (0..100 * BLOCK).map(|n| if n % 2 == 0 { 1e-40 } else { -1e-40 }).collect();
+        let (ol, or) = run(&mut img(&[]), &tiny, &tiny);
+        assert!(ol.iter().chain(&or).all(|v| v.is_finite() && v.abs() < 1e-30));
+        let mut d = img(&[]);
+        let noise = pink(201 * BLOCK, 8);
+        run(&mut d, &noise[..BLOCK], &noise[..BLOCK]);
+        d.set_param("mono_bass", 1.0);
+        run(&mut d, &noise[BLOCK..], &noise[BLOCK..]);
+        assert!(d.current.iter().all(|g| *g == 0.0 || g.is_normal()), "{:?}", d.current);
+        assert_eq!(d.current[0], 0.0);
+    }
+
+    #[test]
+    fn the_response_starts_at_once() {
+        let mut l = vec![0.0; BLOCK];
+        l[0] = 1.0;
+        let r = vec![0.0; BLOCK];
+        let (ol, or) = run(&mut img(&[]), &l, &r);
+        assert!(ol[0] >= 0.3, "left starts at {}", ol[0]);
+        assert!(or[0].abs() < 1e-3, "right starts at {}", or[0]);
+    }
+
+    #[test]
+    fn reset_clears_the_filters() {
+        let mut d = img(&[("high_width", 2.0)]);
+        let (l, r) = (pink(10 * BLOCK, 9), pink(10 * BLOCK, 10));
+        run(&mut d, &l, &r);
+        d.reset();
+        let zeros = vec![0.0; 10 * BLOCK];
+        let (ol, or) = run(&mut d, &zeros, &zeros);
+        assert!(ol.iter().chain(&or).all(|v| *v == 0.0), "the filters kept ringing after reset");
     }
 }
