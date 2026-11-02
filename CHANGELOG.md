@@ -7,6 +7,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-11-02
+
+### Added
+
+- AI bar on every plug-in: at the bottom of the parameters of any built-in instrument, effect or MIDI effect and of
+  any VST3 plug-in, type what you want ("more air on the vocal", "remove the boom below 200 Hz") or pick one of two
+  or three ready-made requests for that plug-in. The assistant gets the plug-in, its track, the rest of the chain
+  and all the parameter values, changes only that plug-in, and explains in a few lines what it changed and why.
+  Everything it did for one request is undone with a single Ctrl+Z. Works with Claude and with the local model.
+- Dynamic EQ: a new effect with four bands (Bell, Low Shelf, High Shelf) that cut or boost only while their
+  frequency range goes over the threshold, up to the chosen range, with attack, release and output gain. It tames
+  a booming bass or a vocal resonance only when it shows up, adds no latency and comes with three presets: Tame
+  Resonance, Vocal Mud Control and Bass Boom Control. MCP clients and the assistant add it with `add_effect`
+  (`kind: "dynamic_eq"`), and its AI bar offers ready-made requests for mud, harsh resonances and vocal air.
+
+### Changed
+
+- The AI bar replaces the "AI: design a sound" button of the instrument editors; *Design a sound* is now one of its
+  ready-made requests.
+- `get_plugin` also returns the plug-in's description, the default of each parameter, and the track, slot and
+  position in the chain where the plug-in sits.
+
 ## [0.20.1] - 2026-11-02
 
 ### Fixed
@@ -700,7 +722,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.20.1...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/marconardelli/ondina-daw/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/marconardelli/ondina-daw/compare/v0.20.0...v0.20.1
 [0.20.0]: https://github.com/marconardelli/ondina-daw/compare/v0.19.2...v0.20.0
 [0.19.2]: https://github.com/marconardelli/ondina-daw/compare/v0.19.1...v0.19.2
