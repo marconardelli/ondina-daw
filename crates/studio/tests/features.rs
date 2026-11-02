@@ -3166,3 +3166,94 @@ fn dynamic_eq_panel_gets_its_quick_actions_and_full_context() {
     let bar = prompts::plugin_bar_context(&s.project, fx).expect("the dynamic EQ has a bar context");
     assert!(bar.contains("set_plugin_params") && bar.contains(&ctx), "{bar}");
 }
+
+#[test]
+fn auto_master_keeps_the_true_peak_under_its_ceiling() {
+    let (mut s, _) = loudness_session("tp_master_src.wav");
+    let r = ok(&mut s, "auto_master", json!({"target_lufs": -8}));
+    assert!(num(&r["true_peak_dbtp"]) <= -0.8, "{r}");
+    let lim = s.project.master.inserts.iter().find(|p| p.kind == "limiter").expect("auto_master adds a limiter");
+    assert_eq!(lim.param("true_peak"), 1.0, "the mastering limiter runs with True Peak On");
+    let m = ok(&mut s, "analyze_mix", json!({}));
+    assert!(num(&m["master"]["true_peak_dbtp"]) <= -0.8, "{}", m["master"]);
+}
+
+#[test]
+fn limiter_true_peak_through_mcp() {
+    let (mut s, _) = loudness_session("tp_limiter_src.wav");
+    let lim = ok(&mut s, "add_effect", json!({"track_id": 0, "kind": "limiter"}))["plugin_id"].as_u64().unwrap();
+    let true_peak = |v: &Value| v["params"].as_array().unwrap().iter().find(|p| p["id"] == "true_peak").cloned().expect("true_peak parameter");
+    let v = ok(&mut s, "get_plugin", json!({"plugin_id": lim}));
+    assert!(v["description"].as_str().unwrap().contains("True Peak"), "{v}");
+    let tp = true_peak(&v);
+    assert_eq!(tp["choices"], json!(["Off", "On"]));
+    assert_eq!(tp["selected"], "Off");
+    assert_eq!(tp["default"], json!(0.0));
+    assert!(v.to_string().chars().count() < 6000, "get_plugin of the limiter is too long for the local model");
+
+    let before = ok(&mut s, "analyze_mix", json!({}));
+    ok(&mut s, "set_plugin_params", json!({"plugin_id": lim, "params": {"gain": 12, "ceiling": -1, "true_peak": 1}}));
+    assert_eq!(true_peak(&ok(&mut s, "get_plugin", json!({"plugin_id": lim})))["selected"], "On");
+    let after = ok(&mut s, "analyze_mix", json!({}));
+    assert!(num(&after["master"]["true_peak_dbtp"]) <= -0.8, "{}", after["master"]);
+    let (lufs_before, lufs_after) = (num(&before["master"]["integrated_lufs"]), num(&after["master"]["integrated_lufs"]));
+    assert!(lufs_after > lufs_before + 3.0, "loudness {lufs_before} -> {lufs_after}");
+
+    let preset = ok(&mut s, "add_effect", json!({"track_id": 0, "kind": "limiter", "preset": "Master Limiter"}))["plugin_id"].as_u64().unwrap();
+    assert_eq!(true_peak(&ok(&mut s, "get_plugin", json!({"plugin_id": preset})))["selected"], "On");
+}
+
+#[test]
+fn assistant_changes_to_the_limiter_are_one_undo_step() {
+    let mut s = Session::new(false);
+    let fx = ok(&mut s, "add_effect", json!({"track_id": 0, "kind": "limiter"}))["plugin_id"].as_u64().unwrap();
+    let values = |s: &mut Session| -> Vec<(String, f64)> {
+        let info = ok(s, "get_plugin", json!({"plugin_id": fx}));
+        info["params"].as_array().unwrap().iter().map(|p| (p["id"].as_str().unwrap().to_string(), p["value"].as_f64().unwrap())).collect()
+    };
+    let before = values(&mut s);
+    s.begin_undo_group("assistant: Bring the master to -14 LUFS");
+    run(&mut s, "set_plugin_params", json!({"plugin_id": fx, "params": {"gain": 6, "ceiling": -1.5, "true_peak": 1}}), Source::Ai);
+    s.end_undo_group();
+    let after = values(&mut s);
+    assert_ne!(after, before);
+    assert!(after.contains(&("true_peak".to_string(), 1.0)), "{after:?}");
+    assert_eq!(s.can_undo(), Some("assistant: Bring the master to -14 LUFS"));
+    assert!(s.last_undo_is_ai());
+    run(&mut s, "undo", json!({}), Source::Gui);
+    assert_eq!(values(&mut s), before, "one undo restores gain, ceiling and True Peak");
+    run(&mut s, "redo", json!({}), Source::Gui);
+    assert_eq!(values(&mut s), after);
+}
+
+#[test]
+fn limiter_saved_without_true_peak_reads_off_and_sounds_the_same() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo-song.aurora");
+    let mut s = Session::new(false);
+    ok(&mut s, "open_project", json!({"path": path.display().to_string(), "discard_unsaved": true}));
+    let lim = s
+        .project
+        .master
+        .inserts
+        .iter()
+        .chain(s.project.tracks.iter().flat_map(|t| t.channel.inserts.iter()))
+        .find(|p| p.kind == "limiter")
+        .expect("the demo song has a limiter");
+    assert!(!lim.params.contains_key("true_peak"), "the demo song was saved before True Peak");
+    let id = lim.id;
+    let v = ok(&mut s, "get_plugin", json!({"plugin_id": id}));
+    let tp = v["params"].as_array().unwrap().iter().find(|p| p["id"] == "true_peak").cloned().unwrap();
+    assert_eq!(tp["selected"], "Off");
+
+    let bounce = |s: &mut Session, name: &str| {
+        let p = tmp(name);
+        ok(s, "bounce", json!({"path": p.display().to_string(), "start": 0, "end": 8, "bit_depth": 32, "tail_sec": 0}));
+        read_stereo(&p)
+    };
+    let (la, ra, _) = bounce(&mut s, "tp_old_a.wav");
+    ok(&mut s, "set_plugin_param", json!({"plugin_id": id, "param": "true_peak", "value": 0}));
+    let (lb, rb, _) = bounce(&mut s, "tp_old_b.wav");
+    assert!(la.iter().any(|x| *x != 0.0), "the bounce is silent");
+    assert_eq!(la, lb, "left channel changed");
+    assert_eq!(ra, rb, "right channel changed");
+}

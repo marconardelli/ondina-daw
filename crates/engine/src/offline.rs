@@ -178,10 +178,16 @@ pub fn normalize(left: &mut [f32], right: &mut [f32]) {
     }
 }
 
-/// Largest absolute sample of a stereo buffer. The analyzer's true-peak estimate interpolates linearly between
-/// samples, which never goes past them, so this is the same number without the rounding of the report.
+/// Largest absolute sample of a stereo buffer: what normalize scales to -1 dBFS.
+/// The true peak (true_peak) can be higher, between samples.
 pub fn sample_peak(left: &[f32], right: &[f32]) -> f32 {
     left.iter().chain(right.iter()).fold(0.0f32, |a, b| a.max(b.abs()))
+}
+
+/// True peak of a stereo buffer (linear), with the analyzer's 4x oversampling: normalize_lufs keeps it under the
+/// ceiling, so the file measures under true_peak_ceiling_db in analyze_mix and in other meters.
+pub fn true_peak(left: &[f32], right: &[f32]) -> f32 {
+    ondina_dsp::util::true_peak(left).max(ondina_dsp::util::true_peak(right))
 }
 
 /// One gain for a whole bounce that moves its loudness toward a target.
@@ -194,7 +200,7 @@ pub struct LoudnessGain {
     pub target_reached: bool,
 }
 
-/// The gain that brings a mix measured at `integrated_lufs`, whose sample peak is `peak` (linear), to `target_lufs`
+/// The gain that brings a mix measured at `integrated_lufs`, whose true peak is `peak` (linear), to `target_lufs`
 /// without the peak going over `ceiling_db`. It can be a cut as well as a boost. None for a silent mix: there is
 /// nothing to scale, and a boost toward the target would only raise the noise floor.
 pub fn loudness_gain(integrated_lufs: f32, peak: f32, target_lufs: f32, ceiling_db: f32) -> Option<LoudnessGain> {
@@ -600,8 +606,8 @@ mod tests {
         assert_eq!(loudness_gain(-120.0, 0.5, -14.0, -1.0), None);
     }
 
-    /// The ceiling of normalize_lufs is kept with the sample peak. This breaks if the analyzer's true-peak estimate
-    /// ever goes above the sample peak: then the bounce has to use that estimate instead.
+    /// On a signal without overs between samples (a low sine and two single-sample spikes) the true peak is the sample
+    /// peak. normalize_lufs keeps its ceiling with true_peak, which reads the same interpolator as the analyzer.
     #[test]
     fn sample_peak_matches_the_analyzer_true_peak() {
         let sr = 44100usize;
@@ -615,6 +621,15 @@ mod tests {
         let peak = sample_peak(&left, &right);
         assert!((peak - 0.95).abs() < 1e-6);
         assert_eq!(report.true_peak_dbtp, (ondina_dsp::util::gain_to_db(peak) * 10.0).round() / 10.0);
+        assert_eq!(true_peak(&left, &right), peak);
+    }
+
+    #[test]
+    fn true_peak_is_above_the_sample_peak_between_samples() {
+        // fs/4 shifted by 45 degrees: the samples sit at 0.354, the real peak at 0.5
+        let l: Vec<f32> = (0..48000).map(|n| 0.5 * (std::f32::consts::PI * n as f32 / 2.0 + std::f32::consts::PI / 4.0).sin()).collect();
+        let r = l.clone();
+        assert!(true_peak(&l, &r) >= 1.35 * sample_peak(&l, &r), "true peak {} sample peak {}", true_peak(&l, &r), sample_peak(&l, &r));
     }
 
     #[test]
