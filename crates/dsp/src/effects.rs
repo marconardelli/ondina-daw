@@ -17,24 +17,54 @@ pub struct ChannelEq {
 
 const EQ_IDS: [&str; 15] = ["hp_on", "hp_freq", "low_gain", "low_freq", "mid1_gain", "mid1_freq", "mid1_q", "mid2_gain", "mid2_freq", "mid2_q", "high_gain", "high_freq", "lp_on", "lp_freq", "output"];
 
+/// What one Channel EQ band does: filter shape, frequency, Q, gain and whether it runs.
+#[derive(Clone, Copy)]
+struct EqBandSpec {
+    kind: BiquadKind,
+    freq: f32,
+    q: f32,
+    gain_db: f32,
+    active: bool,
+}
+
+/// The six bands for parameters `p` (`EQ_IDS` order). The processor and the drawn response read this same table.
+fn channel_eq_specs(p: &[f32; 15]) -> [EqBandSpec; 6] {
+    let band = |kind, freq, q, gain_db, active| EqBandSpec { kind, freq, q, gain_db, active };
+    [
+        band(BiquadKind::HighPass, p[1], 0.707, 0.0, p[0] >= 0.5),
+        band(BiquadKind::LowShelf, p[3], 0.707, p[2], p[2] != 0.0),
+        band(BiquadKind::Peak, p[5], p[6], p[4], p[4] != 0.0),
+        band(BiquadKind::Peak, p[8], p[9], p[7], p[7] != 0.0),
+        band(BiquadKind::HighShelf, p[11], 0.707, p[10], p[10] != 0.0),
+        band(BiquadKind::LowPass, p[13], 0.707, 0.0, p[12] >= 0.5),
+    ]
+}
+
+/// The Channel EQ parameters in processor order, read with `get` (for example `|id| inst.param(id)`).
+pub fn channel_eq_params(get: impl Fn(&str) -> f32) -> [f32; 15] {
+    std::array::from_fn(|i| get(EQ_IDS[i]))
+}
+
+/// The filter of each band that runs (None for a band that does nothing), in band order: High Pass, Low Shelf,
+/// Mid 1, Mid 2, High Shelf, Low Pass.
+pub fn channel_eq_filters(p: &[f32; 15], sr: f32) -> [Option<Biquad>; 6] {
+    channel_eq_specs(p).map(|s| s.active.then(|| Biquad::new(s.kind, s.freq, s.q, s.gain_db, sr)))
+}
+
+/// Gain in dB of the whole Channel EQ at `freq`, output gain included.
+pub fn channel_eq_response_db(p: &[f32; 15], freq: f32, sr: f32) -> f32 {
+    channel_eq_filters(p, sr).iter().flatten().map(|b| b.magnitude_db(freq, sr)).sum::<f32>() + p[14]
+}
+
 impl ChannelEq {
     pub fn new(sr: f32) -> Self {
         ChannelEq { sr, p: [0.0, 80.0, 0.0, 120.0, 0.0, 400.0, 1.0, 0.0, 2500.0, 1.0, 0.0, 8000.0, 0.0, 16000.0, 0.0], bands_l: [Biquad::default(); 6], bands_r: [Biquad::default(); 6], dirty: true }
     }
     fn update(&mut self) {
-        let p = &self.p;
         let sr = self.sr;
-        let specs = [
-            (BiquadKind::HighPass, p[1], 0.707, 0.0),
-            (BiquadKind::LowShelf, p[3], 0.707, p[2]),
-            (BiquadKind::Peak, p[5], p[6], p[4]),
-            (BiquadKind::Peak, p[8], p[9], p[7]),
-            (BiquadKind::HighShelf, p[11], 0.707, p[10]),
-            (BiquadKind::LowPass, p[13], 0.707, 0.0),
-        ];
-        for (i, (k, f, q, g)) in specs.iter().enumerate() {
-            self.bands_l[i].set(*k, *f, *q, *g, sr);
-            self.bands_r[i].set(*k, *f, *q, *g, sr);
+        for (i, s) in channel_eq_specs(&self.p).iter().enumerate() {
+            self.bands_l[i].set(s.kind, s.freq, s.q, s.gain_db, sr);
+            self.bands_r[i].set(s.kind, s.freq, s.q, s.gain_db, sr);
         }
         self.dirty = false;
     }
@@ -53,7 +83,7 @@ impl Effect for ChannelEq {
         if self.dirty {
             self.update();
         }
-        let active = [self.p[0] >= 0.5, self.p[2] != 0.0, self.p[4] != 0.0, self.p[7] != 0.0, self.p[10] != 0.0, self.p[12] >= 0.5];
+        let active = channel_eq_specs(&self.p).map(|s| s.active);
         let out = db_to_gain(self.p[14]);
         for i in 0..l.len() {
             let (mut a, mut b) = (l[i], r[i]);
@@ -1280,11 +1310,7 @@ impl DeqBand {
         self.on && (self.gain != 0.0 || self.range != 0.0)
     }
     fn eq_shape(&self) -> (BiquadKind, f32) {
-        match self.kind {
-            1 => (BiquadKind::LowShelf, DEQ_SHELF_Q),
-            2 => (BiquadKind::HighShelf, DEQ_SHELF_Q),
-            _ => (BiquadKind::Peak, self.q),
-        }
+        deq_eq_shape(self.kind, self.q)
     }
     /// A shelf listens to everything on its side of `freq`, a bell to the band around it.
     fn detect_shape(&self) -> (BiquadKind, f32) {
@@ -1317,6 +1343,48 @@ impl DeqBand {
             b.reset();
         }
     }
+}
+
+/// Filter shape and Q of a band of type `kind` (0 Bell, 1 Low Shelf, 2 High Shelf): the processor and the drawn
+/// response share it.
+fn deq_eq_shape(kind: u8, q: f32) -> (BiquadKind, f32) {
+    match kind {
+        1 => (BiquadKind::LowShelf, DEQ_SHELF_Q),
+        2 => (BiquadKind::HighShelf, DEQ_SHELF_Q),
+        _ => (BiquadKind::Peak, q),
+    }
+}
+
+/// The Dynamic EQ parameters in processor order, read with `get` and clamped like `set_param` (a value that is not
+/// finite reads as the default).
+pub fn dynamic_eq_params(get: impl Fn(&str) -> f32) -> [f32; 31] {
+    std::array::from_fn(|i| {
+        let v = get(DEQ_IDS[i]);
+        if v.is_finite() {
+            deq_clamp(i, v)
+        } else {
+            DEQ_DEFAULTS[i]
+        }
+    })
+}
+
+/// The filter of each band that runs, with `extra[k]` dB added to band k's static gain (0 for the static curve, the
+/// band's Range for how far it can go), limited like the processor's target gain.
+pub fn dynamic_eq_filters(p: &[f32; 31], sr: f32, extra: &[f32; 4]) -> [Option<Biquad>; 4] {
+    std::array::from_fn(|k| {
+        let b = &p[k * DEQ_BAND_PARAMS..(k + 1) * DEQ_BAND_PARAMS];
+        let active = b[0] >= 0.5 && (b[3] != 0.0 || b[6] != 0.0);
+        active.then(|| {
+            let (kind, q) = deq_eq_shape(b[1] as u8, b[4]);
+            let gain = (b[3] + extra[k]).clamp(-DEQ_MAX_DB, DEQ_MAX_DB);
+            Biquad::new(kind, b[2], q, gain, sr)
+        })
+    })
+}
+
+/// Gain in dB of the whole Dynamic EQ at `freq` with `extra` per band (see `dynamic_eq_filters`), output included.
+pub fn dynamic_eq_response_db(p: &[f32; 31], freq: f32, sr: f32, extra: &[f32; 4]) -> f32 {
+    dynamic_eq_filters(p, sr, extra).iter().flatten().map(|b| b.magnitude_db(freq, sr)).sum::<f32>() + p[DEQ_OUTPUT]
 }
 
 pub struct DynamicEq {
@@ -2641,5 +2709,158 @@ mod stereo_imager_tests {
         let zeros = vec![0.0; 10 * BLOCK];
         let (ol, or) = run(&mut d, &zeros, &zeros);
         assert!(ol.iter().chain(&or).all(|v| *v == 0.0), "the filters kept ringing after reset");
+    }
+}
+
+#[cfg(test)]
+mod eq_response_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    const SR: f32 = 48000.0;
+    const FREQS: [f32; 10] = [30.0, 60.0, 120.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 15000.0];
+
+    /// A Channel EQ set up the way the engine does it: registry defaults, then `params`.
+    fn ceq(params: &[(&str, f32)]) -> ChannelEq {
+        let mut e = ChannelEq::new(SR);
+        let map: BTreeMap<String, f32> = params.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        crate::configure("channel_eq", &map, |k, v| e.set_param(k, v));
+        e
+    }
+
+    /// A dynamic EQ set up the way the engine does it: registry defaults, then `params`.
+    fn deq(params: &[(&str, f32)]) -> DynamicEq {
+        let mut d = DynamicEq::new(SR);
+        let map: BTreeMap<String, f32> = params.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        crate::configure("dynamic_eq", &map, |k, v| d.set_param(k, v));
+        d
+    }
+
+    /// Gain in dB the effect gives a steady sine at `freq`: 1.5 s through it in blocks of 512, then the amplitude of
+    /// the `freq` component over the last second (whole periods, single-bin DFT).
+    fn measured_db(fx: &mut dyn Effect, freq: f32, amp: f32) -> f32 {
+        fx.reset();
+        let n = 72000;
+        let input: Vec<f32> = (0..n).map(|i| amp * (2.0 * std::f64::consts::PI * freq as f64 * i as f64 / SR as f64).sin() as f32).collect();
+        let mut l = input.clone();
+        let mut r = input;
+        let ctx = ProcessContext::idle(SR);
+        for (a, b) in l.chunks_mut(512).zip(r.chunks_mut(512)) {
+            fx.process(a, b, &ctx);
+        }
+        let win = &l[n - 48000..];
+        let (mut re, mut im) = (0.0f64, 0.0f64);
+        for (i, v) in win.iter().enumerate() {
+            let ph = 2.0 * std::f64::consts::PI * freq as f64 * i as f64 / SR as f64;
+            re += *v as f64 * ph.cos();
+            im -= *v as f64 * ph.sin();
+        }
+        let a = 2.0 / win.len() as f64 * (re * re + im * im).sqrt();
+        (20.0 * (a / amp as f64).log10()) as f32
+    }
+
+    /// The value of `id` in `map`, or its registry default for `kind`.
+    fn get<'a>(map: &'a [(&'a str, f32)], kind: &str) -> impl Fn(&str) -> f32 + 'a {
+        let info = ondina_core::plugins::find(kind).expect("kind in the registry");
+        move |id: &str| map.iter().find(|(k, _)| *k == id).map(|(_, v)| *v).unwrap_or_else(|| info.params.iter().find(|p| p.id == id).map_or(0.0, |p| p.default))
+    }
+
+    #[test]
+    fn channel_eq_ids_and_defaults_match_the_registry() {
+        let info = ondina_core::plugins::find("channel_eq").expect("channel_eq in the registry");
+        let ids: Vec<&str> = info.params.iter().map(|p| p.id).collect();
+        assert_eq!(ids, EQ_IDS);
+        let defaults: Vec<f32> = info.params.iter().map(|p| p.default).collect();
+        assert_eq!(ChannelEq::new(SR).p.to_vec(), defaults);
+    }
+
+    #[test]
+    fn channel_eq_response_matches_measured_sines() {
+        let map: &[(&str, f32)] = &[
+            ("hp_on", 1.0), ("hp_freq", 40.0), ("low_gain", 4.0), ("low_freq", 150.0),
+            ("mid1_gain", -6.0), ("mid1_freq", 400.0), ("mid1_q", 2.0),
+            ("mid2_gain", 5.0), ("mid2_freq", 3000.0), ("mid2_q", 0.7),
+            ("high_gain", -3.0), ("high_freq", 9000.0), ("lp_on", 1.0), ("lp_freq", 14000.0), ("output", 1.5),
+        ];
+        let p = channel_eq_params(get(map, "channel_eq"));
+        for f in FREQS {
+            let curve = channel_eq_response_db(&p, f, SR);
+            let measured = measured_db(&mut ceq(map), f, 0.1);
+            assert!((curve - measured).abs() <= 0.5, "{f} Hz: curve {curve:.2} dB, measured {measured:.2} dB");
+        }
+    }
+
+    #[test]
+    fn dynamic_eq_response_matches_measured_sines_with_range_0() {
+        let map: &[(&str, f32)] = &[
+            ("b1_type", 1.0), ("b1_freq", 120.0), ("b1_gain", 3.0),
+            ("b2_type", 0.0), ("b2_freq", 350.0), ("b2_gain", -5.0), ("b2_q", 1.5),
+            ("b3_type", 0.0), ("b3_freq", 2500.0), ("b3_gain", 4.0), ("b3_q", 3.0),
+            ("b4_type", 2.0), ("b4_freq", 8000.0), ("b4_gain", -4.0), ("output", -1.0),
+        ];
+        let p = dynamic_eq_params(get(map, "dynamic_eq"));
+        for f in FREQS {
+            let curve = dynamic_eq_response_db(&p, f, SR, &[0.0; 4]);
+            let measured = measured_db(&mut deq(map), f, 0.1);
+            assert!((curve - measured).abs() <= 0.5, "{f} Hz: curve {curve:.2} dB, measured {measured:.2} dB");
+        }
+    }
+
+    #[test]
+    fn dynamic_eq_full_range_matches_a_loud_sine() {
+        let map: &[(&str, f32)] = &[
+            ("b1_on", 0.0), ("b3_on", 0.0), ("b4_on", 0.0),
+            ("b2_on", 1.0), ("b2_type", 0.0), ("b2_freq", 1000.0), ("b2_gain", 0.0), ("b2_q", 1.0), ("b2_threshold", -60.0), ("b2_range", -6.0),
+        ];
+        let p = dynamic_eq_params(get(map, "dynamic_eq"));
+        let full = dynamic_eq_response_db(&p, 1000.0, SR, &[0.0, -6.0, 0.0, 0.0]);
+        assert!((full + 6.0).abs() <= 0.05, "{full}");
+        let measured = measured_db(&mut deq(map), 1000.0, 0.5);
+        assert!((full - measured).abs() <= 1.0, "curve {full:.2} dB, measured {measured:.2} dB");
+        let flat = dynamic_eq_response_db(&p, 1000.0, SR, &[0.0; 4]);
+        assert!(flat.abs() <= 0.01, "{flat}");
+    }
+
+    #[test]
+    fn eq_responses_are_finite_everywhere() {
+        for kind in ["channel_eq", "dynamic_eq"] {
+            let info = ondina_core::plugins::find(kind).unwrap();
+            let maps: [Vec<(&str, f32)>; 3] = [
+                info.params.iter().map(|p| (p.id, p.min)).collect(),
+                info.params.iter().map(|p| (p.id, p.max)).collect(),
+                info.params.iter().map(|p| (p.id, p.default)).collect(),
+            ];
+            for map in &maps {
+                for sr in [44100.0, 96000.0] {
+                    for f in [0.0, 20.0, 1000.0, 20000.0, 30000.0] {
+                        if kind == "channel_eq" {
+                            let p = channel_eq_params(get(map, kind));
+                            assert!(channel_eq_response_db(&p, f, sr).is_finite(), "{kind} {f} Hz at {sr}");
+                        } else {
+                            let p = dynamic_eq_params(get(map, kind));
+                            assert!(dynamic_eq_response_db(&p, f, sr, &[0.0; 4]).is_finite(), "{kind} {f} Hz at {sr}");
+                            assert!(dynamic_eq_response_db(&p, f, sr, &[24.0, -24.0, 24.0, -24.0]).is_finite(), "{kind} {f} Hz at {sr}");
+                        }
+                    }
+                }
+            }
+        }
+        let off: &[(&str, f32)] = &[("b2_on", 0.0), ("b2_gain", 6.0), ("b3_gain", 6.0)];
+        let filters = dynamic_eq_filters(&dynamic_eq_params(get(off, "dynamic_eq")), SR, &[0.0; 4]);
+        assert!(filters[1].is_none() && filters[2].is_some());
+        let hp_off: &[(&str, f32)] = &[("hp_on", 0.0), ("mid1_gain", 3.0)];
+        let filters = channel_eq_filters(&channel_eq_params(get(hp_off, "channel_eq")), SR);
+        assert!(filters[0].is_none() && filters[2].is_some());
+        let defaults = channel_eq_filters(&channel_eq_params(get(&[], "channel_eq")), SR);
+        assert!(defaults.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn dynamic_eq_params_clamp_like_set_param() {
+        let map: &[(&str, f32)] = &[("b1_freq", 5.0), ("b1_q", 50.0), ("attack", f32::NAN)];
+        let p = dynamic_eq_params(get(map, "dynamic_eq"));
+        assert_eq!(p[2], 20.0);
+        assert_eq!(p[4], 10.0);
+        assert_eq!(p[DEQ_ATTACK], 10.0);
     }
 }
