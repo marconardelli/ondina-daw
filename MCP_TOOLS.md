@@ -278,7 +278,7 @@ Bypass or enable a plug-in.
 Parameters: `bypass, plugin_id`
 
 ### `get_plugin` · read-only
-Get a plug-in with its description, all its parameter values with their ranges and defaults, and where it sits: track (id, name, kind; id 0 and kind "master" for the master channel), slot ("instrument", "midi_fx" or "insert") and index in that chain.
+Get a plug-in with its description, all its parameter values with their ranges and defaults, and where it sits: track (id, name, kind; id 0 and kind "master" for the master channel), slot ("instrument", "midi_fx" or "insert") and index in that chain. Inserts also return live meters: input_db, output_db (peak dBFS) and, for dynamics, gain_reduction_db (<= 0).
 
 Parameters: `plugin_id`
 
@@ -568,7 +568,7 @@ Render offline and analyze: integrated loudness (LUFS), true-peak estimate, RMS,
 Parameters: `end, start`
 
 ### `get_meters` · read-only
-Get live peak meters (dBFS) for every track and the master.
+Get live peak meters (dBFS) for every track, keyed by track id ("0" = master), plus "plugins": every insert plug-in id with name, track_id, input_db, output_db and, for plug-ins that reduce gain, gain_reduction_db. With the transport stopped the values fall to silence.
 
 Parameters: none
 
