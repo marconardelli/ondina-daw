@@ -8,12 +8,23 @@ use std::time::Duration;
 
 use eframe::egui::{self, RichText};
 use ondina_core::command::Command;
+use ondina_studio::cloud_ai::CloudProvider;
 
 use crate::app::OndinaApp;
 use crate::bounce_menu;
 use crate::dialog;
 use crate::theme;
 use crate::widgets::{self, Icon};
+
+/// Choices of Settings → Provider: the value stored in settings.json and its label.
+const PROVIDERS: &[(&str, &str)] = &[
+    ("auto", "Auto"),
+    ("local", "Local (offline)"),
+    ("anthropic", "Claude API"),
+    ("openai", "OpenAI"),
+    ("google", "Google Gemini"),
+    ("kimi", "Kimi (Moonshot)"),
+];
 
 /// Whether the Settings window should write the settings now: they differ from what was last written, and nobody is
 /// typing in one of its fields (or the window is closing). Never while the file on disk could not be read.
@@ -118,20 +129,29 @@ impl OndinaApp {
 
     fn settings_ai(&mut self, ui: &mut egui::Ui) {
         dialog::section(ui, "AI assistant", true);
+        dialog::row(ui, "Provider", |ui| {
+            let shown = PROVIDERS.iter().find(|(v, _)| *v == self.settings.provider).map(|(_, l)| *l).unwrap_or("Auto");
+            egui::ComboBox::from_id_salt("ai-provider")
+                .width(260.0)
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    for (v, l) in PROVIDERS {
+                        if ui.selectable_label(self.settings.provider == *v, *l).clicked() {
+                            self.settings.provider = v.to_string();
+                        }
+                    }
+                });
+        });
+        if let Some(p) = self.settings.cloud_provider() {
+            self.settings_cloud(ui, p);
+            return;
+        }
         dialog::row(ui, "Anthropic API key", |ui| {
             ui.add(egui::TextEdit::singleline(&mut self.api_key_buf).password(true).desired_width(260.0));
         });
         if std::env::var("ANTHROPIC_API_KEY").map(|k| !k.is_empty()).unwrap_or(false) {
             dialog::hint(ui, "Using ANTHROPIC_API_KEY from the environment.");
         }
-        dialog::row(ui, "Provider", |ui| {
-            let choices = [("auto", "Auto"), ("local", "Local (offline)"), ("anthropic", "Claude API")];
-            let mut i = choices.iter().position(|(v, _)| *v == self.settings.provider).unwrap_or(0);
-            let labels: Vec<&str> = choices.iter().map(|(_, l)| *l).collect();
-            if widgets::segmented(ui, &mut i, &labels).changed() {
-                self.settings.provider = choices[i].0.to_string();
-            }
-        });
         dialog::row(ui, "Local endpoint", |ui| {
             ui.add(egui::TextEdit::singleline(&mut self.settings.local_url).desired_width(260.0));
         });
@@ -150,6 +170,21 @@ impl OndinaApp {
                 self.settings.effort = efforts[i].to_string();
             }
         });
+    }
+
+    /// API key and model of OpenAI, Gemini or Kimi.
+    fn settings_cloud(&mut self, ui: &mut egui::Ui, p: CloudProvider) {
+        dialog::row(ui, &format!("{} API key", p.label()), |ui| {
+            ui.add(egui::TextEdit::singleline(self.settings.cloud_key_field(p)).password(true).desired_width(260.0));
+        });
+        match ondina_studio::settings::Settings::cloud_key_env(p) {
+            Some(var) => dialog::hint(ui, format!("Using {var} from the environment.")),
+            None => dialog::hint(ui, format!("Get a key at {}.", p.key_page())),
+        };
+        dialog::row(ui, "Model", |ui| {
+            ui.add(egui::TextEdit::singleline(self.settings.cloud_model_field(p)).hint_text(p.default_model()).desired_width(260.0));
+        });
+        dialog::hint(ui, format!("Empty uses {}. The assistant gets all the tools; requests and project data go to {}.", p.default_model(), p.label()));
     }
 
     fn settings_mcp(&mut self, ui: &mut egui::Ui) {

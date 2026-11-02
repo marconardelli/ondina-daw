@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::cloud_ai::CloudProvider;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -17,10 +19,19 @@ pub struct Settings {
     pub audio_output: Option<String>,
     pub recent_projects: Vec<String>,
     pub ui_scale: f32,
-    /// "anthropic" (Claude API) or "local" (offline OpenAI-compatible model, e.g. bundled llama.cpp).
+    /// "auto", "anthropic" (Claude API), "local" (offline OpenAI-compatible model, e.g. bundled llama.cpp), or a
+    /// cloud provider: "openai", "google" (Gemini) or "kimi" (Moonshot).
     pub provider: String,
     pub local_url: String,
     pub local_model: String,
+    /// API keys and models of the cloud providers (empty: none / the provider's default model). The provider's
+    /// environment variable (OPENAI_API_KEY, GEMINI_API_KEY, MOONSHOT_API_KEY...) takes precedence over the key.
+    pub openai_api_key: String,
+    pub openai_model: String,
+    pub google_api_key: String,
+    pub google_model: String,
+    pub kimi_api_key: String,
+    pub kimi_model: String,
     /// Folders the user added in the VST3 library. MCP clients and the assistant may load plug-ins only
     /// from these and the standard VST3 folders; they are never set through a tool.
     #[serde(default)]
@@ -62,7 +73,7 @@ pub struct PanelSizes {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { api_key: None, model: crate::ai::DEFAULT_MODEL.into(), effort: "medium".into(), mcp_enabled: true, mcp_port: 3917, audio_output: None, recent_projects: vec![], ui_scale: 1.0, provider: "auto".into(), local_url: "http://127.0.0.1:8080/v1".into(), local_model: "local".into(), vst3_folders: vec![], autosave_minutes: 3, keep_save_backup: true, panels: PanelSizes::default(), file_unread: false }
+        Settings { api_key: None, model: crate::ai::DEFAULT_MODEL.into(), effort: "medium".into(), mcp_enabled: true, mcp_port: 3917, audio_output: None, recent_projects: vec![], ui_scale: 1.0, provider: "auto".into(), local_url: "http://127.0.0.1:8080/v1".into(), local_model: "local".into(), openai_api_key: String::new(), openai_model: String::new(), google_api_key: String::new(), google_model: String::new(), kimi_api_key: String::new(), kimi_model: String::new(), vst3_folders: vec![], autosave_minutes: 3, keep_save_backup: true, panels: PanelSizes::default(), file_unread: false }
     }
 }
 
@@ -158,13 +169,66 @@ impl Settings {
         if self.model.trim().is_empty() { crate::ai::DEFAULT_MODEL.into() } else { self.model.clone() }
     }
 
-    /// Effective provider: "auto" uses Claude when a key is configured, otherwise the local model.
+    /// Effective provider: "auto" uses Claude when a key is configured, otherwise the local model; a cloud provider
+    /// is never the local model.
     pub fn use_local(&self) -> bool {
         match self.provider.as_str() {
             "local" => true,
             "anthropic" => false,
+            p if CloudProvider::from_id(p).is_some() => false,
             _ => self.api_key().is_none(),
         }
+    }
+
+    /// The cloud provider chosen in Settings (OpenAI, Gemini or Kimi), if any.
+    pub fn cloud_provider(&self) -> Option<CloudProvider> {
+        CloudProvider::from_id(&self.provider)
+    }
+
+    /// The key typed in Settings for `p` (empty when none).
+    pub fn cloud_key_field(&mut self, p: CloudProvider) -> &mut String {
+        match p {
+            CloudProvider::OpenAi => &mut self.openai_api_key,
+            CloudProvider::Google => &mut self.google_api_key,
+            CloudProvider::Kimi => &mut self.kimi_api_key,
+        }
+    }
+
+    /// The model typed in Settings for `p` (empty: the provider's default).
+    pub fn cloud_model_field(&mut self, p: CloudProvider) -> &mut String {
+        match p {
+            CloudProvider::OpenAi => &mut self.openai_model,
+            CloudProvider::Google => &mut self.google_model,
+            CloudProvider::Kimi => &mut self.kimi_model,
+        }
+    }
+
+    /// The environment variable that supplies the key for `p`, when one is set.
+    pub fn cloud_key_env(p: CloudProvider) -> Option<&'static str> {
+        p.key_env().iter().copied().find(|v| std::env::var(v).map(|k| !k.trim().is_empty()).unwrap_or(false))
+    }
+
+    /// The API key for `p`: its environment variable, else the key in Settings.
+    pub fn cloud_key(&self, p: CloudProvider) -> Option<String> {
+        if let Some(v) = Self::cloud_key_env(p) {
+            return std::env::var(v).ok().map(|k| k.trim().to_string());
+        }
+        let k = match p {
+            CloudProvider::OpenAi => &self.openai_api_key,
+            CloudProvider::Google => &self.google_api_key,
+            CloudProvider::Kimi => &self.kimi_api_key,
+        };
+        Some(k.trim().to_string()).filter(|k| !k.is_empty())
+    }
+
+    /// The model for `p`: the one in Settings, else the provider's default.
+    pub fn cloud_model(&self, p: CloudProvider) -> String {
+        let m = match p {
+            CloudProvider::OpenAi => &self.openai_model,
+            CloudProvider::Google => &self.google_model,
+            CloudProvider::Kimi => &self.kimi_model,
+        };
+        if m.trim().is_empty() { p.default_model().to_string() } else { m.trim().to_string() }
     }
 
     pub fn effort(&self) -> String {

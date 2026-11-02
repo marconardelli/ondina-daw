@@ -30,7 +30,7 @@ pub enum AiEvent {
     Done,
 }
 
-const SYSTEM_PROMPT: &str = r#"You are the music production assistant built into Ondina DAW, a digital audio workstation for Windows. You operate the DAW directly through tools; every tool is an undoable command identical to what the user can do in the GUI.
+pub const SYSTEM_PROMPT: &str = r#"You are the music production assistant built into Ondina DAW, a digital audio workstation for Windows. You operate the DAW directly through tools; every tool is an undoable command identical to what the user can do in the GUI.
 
 How to work:
 - Start a task by calling get_project unless the context already gives you the ids you need. Never guess ids.

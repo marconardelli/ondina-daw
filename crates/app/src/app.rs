@@ -61,6 +61,7 @@ pub enum ChatItem {
 pub struct AiState {
     pub assistant: Arc<Mutex<Assistant>>,
     pub local: Arc<Mutex<ondina_studio::local_ai::LocalAssistant>>,
+    pub cloud: Arc<Mutex<ondina_studio::cloud_ai::CloudAssistant>>,
     pub tx: Sender<AiEvent>,
     pub rx: Receiver<AiEvent>,
     pub busy: bool,
@@ -393,6 +394,7 @@ impl OndinaApp {
             ai: AiState {
                 assistant: Arc::new(Mutex::new(Assistant::new())),
                 local: Arc::new(Mutex::new(Default::default())),
+                cloud: Arc::new(Mutex::new(Default::default())),
                 tx,
                 rx,
                 busy: false,
@@ -685,8 +687,13 @@ impl OndinaApp {
         let cancel = self.ai.cancel.clone();
         let assistant = self.ai.assistant.clone();
         let local = self.ai.local.clone();
+        let cloud = self.ai.cloud.clone();
         std::thread::spawn(move || {
-            if settings.use_local() {
+            if settings.cloud_provider().is_some() {
+                cloud
+                    .lock()
+                    .run_turn(&session, &settings, &text, &ctx, &tx, &cancel);
+            } else if settings.use_local() {
                 local
                     .lock()
                     .run_turn(&session, &settings, &text, &ctx, &tx, &cancel);

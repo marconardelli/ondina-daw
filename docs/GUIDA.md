@@ -660,6 +660,21 @@ elenco.
 - Un plug-in che non viene caricato è barrato e in grigio, nel mixer e nell'inspector: passandoci sopra col
   mouse leggi il motivo. La sua finestra non si apre.
 
+## Assistente con OpenAI, Gemini o Kimi
+
+Oltre a Claude e al modello locale, l'assistente può usare OpenAI, Google Gemini o Kimi (Moonshot). In
+**Settings ⚙ → Provider** scegli il provider: compaiono il campo della sua chiave API e quello del modello.
+
+- Se lasci vuoto il modello, Ondina usa quello predefinito: `gpt-6-astra` per OpenAI, `gemini-3.6-flash` per
+  Gemini, `kimi-k3.1-pro` per Kimi.
+- La chiave può arrivare anche dall'ambiente: `OPENAI_API_KEY`, `GEMINI_API_KEY` (o `GOOGLE_API_KEY`),
+  `MOONSHOT_API_KEY`. In quel caso Settings lo dice sotto il campo.
+- Questi modelli ricevono tutti i tool, come Claude, e funzionano con le azioni rapide, i pulsanti ✨ e la barra AI
+  dei plug-in. Tutto quello che fanno per una richiesta si annulla con un solo Ctrl+Z.
+- La richiesta e lo stato del progetto vengono mandati al provider scelto. Cambiando provider la chat ricomincia.
+- Nel pannello la pillola mostra il nome del provider (*OpenAI*, *Gemini*, *Kimi*) e sotto il titolo compare il
+  modello in uso.
+
 ## Assistente con modello locale
 
 Senza chiave Anthropic l'assistente usa un modello che gira sul computer, attraverso un server

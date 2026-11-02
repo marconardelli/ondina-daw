@@ -224,9 +224,14 @@ request is a single undo step, and **↶ Undo AI edit** reverts it only when the
    Grid and for the plug-ins' AI bar.
 3. **Claude (optional)** — with an Anthropic API key (Settings ⚙ or `ANTHROPIC_API_KEY`) the panel uses Claude with
    all tools.
+4. **OpenAI, Google Gemini or Kimi (optional)** — choose the provider and enter its API key in Settings ⚙ (or set
+   `OPENAI_API_KEY`, `GEMINI_API_KEY` / `GOOGLE_API_KEY`, `MOONSHOT_API_KEY`). These models get all tools too. The
+   model field is empty by default and then uses `gpt-6-astra`, `gemini-3.6-flash` or `kimi-k3.1-pro`;
+   `OPENAI_BASE_URL`, `GEMINI_BASE_URL` and `MOONSHOT_BASE_URL` point a provider at another endpoint (a gateway,
+   or `https://api.moonshot.cn/v1` for Kimi accounts in China).
 
 Choose the provider in **Settings ⚙ → Provider** (*Auto* uses Claude when a key is configured, the local model
-otherwise). The assistant receives the current selection (track, region, notes, playhead) as context, offers quick
+otherwise; OpenAI, Gemini and Kimi are used only when chosen). The assistant receives the current selection (track, region, notes, playhead) as context, offers quick
 actions, and can "listen" to the mix through `analyze_mix`. MCP clients read the same selection with
 `get_selection`. With `get_activity` they see what happened since they last looked: the edits made in the window, the
 assistant's and other clients' tool calls, and whether the project was replaced or Ondina restarted. Contextual AI

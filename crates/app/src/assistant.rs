@@ -5,6 +5,7 @@ use std::sync::atomic::Ordering;
 use std::sync::OnceLock;
 
 use eframe::egui::{self, vec2, Color32, RichText, Rounding, Stroke};
+use ondina_studio::cloud_ai::CloudProvider;
 use ondina_studio::Source;
 
 use crate::app::{ChatItem, OndinaApp};
@@ -23,7 +24,7 @@ const QUICK: &[(&str, &str)] = &[
 
 /// Hover text of an AI button while no model is connected.
 pub const NO_MODEL_HINT: &str =
-    "No AI model connected: add an Anthropic API key or start the local model in Settings";
+    "No AI model connected: add an API key (Claude, OpenAI, Gemini or Kimi) or start the local model in Settings";
 /// Hover text of an AI button while the assistant is answering.
 pub const BUSY_HINT: &str = "The assistant is working: wait for it or press Stop";
 
@@ -36,6 +37,8 @@ pub enum AiEngine {
     Local,
     /// Claude through the Anthropic API.
     Claude,
+    /// OpenAI, Gemini or Kimi with the person's API key.
+    Cloud(CloudProvider),
 }
 
 impl AiEngine {
@@ -44,6 +47,7 @@ impl AiEngine {
             AiEngine::Offline => "Offline",
             AiEngine::Local => "Local",
             AiEngine::Claude => "Claude",
+            AiEngine::Cloud(p) => p.label(),
         }
     }
 
@@ -52,15 +56,19 @@ impl AiEngine {
         match self {
             AiEngine::Offline => (theme::TEXT_3, theme::BORDER, theme::TEXT_2),
             AiEngine::Local => (theme::PLAY, theme::PLAY_BG, theme::PLAY),
-            AiEngine::Claude => (theme::AI, theme::AI_BG, theme::AI_TEXT),
+            AiEngine::Claude | AiEngine::Cloud(_) => (theme::AI, theme::AI_BG, theme::AI_TEXT),
         }
     }
 }
 
-/// The engine the assistant uses, as `Settings::use_local` picks it: "local" always means the local model (its
-/// server may be one the person runs), "anthropic" needs a key, and "auto" takes Claude with a key, else the bundled
+/// The engine the assistant uses, as `Settings::use_local` and `Settings::cloud_provider` pick it: "local" always
+/// means the local model (its server may be one the person runs), "anthropic" needs a key, a cloud provider
+/// ("openai", "google", "kimi") needs its own key (`cloud_key`), and "auto" takes Claude with a key, else the bundled
 /// model when it is installed.
-pub fn ai_engine(provider: &str, has_key: bool, bundled_local: bool) -> AiEngine {
+pub fn ai_engine(provider: &str, has_key: bool, cloud_key: bool, bundled_local: bool) -> AiEngine {
+    if let Some(p) = CloudProvider::from_id(provider) {
+        return if cloud_key { AiEngine::Cloud(p) } else { AiEngine::Offline };
+    }
     match provider {
         "local" => AiEngine::Local,
         "anthropic" if has_key => AiEngine::Claude,
@@ -129,7 +137,17 @@ const ASSISTANT_PILL_ROOM: f32 = 150.0;
 impl OndinaApp {
     /// The engine the assistant would use now.
     pub fn ai_engine(&self) -> AiEngine {
-        ai_engine(&self.settings.provider, self.settings.api_key().is_some(), bundled_local())
+        let cloud_key = self.settings.cloud_provider().map(|p| self.settings.cloud_key(p).is_some()).unwrap_or(false);
+        ai_engine(&self.settings.provider, self.settings.api_key().is_some(), cloud_key, bundled_local())
+    }
+
+    /// The model that answers with `engine` (empty for the local and offline engines).
+    fn engine_model(&self, engine: AiEngine) -> String {
+        match engine {
+            AiEngine::Claude => self.settings.model(),
+            AiEngine::Cloud(p) => self.settings.cloud_model(p),
+            AiEngine::Local | AiEngine::Offline => String::new(),
+        }
     }
 
     /// An "Ask the AI" button, disabled (with the reason on hover) while no model is connected or the assistant is
@@ -164,7 +182,7 @@ impl OndinaApp {
                 } else {
                     let caption = engine_caption(
                         engine == AiEngine::Local,
-                        &self.settings.model(),
+                        &self.engine_model(engine),
                         ondina_studio::local_ai::tool_count(),
                         ondina_studio::mcp::tools().len(),
                     );
@@ -215,7 +233,7 @@ impl OndinaApp {
             let tip = match engine {
                 AiEngine::Offline => NO_MODEL_HINT.to_string(),
                 AiEngine::Local => "Answered by the local model on this computer".to_string(),
-                AiEngine::Claude => format!("Answered by {}", self.settings.model()),
+                AiEngine::Claude | AiEngine::Cloud(_) => format!("Answered by {}", self.engine_model(engine)),
             };
             // on a narrow panel the pill would slide under the header buttons: the empty state says it anyway
             let label_w = ui
@@ -244,6 +262,7 @@ impl OndinaApp {
                 {
                     self.ai.assistant.lock().clear();
                     self.ai.local.lock().clear();
+                    self.ai.cloud.lock().clear();
                     self.ai.chat.clear();
                 }
             });
@@ -261,7 +280,7 @@ impl OndinaApp {
                 ui.label(RichText::new("No AI model connected").font(egui::FontId::new(13.0, theme::semibold())));
                 ui.label(
                     RichText::new(
-                        "Add an Anthropic API key or start the local model to use the assistant. \
+                        "Add an API key (Claude, OpenAI, Gemini or Kimi) or start the local model to use the assistant. \
                          External agents can always use Ondina through MCP.",
                     )
                     .color(theme::TEXT_2),
@@ -449,15 +468,26 @@ mod tests {
 
     #[test]
     fn engine_follows_the_provider_the_key_and_the_bundled_model() {
-        assert_eq!(ai_engine("auto", true, false), AiEngine::Claude);
-        assert_eq!(ai_engine("auto", true, true), AiEngine::Claude);
-        assert_eq!(ai_engine("auto", false, true), AiEngine::Local);
-        assert_eq!(ai_engine("auto", false, false), AiEngine::Offline);
-        assert_eq!(ai_engine("anthropic", true, true), AiEngine::Claude);
-        assert_eq!(ai_engine("anthropic", false, true), AiEngine::Offline);
+        assert_eq!(ai_engine("auto", true, false, false), AiEngine::Claude);
+        assert_eq!(ai_engine("auto", true, false, true), AiEngine::Claude);
+        assert_eq!(ai_engine("auto", false, false, true), AiEngine::Local);
+        assert_eq!(ai_engine("auto", false, false, false), AiEngine::Offline);
+        assert_eq!(ai_engine("anthropic", true, false, true), AiEngine::Claude);
+        assert_eq!(ai_engine("anthropic", false, true, true), AiEngine::Offline);
         // a local server the person runs themselves (Ollama, LM Studio) needs no bundled model
-        assert_eq!(ai_engine("local", false, false), AiEngine::Local);
-        assert_eq!(ai_engine("", false, false), AiEngine::Offline);
+        assert_eq!(ai_engine("local", false, false, false), AiEngine::Local);
+        assert_eq!(ai_engine("", false, false, false), AiEngine::Offline);
+    }
+
+    #[test]
+    fn a_cloud_provider_needs_its_own_key() {
+        for p in CloudProvider::ALL {
+            assert_eq!(ai_engine(p.id(), false, true, true), AiEngine::Cloud(p));
+            // the Claude key and the bundled model do not stand in for the provider's key
+            assert_eq!(ai_engine(p.id(), true, false, true), AiEngine::Offline);
+            assert_eq!(AiEngine::Cloud(p).label(), p.label());
+        }
+        assert_eq!(AiEngine::Cloud(CloudProvider::Google).label(), "Gemini");
     }
 
     #[test]
@@ -475,7 +505,7 @@ mod tests {
 
     #[test]
     fn a_connected_model_can_be_asked_unless_it_is_busy() {
-        for engine in [AiEngine::Local, AiEngine::Claude] {
+        for engine in [AiEngine::Local, AiEngine::Claude, AiEngine::Cloud(CloudProvider::OpenAi)] {
             let idle = ai_controls(engine, false);
             assert!(idle.ask && idle.prompt && !idle.empty_state && !idle.stop && idle.new_chat);
             assert_eq!(ask_blocked_reason(engine, false), None);

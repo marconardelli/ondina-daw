@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- More AI providers for the assistant: besides Claude and the local model, Settings → Provider now offers OpenAI,
+  Google Gemini and Kimi (Moonshot). Each has its own API key and model (defaults `gpt-6-astra`,
+  `gemini-3.6-flash` and `kimi-k3.1-pro`); the keys can also come from `OPENAI_API_KEY`, `GEMINI_API_KEY` /
+  `GOOGLE_API_KEY` and `MOONSHOT_API_KEY`. These models get all the tools, like Claude, and work with the quick
+  actions, the ✨ buttons and the plug-ins' AI bar; one request is still one undo step.
+
 ## [0.21.0] - 2026-11-02
 
 ### Added
