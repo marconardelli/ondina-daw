@@ -1538,6 +1538,58 @@ mod tests {
         .join()
         .unwrap();
     }
+
+    /// FNV-1a over the bits of every output sample.
+    fn fingerprint(l: &[f32], r: &[f32]) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for x in l.iter().chain(r) {
+            for b in x.to_bits().to_le_bytes() {
+                h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        h
+    }
+
+    /// One second of loud material for the limiter: a low sine, bursts of a high sine and noise.
+    fn limiter_input(sr: f32) -> (Vec<f32>, Vec<f32>) {
+        use std::f32::consts::PI;
+        let mut noise = crate::util::Noise::new(11);
+        let (mut l, mut r) = (Vec::new(), Vec::new());
+        for i in 0..sr as usize {
+            let t = i as f32 / sr;
+            let burst = if (i / 3000) % 2 == 0 { 1.0 } else { 0.2 };
+            let x = (2.0 * PI * 110.0 * t).sin() * 0.4 + (2.0 * PI * 3000.0 * t).sin() * 0.3 * burst + noise.next() * 0.1;
+            l.push(x);
+            r.push(x * 0.8 + noise.next() * 0.05);
+        }
+        (l, r)
+    }
+
+    #[test]
+    fn limiter_off_matches_the_previous_output_bit_for_bit() {
+        // Output of the limiter before the true-peak mode, with only the parameters it had then.
+        const BEFORE: u64 = 0xec70_b6ba_c040_557b;
+        let (mut l, mut r) = limiter_input(48000.0);
+        let mut lim = Limiter::new(48000.0);
+        let ctx = ProcessContext::idle(48000.0);
+        let sizes = [512usize, 1, 300, 1024, 77];
+        let (mut pos, mut k) = (0, 0);
+        while pos < l.len() {
+            // parameters move between blocks, as automation moves them
+            lim.set_param("gain", [6.0, 9.0, 12.0][k % 3]);
+            lim.set_param("ceiling", if k % 2 == 0 { -1.0 } else { -3.0 });
+            lim.set_param("release", if k % 4 < 2 { 60.0 } else { 200.0 });
+            if k == 40 {
+                lim.reset();
+            }
+            let end = (pos + sizes[k % sizes.len()]).min(l.len());
+            lim.process(&mut l[pos..end], &mut r[pos..end], &ctx);
+            pos = end;
+            k += 1;
+        }
+        assert!(l.iter().chain(&r).all(|x| x.is_finite()));
+        assert_eq!(fingerprint(&l, &r), BEFORE, "the limiter with True Peak Off must sound as before");
+    }
 }
 
 #[cfg(test)]
