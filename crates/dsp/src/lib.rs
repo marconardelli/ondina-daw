@@ -143,6 +143,7 @@ pub fn create_effect(kind: &str, sample_rate: f32) -> Option<Box<dyn Effect>> {
         "bitcrusher" => Box::new(Bitcrusher::new(sample_rate)),
         "auto_filter" => Box::new(AutoFilter::new(sample_rate)),
         "gain" => Box::new(Gain::new(sample_rate)),
+        "stereo_imager" => Box::new(StereoImager::new(sample_rate)),
         "exciter" => Box::new(Exciter::new(sample_rate)),
         _ => return None,
     })
