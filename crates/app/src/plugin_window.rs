@@ -151,6 +151,18 @@ impl PluginWindows {
             w.initial = Some(r);
         }
     }
+
+    /// Where the other open windows (not `except`) for which `same` holds are: where they are now (known for
+    /// separate windows) or where they opened.
+    pub fn taken_positions(&self, except: Id, same: impl Fn(&OpenWindow) -> bool) -> Vec<Pos2> {
+        self.open
+            .iter()
+            .filter(|w| w.id != except && same(w))
+            .filter_map(|w| self.rects.get(&w.id).copied().or(w.initial))
+            .map(|r| egui::pos2(r.x, r.y))
+            .filter(|p| p.x.is_finite() && p.y.is_finite())
+            .collect()
+    }
 }
 
 /// The viewport of the window of plug-in `id`.
@@ -198,14 +210,31 @@ pub fn plausible(r: WindowRect, main: Option<egui::Rect>) -> bool {
     finite && sized && near
 }
 
+/// How far apart cascaded windows open.
+pub const CASCADE_STEP: f32 = 28.0;
+
+/// Moves `p` one cascade step down and right while an open window sits (within a few points) on it, so a window
+/// does not open exactly over another; at most `MAX_PLUGIN_WINDOWS` steps.
+pub fn step_off(p: Pos2, taken: &[Pos2]) -> Pos2 {
+    let mut p = p;
+    for _ in 0..MAX_PLUGIN_WINDOWS {
+        if !taken.iter().any(|t| t.distance(p) < 8.0) {
+            break;
+        }
+        p += egui::vec2(CASCADE_STEP, CASCADE_STEP);
+    }
+    p
+}
+
 /// Where a window opens and how big: where it was in this app session, else where the settings remember it, else
 /// the default size cascaded from the main window's corner (`cascade` is how many windows are open before it).
-pub fn initial_rect(session: Option<WindowRect>, saved: Option<WindowRect>, main: Option<egui::Rect>, cascade: usize, size: Vec2) -> (Option<Pos2>, Vec2) {
+/// The place steps off the windows of the same kind already open (`taken`): the settings keep one place per kind.
+pub fn initial_rect(session: Option<WindowRect>, saved: Option<WindowRect>, main: Option<egui::Rect>, cascade: usize, size: Vec2, taken: &[Pos2]) -> (Option<Pos2>, Vec2) {
     if let Some(r) = session.filter(|r| plausible(*r, main)).or(saved.filter(|r| plausible(*r, main))) {
-        return (Some(egui::pos2(r.x, r.y)), egui::vec2(r.w, r.h));
+        return (Some(step_off(egui::pos2(r.x, r.y), taken)), egui::vec2(r.w, r.h));
     }
     let k = (cascade % 8) as f32;
-    (main.map(|m| m.min + egui::vec2(120.0 + 28.0 * k, 90.0 + 28.0 * k)), size)
+    (main.map(|m| step_off(m.min + egui::vec2(120.0 + CASCADE_STEP * k, 90.0 + CASCADE_STEP * k), taken)), size)
 }
 
 /// Esc closes the focused plug-in window, unless it is cancelling the typing of a value or closing a menu.
@@ -395,7 +424,8 @@ impl OndinaApp {
                 Some(r) => r,
                 None => {
                     let saved = self.settings.plugin_windows.get(&key).copied();
-                    let (pos, size) = initial_rect(self.plugin_windows.rect(id), saved, main, k, default_size(inst));
+                    let taken = self.plugin_windows.taken_positions(id, |w| p.find_plugin(w.id).map(settings_key).as_deref() == Some(key.as_str()));
+                    let (pos, size) = initial_rect(self.plugin_windows.rect(id), saved, main, k, default_size(inst), &taken);
                     let pos = pos.unwrap_or(Pos2::new(f32::NAN, f32::NAN));
                     let r = WindowRect { x: pos.x, y: pos.y, w: size.x, h: size.y };
                     self.plugin_windows.set_initial(id, r);
@@ -675,13 +705,13 @@ mod tests {
         let size = egui::vec2(560.0, 440.0);
         let session = WindowRect { x: 300.0, y: 200.0, w: 500.0, h: 400.0 };
         let saved = WindowRect { x: 400.0, y: 250.0, w: 600.0, h: 450.0 };
-        assert_eq!(initial_rect(Some(session), Some(saved), main, 0, size), (Some(egui::pos2(300.0, 200.0)), egui::vec2(500.0, 400.0)));
-        assert_eq!(initial_rect(None, Some(saved), main, 0, size), (Some(egui::pos2(400.0, 250.0)), egui::vec2(600.0, 450.0)));
+        assert_eq!(initial_rect(Some(session), Some(saved), main, 0, size, &[]), (Some(egui::pos2(300.0, 200.0)), egui::vec2(500.0, 400.0)));
+        assert_eq!(initial_rect(None, Some(saved), main, 0, size, &[]), (Some(egui::pos2(400.0, 250.0)), egui::vec2(600.0, 450.0)));
         let no_size = WindowRect { w: 0.0, ..saved };
         let far = WindowRect { x: 50000.0, ..saved };
-        assert_eq!(initial_rect(None, Some(no_size), main, 0, size), (Some(egui::pos2(220.0, 140.0)), size));
-        assert_eq!(initial_rect(None, Some(far), main, 1, size), (Some(egui::pos2(248.0, 168.0)), size));
-        assert_eq!(initial_rect(None, None, None, 0, size), (None, size));
+        assert_eq!(initial_rect(None, Some(no_size), main, 0, size, &[]), (Some(egui::pos2(220.0, 140.0)), size));
+        assert_eq!(initial_rect(None, Some(far), main, 1, size, &[]), (Some(egui::pos2(248.0, 168.0)), size));
+        assert_eq!(initial_rect(None, None, None, 0, size, &[]), (None, size));
         let nan = WindowRect { x: f32::NAN, ..saved };
         assert!(!plausible(nan, None));
     }
@@ -798,5 +828,50 @@ mod tests {
         let src = include_str!("app.rs");
         assert!(!src.contains(concat!("consume_key(egui::Modifiers::COMMAND, ", "Key::Z)")));
         assert!(src.contains(concat!("undo_redo_shortcut", "(")));
+    }
+
+    #[test]
+    fn step_off_moves_past_open_windows() {
+        let p = egui::pos2(400.0, 250.0);
+        let step = egui::vec2(CASCADE_STEP, CASCADE_STEP);
+        assert_eq!(CASCADE_STEP, 28.0);
+        assert_eq!(step_off(p, &[]), p);
+        assert_eq!(step_off(p, &[p]), p + step);
+        assert_eq!(step_off(p, &[p, p + step]), p + step * 2.0);
+        assert_eq!(step_off(p, &[egui::pos2(500.0, 250.0)]), p);
+        let all: Vec<Pos2> = (0..=MAX_PLUGIN_WINDOWS + 4).map(|k| p + step * k as f32).collect();
+        assert_eq!(step_off(p, &all), p + step * MAX_PLUGIN_WINDOWS as f32);
+    }
+
+    #[test]
+    fn initial_rect_steps_off_an_open_window_of_the_same_kind() {
+        let main = Some(egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(1600.0, 900.0)));
+        let size = egui::vec2(560.0, 440.0);
+        let saved = WindowRect { x: 400.0, y: 250.0, w: 600.0, h: 450.0 };
+        let big = egui::vec2(600.0, 450.0);
+        assert_eq!(initial_rect(None, Some(saved), main, 1, size, &[egui::pos2(400.0, 250.0)]), (Some(egui::pos2(428.0, 278.0)), big));
+        let two = [egui::pos2(400.0, 250.0), egui::pos2(428.0, 278.0)];
+        assert_eq!(initial_rect(None, Some(saved), main, 2, size, &two), (Some(egui::pos2(456.0, 306.0)), big));
+        assert_eq!(initial_rect(None, Some(saved), main, 1, size, &[egui::pos2(900.0, 900.0)]), (Some(egui::pos2(400.0, 250.0)), big));
+    }
+
+    #[test]
+    fn taken_positions_list_other_windows_of_the_same_kind() {
+        let mut w = PluginWindows::new(1);
+        for id in [1, 2, 3] {
+            w.open(id, None);
+        }
+        w.set_initial(1, WindowRect { x: 10.0, y: 20.0, w: 400.0, h: 300.0 });
+        w.set_initial(2, WindowRect { x: 30.0, y: 40.0, w: 400.0, h: 300.0 });
+        w.remember(2, WindowRect { x: 300.0, y: 400.0, w: 400.0, h: 300.0 });
+        let got = w.taken_positions(3, |_| true);
+        assert_eq!(got.len(), 2);
+        assert!(got.contains(&egui::pos2(10.0, 20.0)));
+        assert!(got.contains(&egui::pos2(300.0, 400.0)));
+        assert!(!got.contains(&egui::pos2(30.0, 40.0)));
+        assert_eq!(w.taken_positions(3, |o| o.id != 1), [egui::pos2(300.0, 400.0)]);
+        w.set_initial(3, WindowRect { x: f32::NAN, y: f32::NAN, w: 400.0, h: 300.0 });
+        assert!(!w.taken_positions(1, |_| true).iter().any(|p| !p.x.is_finite()));
+        assert_eq!(w.taken_positions(1, |_| true), [egui::pos2(300.0, 400.0)]);
     }
 }
