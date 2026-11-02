@@ -144,37 +144,105 @@ impl Effect for Compressor {
 
 // ============================================================================ Limiter
 
+/// Samples on each side of a peak that the true-peak interpolator reads: the gain stays down over all of them.
+const TP_SPREAD: usize = TruePeak::DELAY;
+
 pub struct Limiter {
     sr: f32,
     gain: f32,
     ceiling: f32,
     release: f32,
+    /// True Peak On: the gain follows the peaks between samples too.
+    true_peak: bool,
     look: usize,
-    dl: VecDeque<f32>,
-    dr: VecDeque<f32>,
-    targets: VecDeque<f32>,
+    /// Look-ahead delay lines, `look` samples each (ring buffers allocated in `new`), shared by both modes so the
+    /// latency is the same.
+    dl: Vec<f32>,
+    dr: Vec<f32>,
+    pos: usize,
+    /// Sample-peak mode: monotonic queue of the targets in the window, capacity fixed in `new`.
     mins: VecDeque<(usize, f32)>,
     counter: usize,
     current: f32,
+    // True-peak mode.
+    tp_l: TruePeak,
+    tp_r: TruePeak,
+    /// Length of the moving average that smooths the gain.
+    tp_win: usize,
+    /// Length of the minimum hold: tp_win plus TP_SPREAD on each side of a peak.
+    tp_hold: usize,
+    tp_mins: VecDeque<(usize, f32)>,
+    tp_box: Vec<f32>,
+    tp_box_pos: usize,
+    tp_sum: f64,
+    /// Held minimum after the release.
+    tp_rel: f32,
+    /// Last gain applied, handed to the sample-peak mode when True Peak is switched off.
+    tp_gain: f32,
 }
 
 impl Limiter {
     pub fn new(sr: f32) -> Self {
         let look = (sr * 0.0015) as usize;
-        Limiter { sr, gain: 1.0, ceiling: db_to_gain(-1.0), release: 60.0, look, dl: VecDeque::from(vec![0.0; look]), dr: VecDeque::from(vec![0.0; look]), targets: VecDeque::new(), mins: VecDeque::new(), counter: 0, current: 1.0 }
-    }
-}
-
-impl Effect for Limiter {
-    fn set_param(&mut self, id: &str, v: f32) {
-        match id {
-            "gain" => self.gain = db_to_gain(v),
-            "ceiling" => self.ceiling = db_to_gain(v),
-            "release" => self.release = v,
-            _ => {}
+        // The true-peak detector runs DELAY samples late and the gain must cover TP_SPREAD samples after the peak, so
+        // the average gets what is left of the look-ahead. Below about 17 kHz that is 1 sample and the margin between
+        // samples shrinks.
+        let tp_win = (look + 1).saturating_sub(TruePeak::DELAY + TP_SPREAD).max(1);
+        let tp_hold = tp_win + 2 * TP_SPREAD;
+        Limiter {
+            sr,
+            gain: 1.0,
+            ceiling: db_to_gain(-1.0),
+            release: 60.0,
+            true_peak: false,
+            look,
+            dl: vec![0.0; look],
+            dr: vec![0.0; look],
+            pos: 0,
+            // the queue holds at most look + 2 entries between a push and the pops that follow it
+            mins: VecDeque::with_capacity(look + 2),
+            counter: 0,
+            current: 1.0,
+            tp_l: TruePeak::new(),
+            tp_r: TruePeak::new(),
+            tp_win,
+            tp_hold,
+            tp_mins: VecDeque::with_capacity(tp_hold + 2),
+            tp_box: vec![1.0; tp_win],
+            tp_box_pos: 0,
+            tp_sum: tp_win as f64,
+            tp_rel: 1.0,
+            tp_gain: 1.0,
         }
     }
-    fn process(&mut self, l: &mut [f32], r: &mut [f32], _ctx: &ProcessContext) {
+
+    /// One step of the look-ahead delay: returns the samples that went in `look` samples ago.
+    #[inline]
+    fn delay(&mut self, a: f32, b: f32) -> (f32, f32) {
+        if self.dl.is_empty() {
+            return (a, b);
+        }
+        let out = (self.dl[self.pos], self.dr[self.pos]);
+        self.dl[self.pos] = a;
+        self.dr[self.pos] = b;
+        self.pos = (self.pos + 1) % self.dl.len();
+        out
+    }
+
+    /// Starts the true-peak mode from the gain `g` the limiter is applying now, so switching does not jump.
+    fn start_true_peak(&mut self, g: f32) {
+        self.tp_l.reset();
+        self.tp_r.reset();
+        self.tp_mins.clear();
+        self.tp_box.fill(g);
+        self.tp_box_pos = 0;
+        self.tp_sum = f64::from(g) * self.tp_win as f64;
+        self.tp_rel = g;
+        self.tp_gain = g;
+    }
+
+    /// Sample-peak mode: the limiter as it has always been, operation for operation.
+    fn process_sample_peak(&mut self, l: &mut [f32], r: &mut [f32]) {
         let rel = 1.0 - (-1.0 / (self.release * 0.001 * self.sr)).exp();
         let att = 1.0 - (-1.0 / (self.look.max(1) as f32 / 3.0)).exp();
         for i in 0..l.len() {
@@ -205,21 +273,97 @@ impl Effect for Limiter {
             } else {
                 self.current += (win_min - self.current) * rel;
             }
-            self.dl.push_back(a);
-            self.dr.push_back(b);
-            let da = self.dl.pop_front().unwrap_or(0.0);
-            let db = self.dr.pop_front().unwrap_or(0.0);
+            let (da, db) = self.delay(a, b);
             let c = self.ceiling;
             l[i] = (da * self.current).clamp(-c, c);
             r[i] = (db * self.current).clamp(-c, c);
         }
-        let _ = &self.targets;
+    }
+
+    /// True-peak mode: the gain follows the 4x interpolated peaks, so the output stays under the ceiling between
+    /// samples too.
+    fn process_true_peak(&mut self, l: &mut [f32], r: &mut [f32]) {
+        let rel = 1.0 - (-1.0 / (self.release * 0.001 * self.sr)).exp();
+        let c = self.ceiling;
+        let w = self.tp_win;
+        for i in 0..l.len() {
+            let a = l[i] * self.gain;
+            let b = r[i] * self.gain;
+            // peak of the segment that started TruePeak::DELAY samples ago, between samples included
+            let peak = self.tp_l.push(a).max(self.tp_r.push(b));
+            let target = if peak > c { c / peak } else { 1.0 };
+            self.counter += 1;
+            while let Some(&(_, v)) = self.tp_mins.back() {
+                if v >= target {
+                    self.tp_mins.pop_back();
+                } else {
+                    break;
+                }
+            }
+            self.tp_mins.push_back((self.counter, target));
+            while let Some(&(n, _)) = self.tp_mins.front() {
+                if n + self.tp_hold <= self.counter {
+                    self.tp_mins.pop_front();
+                } else {
+                    break;
+                }
+            }
+            let held = self.tp_mins.front().map(|x| x.1).unwrap_or(1.0);
+            // falls at once, rises with the release: never above the held minimum
+            self.tp_rel = if held < self.tp_rel { held } else { self.tp_rel + (held - self.tp_rel) * rel };
+            // moving average over w samples: it reaches the held minimum when the peak leaves the delay line
+            self.tp_sum += f64::from(self.tp_rel) - f64::from(self.tp_box[self.tp_box_pos]);
+            self.tp_box[self.tp_box_pos] = self.tp_rel;
+            self.tp_box_pos = (self.tp_box_pos + 1) % w;
+            if self.tp_box_pos == 0 {
+                // a fresh sum once per window keeps rounding from piling up over a long session
+                self.tp_sum = self.tp_box.iter().map(|&x| f64::from(x)).sum();
+            }
+            let g = ((self.tp_sum / w as f64) as f32).min(1.0);
+            self.tp_gain = g;
+            let (da, db) = self.delay(a, b);
+            l[i] = (da * g).clamp(-c, c);
+            r[i] = (db * g).clamp(-c, c);
+        }
+    }
+}
+
+impl Effect for Limiter {
+    fn set_param(&mut self, id: &str, v: f32) {
+        match id {
+            "gain" => self.gain = db_to_gain(v),
+            "ceiling" => self.ceiling = db_to_gain(v),
+            "release" => self.release = v,
+            "true_peak" => {
+                // the engine sets every parameter on each project change and automated ones every block: act only on
+                // a real switch
+                let on = v >= 0.5;
+                if on != self.true_peak {
+                    self.true_peak = on;
+                    if on {
+                        self.start_true_peak(self.current);
+                    } else {
+                        self.current = self.tp_gain;
+                        self.mins.clear();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    fn process(&mut self, l: &mut [f32], r: &mut [f32], _ctx: &ProcessContext) {
+        if self.true_peak {
+            self.process_true_peak(l, r);
+        } else {
+            self.process_sample_peak(l, r);
+        }
     }
     fn reset(&mut self) {
-        self.dl.iter_mut().for_each(|x| *x = 0.0);
-        self.dr.iter_mut().for_each(|x| *x = 0.0);
+        self.dl.fill(0.0);
+        self.dr.fill(0.0);
         self.mins.clear();
         self.current = 1.0;
+        self.start_true_peak(1.0);
     }
 }
 
@@ -1589,6 +1733,139 @@ mod tests {
         }
         assert!(l.iter().chain(&r).all(|x| x.is_finite()));
         assert_eq!(fingerprint(&l, &r), BEFORE, "the limiter with True Peak Off must sound as before");
+    }
+
+    /// A built-in limiter set up from the registry, as the engine sets it up.
+    fn limiter_with(sr: f32, gain: f32, ceiling: f32, true_peak: f32) -> Box<dyn Effect> {
+        let mut fx = crate::create_effect("limiter", sr).expect("built-in limiter");
+        let mut params = std::collections::BTreeMap::new();
+        params.insert("gain".to_string(), gain);
+        params.insert("ceiling".to_string(), ceiling);
+        params.insert("true_peak".to_string(), true_peak);
+        crate::configure("limiter", &params, |k, v| fx.set_param(k, v));
+        fx
+    }
+
+    /// Runs `fx` over the whole signal in blocks of 512.
+    fn run_blocks(fx: &mut dyn Effect, l: &mut [f32], r: &mut [f32], sr: f32) {
+        let ctx = ProcessContext::idle(sr);
+        for (bl, br) in l.chunks_mut(512).zip(r.chunks_mut(512)) {
+            fx.process(bl, br, &ctx);
+        }
+    }
+
+    /// fs/4 shifted by 45 degrees at amplitude 0.5: the samples sit at 0.354, the real peak at 0.5.
+    fn quarter_rate_sine(len: usize) -> Vec<f32> {
+        use std::f32::consts::PI;
+        (0..len).map(|n| 0.5 * (PI * n as f32 / 2.0 + PI / 4.0).sin()).collect()
+    }
+
+    /// The three test signals of the true-peak limiter, one second each.
+    fn true_peak_signals(sr: f32) -> Vec<(&'static str, Vec<f32>, Vec<f32>)> {
+        use std::f32::consts::PI;
+        let len = sr as usize;
+        let sine = quarter_rate_sine(len);
+        let bursts: Vec<f32> = (0..len + 7)
+            .map(|n| {
+                let amp = if (n / 2000) % 2 == 0 { 1.0 } else { 0.05 };
+                0.5 * amp * (2.0 * PI * 0.23 * n as f32).sin()
+            })
+            .collect();
+        let (mut na, mut nb) = (crate::util::Noise::new(3), crate::util::Noise::new(4));
+        let noise_l: Vec<f32> = (0..len).map(|_| na.next() * 0.25).collect();
+        let noise_r: Vec<f32> = (0..len).map(|_| nb.next() * 0.25).collect();
+        vec![
+            ("fs/4 at 45 degrees", sine.clone(), sine),
+            // the right channel is the left one 7 samples late
+            ("bursts", bursts[7..].to_vec(), bursts[..len].to_vec()),
+            ("noise", noise_l, noise_r),
+        ]
+    }
+
+    #[test]
+    fn limiter_true_peak_keeps_the_output_under_the_ceiling_between_samples() {
+        for sr in [48000.0f32, 44100.0] {
+            for (name, mut l, mut r) in true_peak_signals(sr) {
+                let mut lim = limiter_with(sr, 12.0, -1.0, 1.0);
+                run_blocks(lim.as_mut(), &mut l, &mut r, sr);
+                assert!(l.iter().chain(&r).all(|x| x.is_finite()), "{sr} Hz, {name}: not finite");
+                let tp = crate::util::true_peak(&l).max(crate::util::true_peak(&r));
+                let db = gain_to_db(tp);
+                assert!(tp <= db_to_gain(-1.0 + 0.2), "{sr} Hz, {name}: {db:.2} dBTP over the -1 dB ceiling");
+                if name.starts_with("fs/4") {
+                    assert!(tp >= db_to_gain(-1.5), "{sr} Hz, {name}: {db:.2} dBTP, limited under the ceiling");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn limiter_off_lets_peaks_between_samples_through() {
+        let sr = 48000.0;
+        let mut l = quarter_rate_sine(sr as usize);
+        let mut r = l.clone();
+        let mut lim = limiter_with(sr, 12.0, -1.0, 0.0);
+        run_blocks(lim.as_mut(), &mut l, &mut r, sr);
+        let sample_peak = l.iter().chain(&r).fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!(sample_peak <= db_to_gain(-1.0) + 1e-6, "sample peak {sample_peak}");
+        let tp = crate::util::true_peak(&l).max(crate::util::true_peak(&r));
+        assert!(tp > db_to_gain(1.0), "true peak {:.2} dBTP", gain_to_db(tp));
+    }
+
+    #[test]
+    fn limiter_true_peak_does_not_change_the_latency() {
+        let sr = 48000.0;
+        let look = (sr * 0.0015) as usize;
+        for tp in [0.0, 1.0] {
+            let mut lim = limiter_with(sr, 0.0, -1.0, tp);
+            let mut l = vec![0.0f32; 512];
+            l[0] = 0.1;
+            let mut r = l.clone();
+            lim.process(&mut l, &mut r, &ProcessContext::idle(sr));
+            for (i, (a, b)) in l.iter().zip(&r).enumerate() {
+                if i == look {
+                    assert!((a - 0.1).abs() < 1e-6 && (b - 0.1).abs() < 1e-6, "true_peak {tp}: {a} {b} at {i}");
+                } else {
+                    assert!(*a == 0.0 && *b == 0.0, "true_peak {tp}: {a} {b} at {i}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn limiter_switching_true_peak_keeps_the_ceiling() {
+        let sr = 48000.0;
+        let (_, l0, r0) = true_peak_signals(sr).swap_remove(1);
+        let ceiling = db_to_gain(-1.0) + 1e-6;
+        let ctx = ProcessContext::idle(sr);
+        let mut lim = limiter_with(sr, 12.0, -1.0, 0.0);
+        let (mut l, mut r) = (l0.clone(), r0.clone());
+        for (k, (bl, br)) in l.chunks_mut(512).zip(r.chunks_mut(512)).enumerate() {
+            if k % 10 == 0 {
+                lim.set_param("true_peak", if (k / 10) % 2 == 0 { 1.0 } else { 0.0 });
+            }
+            lim.process(bl, br, &ctx);
+        }
+        for x in l.iter().chain(&r) {
+            assert!(x.is_finite() && x.abs() <= ceiling, "{x} over the ceiling");
+        }
+        // the engine sets every parameter again on each change: a repeated On is not a new switch
+        let mut once = limiter_with(sr, 12.0, -1.0, 0.0);
+        let mut twice = limiter_with(sr, 12.0, -1.0, 0.0);
+        let (mut l1, mut r1) = (l0.clone(), r0.clone());
+        let (mut l2, mut r2) = (l0, r0);
+        for (k, ((a, b), (c, d))) in l1.chunks_mut(512).zip(r1.chunks_mut(512)).zip(l2.chunks_mut(512).zip(r2.chunks_mut(512))).enumerate() {
+            if k == 5 {
+                once.set_param("true_peak", 1.0);
+                twice.set_param("true_peak", 1.0);
+            }
+            if k == 7 {
+                twice.set_param("true_peak", 1.0);
+            }
+            once.process(a, b, &ctx);
+            twice.process(c, d, &ctx);
+        }
+        assert_eq!(fingerprint(&l1, &r1), fingerprint(&l2, &r2));
     }
 }
 
