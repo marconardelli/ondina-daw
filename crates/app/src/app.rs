@@ -297,7 +297,8 @@ pub struct OndinaApp {
     pub rename_buf: String,
     /// Name and chord fields open in place; closed when the project is replaced.
     pub edits: crate::arrange::InPlaceEdits,
-    pub vst_filter: String,
+    /// The open plug-in windows.
+    pub plugin_windows: crate::plugin_window::PluginWindows,
     /// Search text of the Library's patches.
     pub library_filter: String,
     pub api_key_buf: String,
@@ -346,6 +347,7 @@ impl OndinaApp {
         let (tx, rx) = crossbeam_channel::unbounded();
         // the panels open as they were left
         let layout = settings.panels.clone();
+        let document = view.document;
         OndinaApp {
             session,
             shared,
@@ -415,7 +417,7 @@ impl OndinaApp {
             mix_loudness: None,
             rename_buf: String::new(),
             edits: Default::default(),
-            vst_filter: String::new(),
+            plugin_windows: crate::plugin_window::PluginWindows::new(document),
             library_filter: String::new(),
             devices_cache: None,
             midi_inputs_cache: vec![],
@@ -2078,6 +2080,7 @@ impl eframe::App for OndinaApp {
             .show(ctx, |ui| self.arrange_ui(ui));
         self.windows(ctx);
         self.extra_windows(ctx);
+        self.plugin_windows_ui(ctx);
         self.recovery_ui(ctx);
         self.doc_prompt_ui(ctx);
         self.sync();
