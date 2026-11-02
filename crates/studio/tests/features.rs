@@ -1704,6 +1704,15 @@ fn transport_reports_dsp_overloads_since_the_last_play() {
     ok(&mut s, "stop", json!({}));
 }
 
+#[test]
+fn transport_reports_the_output_device_and_no_device_notice_while_nothing_went_wrong() {
+    let mut s = Session::new(false);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let tr = ok(&mut s, "get_transport", json!({}));
+    assert_eq!(tr["output_device"], "Null device (no audio output)", "{tr}");
+    assert!(tr["device_notice"].is_null(), "{tr}");
+}
+
 // ---- get_activity
 
 #[test]

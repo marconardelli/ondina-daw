@@ -84,6 +84,8 @@ pub struct View {
     pub log: Vec<LogEntry>,
     pub sample_rate: u32,
     pub device: String,
+    /// `Shared::device_notices` when the view was made: a new value means the output device was replaced.
+    pub device_notices: u64,
     pub midi_input: Option<String>,
     /// VST3 plug-ins of the document that the engine does not load, by id, with the reason (`Session::unloaded_vst3`).
     pub unloaded_vst3: HashMap<Id, String>,
@@ -441,6 +443,7 @@ impl OndinaApp {
             log: s.log.iter().rev().take(200).cloned().collect(),
             sample_rate: s.engine.sample_rate(),
             device: s.engine.shared.device_name.lock().clone(),
+            device_notices: s.engine.shared.device_notices(),
             midi_input: s.midi_input_name.clone(),
             unloaded_vst3: s.unloaded_vst3(),
         }
@@ -528,8 +531,14 @@ impl OndinaApp {
         if s.revision != self.view.revision
             || s.log.len() != self.view.log.len().min(200)
             || self.view.log.first().map(|l| l.at) != s.log.back().map(|l| l.at)
+            || self.view.device_notices != s.engine.shared.device_notices()
         {
             let fresh = Self::make_view(&s);
+            if fresh.device_notices != self.view.device_notices {
+                if let Some(n) = s.engine.shared.device_notice() {
+                    self.status = format!("⚠ {n}");
+                }
+            }
             note_selection::follow(&mut self.selected_notes, self.selected_region, &self.view.project, &fresh.project);
             self.edits.follow_document(self.view.document, fresh.document);
             self.view = fresh;

@@ -117,9 +117,24 @@ pub struct Shared {
     pub input_device_name: Mutex<String>,
     pub live_state: Mutex<LiveState>,
     pub live_log: Mutex<Vec<LiveLogEntry>>,
+    device_notice: Mutex<Option<String>>,
+    device_notices: AtomicU64,
 }
 
 impl Shared {
+    /// The last thing that happened to the output device on its own (it stopped working and was replaced), if any.
+    pub fn device_notice(&self) -> Option<String> {
+        self.device_notice.lock().clone()
+    }
+    /// Grows by one with every new `device_notice`, so a reader can tell a new notice from one it has shown.
+    pub fn device_notices(&self) -> u64 {
+        self.device_notices.load(Ordering::Acquire)
+    }
+    fn set_device_notice(&self, notice: String) {
+        eprintln!("[ondina] {notice}");
+        *self.device_notice.lock() = Some(notice);
+        self.device_notices.fetch_add(1, Ordering::Release);
+    }
     /// The state the last transport command asked for until the audio thread has applied it, then the published one.
     pub fn beat(&self) -> f64 {
         match self.locate.pending() {
@@ -171,6 +186,8 @@ pub struct Engine {
     project: Arc<Project>,
     pool: Arc<AudioPool>,
     device: Option<DeviceThread>,
+    /// The project and pool last handed to the audio thread, for a renderer that replaces the running one.
+    song: Arc<Mutex<Song>>,
     input: Option<DeviceThread>,
     output_name: Option<String>,
     input_name: Option<String>,
@@ -195,7 +212,7 @@ impl Engine {
         let (tx, rx) = unbounded();
         let shared = Arc::new(Shared::default());
         shared.sample_rate.store(48000, Ordering::Relaxed);
-        let mut e = Engine { tx, rx, shared, project, pool, device: None, input: None, output_name: None, input_name: None, audio_enabled };
+        let mut e = Engine { tx, rx, shared, song: Arc::new(Mutex::new(Song { project: project.clone(), pool: pool.clone() })), project, pool, device: None, input: None, output_name: None, input_name: None, audio_enabled };
         e.start_device();
         e
     }
@@ -206,29 +223,24 @@ impl Engine {
             let _ = d.handle.join();
         }
         let (stop_tx, stop_rx) = unbounded::<()>();
-        let rx = self.rx.clone();
-        let shared = self.shared.clone();
-        let project = self.project.clone();
-        let pool = self.pool.clone();
+        let ctx = DeviceCtx {
+            rx: self.rx.clone(),
+            tx: self.tx.clone(),
+            shared: self.shared.clone(),
+            song: self.song.clone(),
+            stop: stop_rx,
+        };
         let name = self.output_name.clone();
         let use_audio = self.audio_enabled;
-        let beat = shared.beat();
         let handle = std::thread::Builder::new()
             .name("ondina-audio".into())
             .spawn(move || {
-                if use_audio {
-                    match open_output(name, &rx, &shared, &project, &pool, beat) {
-                        Ok(stream) => {
-                            let _ = stop_rx.recv();
-                            drop(stream);
-                            return;
-                        }
-                        Err(e) => {
-                            eprintln!("[ondina] audio device unavailable ({e}); using null device");
-                        }
-                    }
-                }
-                null_device(&rx, &shared, project, pool, beat, &stop_rx);
+                let open = |name: Option<&str>, ctx: &DeviceCtx, lost: Sender<String>| -> Result<Box<dyn std::any::Any>, String> {
+                    let song = ctx.song.lock().clone();
+                    let stream = open_output(name, &ctx.rx, &ctx.shared, &song.project, &song.pool, ctx.shared.beat(), lost)?;
+                    Ok(Box::new(stream))
+                };
+                run_device(open, name, use_audio, ctx);
             })
             .expect("spawn audio thread");
         self.device = Some(DeviceThread { stop: stop_tx, handle });
@@ -244,6 +256,7 @@ impl Engine {
 
     pub fn set_project(&mut self, p: Arc<Project>) {
         self.project = p.clone();
+        self.song.lock().project = p.clone();
         self.send(EngineMsg::Project(p));
     }
 
@@ -254,6 +267,7 @@ impl Engine {
 
     pub fn set_pool(&mut self, pool: Arc<AudioPool>) {
         self.pool = pool.clone();
+        self.song.lock().pool = pool.clone();
         self.send(EngineMsg::Pool(pool));
     }
 
@@ -491,10 +505,93 @@ fn publish(r: &mut Renderer, shared: &Shared, applied: &Applied) {
     }
 }
 
-fn open_output(name: Option<String>, rx: &Receiver<EngineMsg>, shared: &Arc<Shared>, project: &Arc<Project>, pool: &Arc<AudioPool>, beat: f64) -> Result<cpal::Stream, String> {
+#[derive(Clone)]
+struct Song {
+    project: Arc<Project>,
+    pool: Arc<AudioPool>,
+}
+
+/// What the output device thread works with.
+struct DeviceCtx {
+    rx: Receiver<EngineMsg>,
+    tx: Sender<EngineMsg>,
+    shared: Arc<Shared>,
+    song: Arc<Mutex<Song>>,
+    stop: Receiver<()>,
+}
+
+/// A replacement stream that stops working sooner than this after opening counts as one more failure in a row.
+const REOPEN_WINDOW: Duration = Duration::from_secs(3);
+/// After this many failures in a row the thread gives up on audio output and runs the null device.
+const MAX_REOPENS: u32 = 3;
+
+/// Body of the output device thread. `open` opens a stream on the named device (`None`: the system default) and
+/// keeps it alive while the returned value lives; the stream sends its error on `lost` when it stops working (the
+/// device was unplugged or disabled). Then the thread stops the transport where it was, so the music does not
+/// carry on from another speaker by surprise, and opens the same device again, else the default one, else the
+/// null device, leaving a notice in `Shared` for the interface and MCP clients.
+fn run_device<F>(mut open: F, name: Option<String>, use_audio: bool, ctx: DeviceCtx)
+where
+    F: FnMut(Option<&str>, &DeviceCtx, Sender<String>) -> Result<Box<dyn std::any::Any>, String>,
+{
+    // (device that stopped working, its error) while a replacement is being opened
+    let mut lost: Option<(String, String)> = None;
+    let mut failures = 0u32;
+    loop {
+        if !use_audio {
+            break;
+        }
+        let (lost_tx, lost_rx) = unbounded::<String>();
+        let mut opened = open(name.as_deref(), &ctx, lost_tx.clone());
+        if opened.is_err() && lost.is_some() && name.is_some() {
+            opened = open(None, &ctx, lost_tx);
+        }
+        let stream = match opened {
+            Ok(stream) => stream,
+            Err(e) => {
+                match lost.take() {
+                    Some((was, why)) => ctx.shared.set_device_notice(format!(
+                        "Audio output \u{201c}{was}\u{201d} stopped working ({why}) and no other output could be opened ({e}): playback stopped, there is no sound until you choose an output device"
+                    )),
+                    None => eprintln!("[ondina] audio device unavailable ({e}); using null device"),
+                }
+                break;
+            }
+        };
+        if let Some((was, why)) = lost.take() {
+            let now = ctx.shared.device_name.lock().clone();
+            ctx.shared.set_device_notice(format!(
+                "Audio output \u{201c}{was}\u{201d} stopped working ({why}): playback stopped, sound now goes to \u{201c}{now}\u{201d}"
+            ));
+        }
+        let opened_at = Instant::now();
+        crossbeam_channel::select! {
+            recv(ctx.stop) -> _ => return,
+            recv(lost_rx) -> why => {
+                let was = ctx.shared.device_name.lock().clone();
+                drop(stream);
+                let generation = ctx.shared.run.ask(0);
+                let _ = ctx.tx.send(EngineMsg::Stop { generation });
+                failures = if opened_at.elapsed() < REOPEN_WINDOW { failures + 1 } else { 1 };
+                let why = why.unwrap_or_else(|_| "stream error".into());
+                if failures >= MAX_REOPENS {
+                    ctx.shared.set_device_notice(format!(
+                        "Audio output \u{201c}{was}\u{201d} keeps failing ({why}): playback stopped, there is no sound until you choose an output device"
+                    ));
+                    break;
+                }
+                lost = Some((was, why));
+            }
+        }
+    }
+    let song = ctx.song.lock().clone();
+    null_device(&ctx.rx, &ctx.shared, song.project, song.pool, ctx.shared.beat(), &ctx.stop);
+}
+
+fn open_output(name: Option<&str>, rx: &Receiver<EngineMsg>, shared: &Arc<Shared>, project: &Arc<Project>, pool: &Arc<AudioPool>, beat: f64, lost: Sender<String>) -> Result<cpal::Stream, String> {
     let host = cpal::default_host();
-    let device = match &name {
-        Some(n) => host.output_devices().map_err(|e| e.to_string())?.find(|d| d.name().map(|x| x.contains(n.as_str())).unwrap_or(false)).ok_or_else(|| format!("output device '{n}' not found"))?,
+    let device = match name {
+        Some(n) => host.output_devices().map_err(|e| e.to_string())?.find(|d| d.name().map(|x| x.contains(n)).unwrap_or(false)).ok_or_else(|| format!("output device '{n}' not found"))?,
         None => host.default_output_device().ok_or("no default output device")?,
     };
     let config = device.default_output_config().map_err(|e| e.to_string())?;
@@ -505,17 +602,17 @@ fn open_output(name: Option<String>, rx: &Receiver<EngineMsg>, shared: &Arc<Shar
     renderer.beat = beat;
     let stream_config: cpal::StreamConfig = config.clone().into();
     let stream = match config.sample_format() {
-        cpal::SampleFormat::F32 => build_stream::<f32>(&device, &stream_config, renderer, rx.clone(), shared.clone()),
-        cpal::SampleFormat::I16 => build_stream::<i16>(&device, &stream_config, renderer, rx.clone(), shared.clone()),
-        cpal::SampleFormat::U16 => build_stream::<u16>(&device, &stream_config, renderer, rx.clone(), shared.clone()),
-        cpal::SampleFormat::I32 => build_stream::<i32>(&device, &stream_config, renderer, rx.clone(), shared.clone()),
+        cpal::SampleFormat::F32 => build_stream::<f32>(&device, &stream_config, renderer, rx.clone(), shared.clone(), lost),
+        cpal::SampleFormat::I16 => build_stream::<i16>(&device, &stream_config, renderer, rx.clone(), shared.clone(), lost),
+        cpal::SampleFormat::U16 => build_stream::<u16>(&device, &stream_config, renderer, rx.clone(), shared.clone(), lost),
+        cpal::SampleFormat::I32 => build_stream::<i32>(&device, &stream_config, renderer, rx.clone(), shared.clone(), lost),
         f => Err(format!("unsupported sample format {f:?}")),
     }?;
     stream.play().map_err(|e| e.to_string())?;
     Ok(stream)
 }
 
-fn build_stream<T>(device: &cpal::Device, config: &cpal::StreamConfig, mut renderer: Renderer, rx: Receiver<EngineMsg>, shared: Arc<Shared>) -> Result<cpal::Stream, String>
+fn build_stream<T>(device: &cpal::Device, config: &cpal::StreamConfig, mut renderer: Renderer, rx: Receiver<EngineMsg>, shared: Arc<Shared>, lost: Sender<String>) -> Result<cpal::Stream, String>
 where
     T: SizedSample + FromSample<f32>,
 {
@@ -555,7 +652,13 @@ where
                 let load = t0.elapsed().as_secs_f32() / budget.max(1e-6);
                 shared.record_block_load(load);
             },
-            |e| eprintln!("[ondina] stream error: {e}"),
+            // a device that went away (unplugged headphones) never calls back again: the device thread opens another
+            move |e| {
+                eprintln!("[ondina] stream error: {e}");
+                if matches!(e, cpal::StreamError::DeviceNotAvailable) {
+                    let _ = lost.send(e.to_string());
+                }
+            },
             None,
         )
         .map_err(|e| e.to_string())
@@ -681,6 +784,130 @@ mod tests {
         handle_msg(&mut r, EngineMsg::Locate { beat: 1.0, generation: 3 }, &mut applied);
         assert_eq!(applied.locate, 5);
         assert_eq!(r.beat, 1.0);
+    }
+
+    /// Runs `run_device` on a thread with a fake opener. Each open asks `script` (device asked for) for the device
+    /// name to report, or an error; an opened fake stream hands its `lost` sender to the test.
+    struct FakeDevice {
+        shared: Arc<Shared>,
+        tx: Sender<EngineMsg>,
+        asked: Arc<Mutex<Vec<Option<String>>>>,
+        song: Arc<Mutex<Song>>,
+        /// Name of the project each successful open was given.
+        projects: Arc<Mutex<Vec<String>>>,
+        streams: Receiver<Sender<String>>,
+        stop: Sender<()>,
+        handle: Option<JoinHandle<()>>,
+    }
+
+    impl FakeDevice {
+        fn start(name: Option<&str>, script: impl Fn(Option<&str>) -> Result<String, String> + Send + 'static) -> FakeDevice {
+            let (tx, rx) = unbounded();
+            let (stop_tx, stop_rx) = unbounded();
+            let (streams_tx, streams) = unbounded();
+            let shared = Arc::new(Shared::default());
+            let asked = Arc::new(Mutex::new(Vec::new()));
+            let song = Arc::new(Mutex::new(Song { project: Arc::new(Project::new("t")), pool: Arc::new(AudioPool::new()) }));
+            let projects = Arc::new(Mutex::new(Vec::new()));
+            let ctx = DeviceCtx { rx, tx: tx.clone(), shared: shared.clone(), song: song.clone(), stop: stop_rx };
+            let log = asked.clone();
+            let given = projects.clone();
+            let name = name.map(str::to_string);
+            let handle = std::thread::spawn(move || {
+                let open = |n: Option<&str>, ctx: &DeviceCtx, lost: Sender<String>| -> Result<Box<dyn std::any::Any>, String> {
+                    log.lock().push(n.map(str::to_string));
+                    let device = script(n)?;
+                    *ctx.shared.device_name.lock() = device;
+                    given.lock().push(ctx.song.lock().project.name.clone());
+                    streams_tx.send(lost).unwrap();
+                    Ok(Box::new(()))
+                };
+                run_device(open, name, true, ctx);
+            });
+            FakeDevice { shared, tx, asked, song, projects, streams, stop: stop_tx, handle: Some(handle) }
+        }
+
+        /// The `lost` sender of the next stream the thread opens.
+        fn next_stream(&self) -> Sender<String> {
+            self.streams.recv_timeout(Duration::from_secs(5)).expect("a stream was opened")
+        }
+
+        fn wait_for_notice(&self, n: u64) -> String {
+            let t = Instant::now();
+            while self.shared.device_notices() < n {
+                assert!(t.elapsed() < Duration::from_secs(5), "no device notice");
+                std::thread::yield_now();
+            }
+            self.shared.device_notice().unwrap()
+        }
+
+        fn wait_for_device(&self, name: &str) {
+            let t = Instant::now();
+            while *self.shared.device_name.lock() != name {
+                assert!(t.elapsed() < Duration::from_secs(5), "device is {:?}", self.shared.device_name.lock());
+                std::thread::yield_now();
+            }
+        }
+    }
+
+    impl Drop for FakeDevice {
+        fn drop(&mut self) {
+            let _ = self.stop.send(());
+            if let Some(h) = self.handle.take() {
+                let _ = h.join();
+            }
+        }
+    }
+
+    #[test]
+    fn a_device_that_goes_away_stops_the_transport_and_sound_moves_to_the_default_output() {
+        let unplugged = Arc::new(AtomicBool::new(false));
+        let gone = unplugged.clone();
+        let d = FakeDevice::start(Some("Headphones"), move |n| match n {
+            None => Ok("Speakers".into()),
+            Some(_) if gone.load(Ordering::SeqCst) => Err("output device 'Headphones' not found".into()),
+            Some(_) => Ok("Headphones (Zone 300)".into()),
+        });
+        let first = d.next_stream();
+        // Play was asked while the headphones still worked, then they were unplugged before applying it
+        let generation = d.shared.run.ask(1);
+        d.tx.send(EngineMsg::Play { count_in_beats: 0.0, generation }).unwrap();
+        assert!(d.shared.is_playing());
+        // the song changed after the headphones stream was opened
+        d.song.lock().project = Arc::new(Project::new("edited"));
+        unplugged.store(true, Ordering::SeqCst);
+        first.send("The requested device is no longer available".into()).unwrap();
+        let notice = d.wait_for_notice(1);
+        let _speakers = d.next_stream();
+        assert!(!d.shared.is_playing(), "the transport must stop when the device goes away");
+        assert!(notice.contains("Headphones (Zone 300)") && notice.contains("Speakers") && notice.contains("playback stopped"), "{notice}");
+        assert_eq!(*d.asked.lock(), vec![Some("Headphones".to_string()), Some("Headphones".to_string()), None]);
+        assert_eq!(*d.shared.device_name.lock(), "Speakers");
+        assert_eq!(*d.projects.lock(), vec!["t".to_string(), "edited".to_string()], "the new stream must play the current song");
+    }
+
+    #[test]
+    fn a_device_that_keeps_failing_falls_back_to_the_null_device() {
+        let d = FakeDevice::start(None, |_| Ok("Flaky".into()));
+        for _ in 0..MAX_REOPENS {
+            d.next_stream().send("gone".into()).unwrap();
+        }
+        d.wait_for_device("Null device (no audio output)");
+        let notice = d.shared.device_notice().unwrap();
+        assert!(notice.contains("keeps failing"), "{notice}");
+        assert_eq!(d.asked.lock().len(), MAX_REOPENS as usize);
+    }
+
+    #[test]
+    fn when_no_output_can_be_opened_after_a_loss_the_null_device_takes_over_with_a_notice() {
+        let opened = Arc::new(AtomicU32::new(0));
+        let count = opened.clone();
+        let d = FakeDevice::start(None, move |_| if count.fetch_add(1, Ordering::SeqCst) == 0 { Ok("USB DAC".into()) } else { Err("no default output device".into()) });
+        d.next_stream().send("gone".into()).unwrap();
+        let notice = d.wait_for_notice(1);
+        assert!(notice.contains("USB DAC") && notice.contains("no other output could be opened"), "{notice}");
+        d.wait_for_device("Null device (no audio output)");
+        assert!(!d.shared.is_playing());
     }
 
     /// Busy-wait instead of sleeping: on Windows a short sleep lasts a whole timer tick.

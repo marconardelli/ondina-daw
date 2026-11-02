@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- When the audio output stops working on its own (headphones unplugged or disabled), playback stops where it was
+  and sound moves to the same device if it comes back, else to the default output, else to the null device. The
+  status bar says what happened, and `get_transport` reports `output_device` and `device_notice`. Before, the
+  transport stayed in Play with the playhead frozen and no sound.
+
 ## [0.20.0] - 2026-11-01
 
 A new interface for the whole app: same features and the same MCP tools, laid out and drawn like a professional
