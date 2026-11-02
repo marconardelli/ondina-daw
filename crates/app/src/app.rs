@@ -1067,15 +1067,10 @@ impl OndinaApp {
             }
             return;
         }
-        ctx.input_mut(|i| {
-            if i.consume_key(egui::Modifiers::COMMAND, Key::Z) {
-                self.pending.push((Command::Undo {}, None));
-            }
-            if i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, Key::Z)
-                || i.consume_key(egui::Modifiers::COMMAND, Key::Y)
-            {
-                self.pending.push((Command::Redo {}, None));
-            }
+        ctx.input_mut(|i| match crate::plugin_window::undo_redo_shortcut(i) {
+            Some(crate::plugin_window::WindowKey::Undo) => self.pending.push((Command::Undo {}, None)),
+            Some(crate::plugin_window::WindowKey::Redo) => self.pending.push((Command::Redo {}, None)),
+            _ => {}
         });
         let note_arrows = self.piano_roll_keys(ctx);
         self.transport_keys(ctx, note_arrows);

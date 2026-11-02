@@ -239,19 +239,23 @@ pub enum WindowKey {
     Redo,
 }
 
-/// Space, Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y, consumed. Call it only while nothing is being typed.
-pub fn window_shortcut(i: &mut egui::InputState) -> Option<WindowKey> {
+/// Ctrl+Shift+Z or Ctrl+Y (redo) and Ctrl+Z (undo), consumed. Redo is checked first: egui matches a Ctrl+Z
+/// pattern logically, so it would also take Ctrl+Shift+Z.
+pub fn undo_redo_shortcut(i: &mut egui::InputState) -> Option<WindowKey> {
     use egui::{Key, Modifiers};
-    // Ctrl+Shift+Z first: a Ctrl+Z pattern also matches it
     if i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || i.consume_key(Modifiers::COMMAND, Key::Y) {
         Some(WindowKey::Redo)
     } else if i.consume_key(Modifiers::COMMAND, Key::Z) {
         Some(WindowKey::Undo)
-    } else if i.consume_key(Modifiers::NONE, Key::Space) {
-        Some(WindowKey::PlayStop)
     } else {
         None
     }
+}
+
+/// Space, Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y, consumed. Call it only while nothing is being typed.
+pub fn window_shortcut(i: &mut egui::InputState) -> Option<WindowKey> {
+    use egui::{Key, Modifiers};
+    undo_redo_shortcut(i).or_else(|| i.consume_key(Modifiers::NONE, Key::Space).then_some(WindowKey::PlayStop))
 }
 
 /// What a window reported this frame.
@@ -761,5 +765,38 @@ mod tests {
             assert!(!src.contains(call), "{name} draws the AI bar");
         }
         assert_eq!(include_str!("plugin_window.rs").matches(concat!("self.plugin_ai_bar", "(")).count(), 1);
+    }
+
+    #[test]
+    fn undo_redo_shortcut_checks_redo_before_undo() {
+        use egui::{Event, Key, Modifiers};
+        let ctx = egui::Context::default();
+        let press = |key, modifiers| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        let cases = [
+            (press(Key::Z, Modifiers::COMMAND), Some(WindowKey::Undo)),
+            (press(Key::Z, Modifiers::COMMAND | Modifiers::SHIFT), Some(WindowKey::Redo)),
+            (press(Key::Y, Modifiers::COMMAND), Some(WindowKey::Redo)),
+            (press(Key::Space, Modifiers::NONE), None),
+        ];
+        for (k, (event, want)) in cases.into_iter().enumerate() {
+            let raw = egui::RawInput { time: Some(k as f64 * 0.016), events: vec![event.clone()], ..Default::default() };
+            let mut got = None;
+            let mut space_left = false;
+            let _ = ctx.run(raw, |ctx| {
+                got = ctx.input_mut(undo_redo_shortcut);
+                space_left = ctx.input(|i| i.key_pressed(Key::Space));
+            });
+            assert_eq!(got, want, "{event:?}");
+            if k == 3 {
+                assert!(space_left, "Space must be left to the main window");
+            }
+        }
+    }
+
+    #[test]
+    fn the_main_window_uses_the_shared_undo_redo_shortcut() {
+        let src = include_str!("app.rs");
+        assert!(!src.contains(concat!("consume_key(egui::Modifiers::COMMAND, ", "Key::Z)")));
+        assert!(src.contains(concat!("undo_redo_shortcut", "(")));
     }
 }
