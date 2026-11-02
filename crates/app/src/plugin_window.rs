@@ -63,6 +63,9 @@ pub struct PluginWindows {
     document: u64,
     /// Knob drag counter: every drag is its own undo step (see `knob_edit`).
     pub gesture: u64,
+    /// A text field of the main window had the keyboard last frame (egui drops it on Esc before anything is
+    /// drawn): Esc then cancels the typing instead of closing an embedded window.
+    pub typed_last_frame: bool,
     /// The VST3 parameter filter of each window.
     pub filters: HashMap<Id, String>,
 }
@@ -371,11 +374,33 @@ pub struct WindowSpec<'a> {
     pub size: Vec2,
 }
 
-/// A plug-in window inside the main window: closed with its X.
+/// The egui id (and layer id) of the window of plug-in `id` inside the main window.
+pub fn embedded_layer(id: Id) -> egui::Id {
+    egui::Id::new(("plugin-window", id))
+}
+
+/// Inside the main window there is no window focus to follow: Esc closes the plug-in window under the mouse
+/// pointer, unless a value is being typed, a menu is open, something is being dragged or `blocked` (a dialog is
+/// open). Esc is consumed only when it closes a window.
+pub fn embedded_esc(ctx: &egui::Context, open: &[Id], typed_last_frame: bool, blocked: bool) -> Option<Id> {
+    if blocked || typed_last_frame || ctx.wants_keyboard_input() || ctx.memory(|m| m.any_popup_open()) || ctx.dragged_id().is_some() {
+        return None;
+    }
+    let (esc, pos) = ctx.input(|i| (i.key_pressed(egui::Key::Escape) && i.modifiers.is_none(), i.pointer.hover_pos()));
+    if !esc {
+        return None;
+    }
+    let layer = ctx.layer_id_at(pos?)?;
+    let id = open.iter().copied().find(|x| layer.id == embedded_layer(*x))?;
+    ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    Some(id)
+}
+
+/// A plug-in window inside the main window: closed with its X, or Esc (see [`embedded_esc`]).
 fn embedded_window(ctx: &egui::Context, id: Id, spec: &WindowSpec, add: &mut dyn FnMut(&mut egui::Ui)) -> WindowOutcome {
     let mut open = true;
     let mut w = egui::Window::new(spec.title)
-        .id(egui::Id::new(("plugin-window", id)))
+        .id(embedded_layer(id))
         .open(&mut open)
         .resizable(true)
         .default_size(spec.size)
@@ -503,6 +528,13 @@ impl OndinaApp {
         }
         let main = ctx.input(|i| i.viewport().outer_rect);
         let separate = self.settings.plugin_windows_separate;
+        if !separate {
+            // the Save and recovery dialogs are drawn after the plug-in windows: their Esc comes first
+            let blocked = self.doc_prompt_open();
+            if let Some(id) = embedded_esc(ctx, &self.plugin_windows.ids(), self.plugin_windows.typed_last_frame, blocked) {
+                self.plugin_windows.close(id);
+            }
+        }
         for (k, id) in self.plugin_windows.ids().into_iter().enumerate() {
             let (Some(title), Some(inst)) = (window_title(&p, id), p.find_plugin(id)) else {
                 continue;
@@ -559,9 +591,10 @@ impl OndinaApp {
                 ctx.send_viewport_cmd_to(viewport_id(id), egui::ViewportCommand::Minimized(false));
                 ctx.send_viewport_cmd_to(viewport_id(id), egui::ViewportCommand::Focus);
             } else {
-                ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, egui::Id::new(("plugin-window", id))));
+                ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, embedded_layer(id)));
             }
         }
+        self.plugin_windows.typed_last_frame = ctx.wants_keyboard_input();
     }
 
     /// Header, a line and the plug-in's controls.
@@ -1052,5 +1085,55 @@ mod tests {
         let t = companion_title("Synth \u{2014} Keys");
         assert!(t.contains("Synth \u{2014} Keys"));
         assert_ne!(t, "Synth \u{2014} Keys");
+    }
+
+    #[test]
+    fn escape_closes_the_embedded_window_under_the_pointer() {
+        use egui::{Event, Key, Modifiers};
+        let ctx = egui::Context::default();
+        let mut time = 0.0;
+        // one frame with the window drawn; `check` runs first, as `plugin_windows_ui` does
+        let mut frame = |events: Vec<Event>, check: &mut dyn FnMut(&egui::Context)| {
+            time += 0.016;
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(raw, |ctx| {
+                check(ctx);
+                let spec = WindowSpec { title: "Compressor \u{2014} Vox", pos: Some(egui::pos2(100.0, 100.0)), size: egui::vec2(400.0, 300.0) };
+                show_window(ctx, false, 7, spec, |ui| {
+                    // the controls fill the window, as the knob view's scroll area does
+                    ui.set_min_size(egui::vec2(380.0, 260.0));
+                    ui.label("knobs");
+                });
+            });
+        };
+        let esc = || Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE };
+        let at = |x, y| Event::PointerMoved(egui::pos2(x, y));
+        frame(vec![], &mut |_| {});
+        frame(vec![at(250.0, 250.0)], &mut |_| {});
+        let mut got = None;
+        frame(vec![at(250.0, 250.0), esc()], &mut |ctx| got = embedded_esc(ctx, &[7], false, false));
+        assert_eq!(got, Some(7));
+        let mut left = false;
+        frame(vec![at(900.0, 700.0), esc()], &mut |ctx| {
+            got = embedded_esc(ctx, &[7], false, false);
+            left = ctx.input(|i| i.key_pressed(Key::Escape));
+        });
+        assert_eq!(got, None);
+        assert!(left, "an Esc that closes nothing is left to the others");
+        frame(vec![at(250.0, 250.0), esc()], &mut |ctx| got = embedded_esc(ctx, &[7], true, false));
+        assert_eq!(got, None);
+        frame(vec![esc()], &mut |ctx| got = embedded_esc(ctx, &[7], false, true));
+        assert_eq!(got, None);
+        frame(vec![esc()], &mut |ctx| got = embedded_esc(ctx, &[8], false, false));
+        assert_eq!(got, None);
+        frame(vec![], &mut |ctx| got = embedded_esc(ctx, &[7], false, false));
+        assert_eq!(got, None);
+        let seven: Id = 7;
+        assert_eq!(embedded_layer(seven), egui::Id::new(("plugin-window", seven)));
     }
 }
