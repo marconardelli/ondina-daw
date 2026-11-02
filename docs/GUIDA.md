@@ -652,13 +652,17 @@ Ogni plug-in (strumenti, effetti ed effetti MIDI di Ondina, plug-in VST3) si reg
 - Un secondo clic sullo stesso slot porta la finestra in primo piano (anche se era ridotta a icona), senza
   aprirne un'altra. Puoi tenere aperte più finestre insieme, al massimo 8: oltre, si chiude quella che hai usato
   meno di recente e la barra di stato lo dice. Uno slot con la finestra aperta ha un pallino azzurro a destra.
-- **Chiudere**: con la X della finestra o con Esc (se stai scrivendo un valore, Esc annulla prima la scrittura).
+- **Chiudere**: con la X o con Esc. Con le finestre separate Esc chiude quella in primo piano; dentro la finestra
+  principale chiude quella sotto il puntatore del mouse. Se stai scrivendo un valore, hai un menu aperto o stai
+  trascinando, Esc annulla prima quello; con la domanda di salvataggio o la finestra di ripristino aperte, Esc
+  risponde a loro.
   La finestra si chiude da sola quando togli il plug-in, quando annulli la sua aggiunta, quando cambi strumento o
   quando apri un altro progetto.
 - La finestra è separata dalla principale: la puoi spostare anche su un altro monitor e ridimensionare. Riaprendo
   lo stesso plug-in torna dov'era, anche dopo aver riavviato Ondina (la posizione si ricorda per tipo di plug-in,
-  e per i VST3 per bundle). Se il driver grafico non regge più finestre, togli **Settings → Display → Open
-  plug-ins in separate windows**: le finestre si aprono dentro quella principale.
+  e per i VST3 per bundle). Una seconda finestra dello stesso tipo (per esempio due compressori) si apre spostata
+  di uno scalino in basso a destra, così non copre la prima. Se il driver grafico non regge più finestre, togli
+  **Settings → Display → Open plug-ins in separate windows**: le finestre si aprono dentro quella principale.
 - **Intestazione**: colore e nome della traccia, nome del plug-in (passaci sopra per la descrizione),
   **Bypass**, il menu dei preset di fabbrica, **Default** e, per i VST3, **Native window**. **Default** riporta
   tutti i parametri al valore iniziale con un solo passo di annulla. Sotto c'è la barra **Ask the AI** (vedi
@@ -671,10 +675,17 @@ Ogni plug-in (strumenti, effetti ed effetti MIDI di Ondina, plug-in VST3) si reg
 - I parametri a scelta (forme d'onda, modi, on/off) sono pulsanti affiancati o un menu. I parametri con lo stesso
   inizio di nome stanno insieme sotto un titolo (per esempio *Band 1*, *Filter*, *Low Shelf*). Allargando la
   finestra le manopole si ridistribuiscono; se non ci stanno, la vista scorre.
-- **VST3**: un clic sullo slot di un VST3 caricato apre la sua finestra. Se il plug-in non è caricato, non ha una
-  finestra sua o non riesce ad aprirla, si apre la finestra di Ondina con una manopola per parametro (valori da 0 a
-  1), un filtro per nome e il motivo scritto in rosso. Con il tasto destro → **Generic controls** apri la finestra
-  di Ondina anche per un VST3 che ha la sua.
+- **VST3**: un clic sullo slot di un VST3 caricato apre la sua finestra e, accanto, al bordo destro della finestra
+  principale, una finestra compatta di Ondina con l'intestazione (**Bypass**, preset, **Default**, **Close native
+  window**), la barra **Ask the AI** e il pulsante **Generic controls**. La compatta si chiude da sola quando chiudi
+  la finestra del plug-in; se la sposti, la volta dopo torna lì. La stessa coppia si apre con il tasto destro →
+  **Open native window**. Si spegne con **Settings → Display → Show the AI bar beside a plug-in's own window**.
+- Se il plug-in non è caricato, non ha una finestra sua o non riesce ad aprirla, si apre la finestra di Ondina con
+  una manopola per parametro, un filtro per nome e il motivo scritto in rosso. Con il tasto destro → **Generic
+  controls** (o con il pulsante della compatta) apri la finestra di Ondina anche per un VST3 che ha la sua. Le
+  manopole di questa finestra mostrano il valore normalizzato da 0 a 1; se il plug-in riporta un'unità, è
+  scritta tra parentesi nel nome (per esempio *Gain (dB)*) e il tooltip ricorda che il plug-in mostra quel
+  valore in quell'unità.
 - Con la finestra del plug-in in primo piano, Space avvia e ferma la riproduzione e Ctrl+Z / Ctrl+Shift+Z /
   Ctrl+Y annullano e ripetono, come nella finestra principale.
 - Le modifiche fatte dall'assistente o da un agente MCP si vedono subito sulle manopole della finestra aperta.
@@ -682,7 +693,8 @@ Ogni plug-in (strumenti, effetti ed effetti MIDI di Ondina, plug-in VST3) si reg
 ## Barra AI dei plug-in
 
 Nell'intestazione della finestra di ogni plug-in c'è la barra **Ask the AI**: vale per gli strumenti, gli
-effetti e gli effetti MIDI di Ondina e per la finestra generica dei plug-in VST3.
+effetti e gli effetti MIDI di Ondina, per la finestra generica dei plug-in VST3 e per la finestra compatta che si
+apre accanto alla loro finestra.
 
 - Scrivi cosa vuoi nella casella ("più aria sulla voce", "togli il rimbombo sotto i 200 Hz", "un pad caldo che si
   apre lentamente") e premi Invio o **Ask**. L'assistente regola proprio quel plug-in.
@@ -780,7 +792,7 @@ compatibile OpenAI all'indirizzo scelto in **Settings ⚙** (di default `http://
 
 ## Annulla e ripeti
 
-- Ctrl+Z annulla l'ultima modifica, Ctrl+Y la ripete.
+- Ctrl+Z annulla l'ultima modifica, Ctrl+Shift+Z o Ctrl+Y la ripetono.
 - Esc mentre trascini con il mouse (regioni, dissolvenze, marker, accordi, ciclo, intestazioni delle tracce, note,
   bordi delle note, rettangolo di selezione, velocity, tratti nella corsia dei controller) annulla il gesto: tutto
   torna com'era e non serve Ctrl+Z. Il ciclo, che si aggiorna mentre lo trascini, torna al suo posto; nella
@@ -919,7 +931,7 @@ cancellata. La finestra di recupero compare comunque se all'avvio trova copie ri
 | Home | torna all'inizio |
 | , / . | playhead all'inizio della battuta precedente / successiva |
 | Maiusc+, / Maiusc+. | playhead al marker precedente / successivo (o all'inizio / alla fine della canzone) |
-| Ctrl+Z / Ctrl+Y | annulla / ripeti |
+| Ctrl+Z / Ctrl+Shift+Z o Ctrl+Y | annulla / ripeti |
 | Ctrl+S / O / N | salva / apri / nuovo |
 | Ctrl+D | duplica la regione (con note selezionate nel piano roll: ripete le note) |
 | Ctrl+T | divide la regione selezionata al playhead |

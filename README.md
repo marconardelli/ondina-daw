@@ -153,14 +153,18 @@ extension: Ondina opens both.
   sets its loop count and velocity offset.
 - **Plug-in windows**: a click on an insert, instrument or MIDI FX slot (mixer or inspector) opens that plug-in in a
   window of its own, separate and resizable, that comes back where you left it (also after a restart); a second
-  click brings it to the front, several stay open together (up to 8), Esc or the X closes it and it closes by itself
-  when the plug-in is removed. The header shows the plug-in and its track, Bypass, the factory presets, **Default**
+  click brings it to the front, several stay open together (up to 8) and a second one of the same kind opens one
+  step aside, Esc (inside the main window: on the window under the pointer) or the X closes it and it closes by
+  itself when the plug-in is removed. The header shows the plug-in and its track, Bypass, the factory presets, **Default**
   (every parameter back to its default in one undo step) and the AI bar with its ready-made requests; below, every
   parameter is a knob (log scale for frequencies and long times, value with its unit, Shift for fine steps,
-  double-click for the default, right-click to type a value) or a selector. A loaded VST3 opens its own editor; one
-  without it, or not loaded, opens Ondina's generic window with a knob per parameter and a filter by name
-  (right-click → **Generic controls** opens it anyway). Space and Ctrl+Z work in the window too; Settings → Display →
-  *Open plug-ins in separate windows* off keeps them inside the main window.
+  double-click for the default, right-click to type a value) or a selector. A loaded VST3 opens its own editor and,
+  beside it, a compact Ondina window with the same header and AI bar plus **Generic controls** (it closes with the
+  editor; Settings → Display → *Show the AI bar beside a plug-in's own window* turns it off); one without an
+  editor, or not loaded, opens Ondina's generic window with a knob per parameter (labelled with the unit the
+  plug-in reports) and a filter by name (right-click → **Generic controls** opens it anyway). Space, Ctrl+Z and
+  Ctrl+Shift+Z work in the window too; Settings → Display → *Open plug-ins in separate windows* off keeps them
+  inside the main window.
 - **Unsaved changes**: when the project has unsaved changes (the • in the title bar), closing the window, New,
   Open or a recent project first asks *Save*, *Don't Save* or *Cancel*. Esc cancels, Enter saves. A recording in
   progress is stopped and kept before the question.
@@ -197,7 +201,7 @@ extension: Ondina opens both.
 
 | Key | Action | Key | Action |
 |---|---|---|---|
-| Space | play / stop | Ctrl+Z / Ctrl+Y | undo / redo |
+| Space | play / stop | Ctrl+Z / Ctrl+Shift+Z, Ctrl+Y | undo / redo |
 | R | record | Delete | delete selection |
 | C | toggle cycle | Ctrl+D | duplicate region (piano roll: repeat the selected notes) |
 | K | metronome | Ctrl+S / O / N | save / open / new |
