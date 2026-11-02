@@ -632,6 +632,12 @@ impl OndinaApp {
     }
 
     pub fn ask_ai(&mut self, text: String) {
+        self.ask_ai_with(text, None);
+    }
+
+    /// ask_ai with more context for the model after the selection. A plug-in's AI bar sends the plug-in's settings
+    /// this way, so the chat and the undo step show only the request.
+    pub fn ask_ai_with(&mut self, text: String, extra_ctx: Option<String>) {
         if self.ai.busy || text.trim().is_empty() {
             return;
         }
@@ -663,6 +669,10 @@ impl OndinaApp {
                 // 32 notes keep the context to a few hundred characters; the count says how many more there are.
                 ctx += &ondina_core::ops::selected_notes_context(&m.notes, &v, 32);
             }
+        }
+        if let Some(extra) = extra_ctx {
+            ctx.push('\n');
+            ctx += &extra;
         }
         let session = self.session.clone();
         let mut settings = self.settings.clone();

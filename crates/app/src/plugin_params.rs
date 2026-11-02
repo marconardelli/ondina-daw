@@ -1,5 +1,6 @@
 //! Parameter editors of the selected plug-in in the Inspector: the built-in plug-ins' parameters and presets, and the
-//! generic editor of third-party VST3 plug-ins (normalized 0..1 values, the plug-in's own window).
+//! generic editor of third-party VST3 plug-ins (normalized 0..1 values, the plug-in's own window), both ending with
+//! the plug-in's AI bar.
 
 use eframe::egui::{self, RichText};
 use ondina_core::command::Command;
@@ -25,7 +26,7 @@ impl OndinaApp {
             return;
         };
         if inst.kind == "vst3" {
-            self.vst3_editor(ui, &inst);
+            self.vst3_editor(ui, p, &inst);
             return;
         }
         let Some(info) = plugins::find(&inst.kind) else {
@@ -82,16 +83,12 @@ impl OndinaApp {
                     ui.end_row();
                 }
             });
-            ui.horizontal(|ui| {
-                if self.ai_button(ui, "AI: design a sound") {
-                    self.ask_ai(ondina_studio::prompts::design_sound(pid, info.name));
-                }
-            });
+            self.plugin_ai_bar(ui, p, pid);
         });
     }
 
     /// Generic parameter editor for third-party VST3 plug-ins (normalized 0..1 values).
-    fn vst3_editor(&mut self, ui: &mut egui::Ui, inst: &PluginInstance) {
+    fn vst3_editor(&mut self, ui: &mut egui::Ui, p: &Project, inst: &PluginInstance) {
         let pid = inst.id;
         plugin_card()
             .show(ui, |ui| {
@@ -190,6 +187,7 @@ impl OndinaApp {
                                 }
                             });
                     });
+                self.plugin_ai_bar(ui, p, pid);
             });
     }
 }
