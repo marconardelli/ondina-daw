@@ -450,9 +450,6 @@ pub fn eq_graph(ui: &mut egui::Ui, inst: &PluginInstance, sr: f32, height: f32, 
             }
         }
     }
-    if let Some(d) = drag.filter(|d| hot.is_none() && responses.iter().any(|r| r.dragged()) && d.band < bands.len()) {
-        hot = Some(d.band);
-    }
     ui.data_mut(|m| match drag {
         Some(d) => m.insert_temp(drag_id, d),
         None => m.remove::<EqDrag>(drag_id),
