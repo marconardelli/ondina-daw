@@ -495,7 +495,7 @@ mod tests {
         assert!(hs.magnitude_db(50.0, sr).abs() <= 0.1);
         let hp = Biquad::new(BiquadKind::HighPass, 1000.0, 0.707, 0.0, sr);
         let low = hp.magnitude_db(5.0, sr);
-        assert!(low < -60.0 && low >= MIN_RESPONSE_DB, "{low}");
+        assert!((MIN_RESPONSE_DB..-60.0).contains(&low), "{low}");
     }
 
     #[test]
