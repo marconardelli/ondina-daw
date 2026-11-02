@@ -506,6 +506,41 @@ Da MCP e dall'assistente: il tool `add_effect` con `kind: "de_esser"` lo aggiung
 chiedere all'assistente "de-ess the vocal". La patch **Lead Vocal** non lo contiene: va aggiunto a
 mano.
 
+## Stereo Imager
+
+Lo Stereo Imager allarga o stringe l'immagine stereo banda per banda: allarghi i pad, i cori e i synth
+senza allargare anche i bassi, che in mono perderebbero energia, e puoi mettere in mono la parte bassa
+di un mix, un'abitudine da mastering.
+
+- Dove si trova: nel mixer, menu **+** di uno slot insert, oppure nell'inspector con **Add effect**,
+  poi **Utility** e **Stereo Imager**. Va bene su una traccia, su un bus o sul master. Ci sono tre
+  preset: **Mono Low End**, **Wide Synth** e **Master Width Subtle**.
+- **Low Freq** e **High Freq**: le due frequenze che dividono il suono in bassi, medi e acuti
+  (crossover a 24 dB per ottava; le tre bande sommate tornano piatte).
+- **Low Width**, **Mid Width**, **High Width**: la larghezza di ogni banda. 0 la mette in mono, 1 la
+  lascia com'è, 2 raddoppia il Side. La larghezza cambia solo il Side (la differenza fra sinistra e
+  destra), quindi il mix ascoltato in mono non cambia volume.
+- **Mono Bass**: mette in mono tutto quello che sta sotto Low Freq, qualunque sia Low Width.
+- **Balance**: sposta l'immagine abbassando il lato opposto (positivo abbassa la sinistra).
+- **Listen**: **Mid** fa sentire solo la parte comune ai due canali, **Side** solo la differenza (con
+  le larghezze applicate). Serve a trovare i problemi; ricordati di rimettere **Stereo**.
+- **Output Gain** regola l'uscita.
+- Con le larghezze a 1 e Mono Bass spento il livello di ogni frequenza resta uguale; come ogni
+  crossover, le bande spostano un poco la fase intorno alle due frequenze. Non aggiunge latenza.
+
+Per controllare la compatibilità mono usa la correlazione stereo di `analyze_mix` (anche nel Mix
+report): vicino a 1 il suono è quasi mono, sotto 0,2 in mono perde energia, sotto 0 alcune parti si
+cancellano.
+
+Da MCP e dall'assistente: il tool `add_effect` con `kind: "stereo_imager"` lo aggiunge (con
+`track_id: 0` sul master) e `set_plugin_params` ne cambia i parametri (`low_freq`, `high_freq`,
+`low_width`, `mid_width`, `high_width`, `mono_bass`, `balance`, `listen`, `output`).
+
+Nella barra **Ask the AI** in fondo ai parametri ci sono tre richieste pronte: *Mono the low end*,
+*Wider without losing mono* e *Check mono compatibility*. L'assistente legge la correlazione con
+`analyze_mix` prima e dopo, e risponde dicendo quali parametri ha cambiato, oppure perché non serviva
+cambiarli.
+
 ## Dynamic EQ
 
 Il Dynamic EQ ha quattro bande che si abbassano (o si alzano) da sole solo quando la loro zona di

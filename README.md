@@ -73,7 +73,7 @@ Every row is available both in the GUI and as MCP tools (full list in [`MCP_TOOL
 | Object-based mixing | tracks as audio objects, ADM BWF export (ITU-R BS.2076 + BS.2088): 7.1.2 bed + objects | `set_surround_pan` `export_adm` |
 | Video | linked movie (local file) with offset, movie audio, SMPTE timecode, video window, export with soundtrack (.mp4, .mov, .mkv, .m4v) | `load_movie` `set_frame_rate` `extract_movie_frame` `export_movie` |
 | Built-in instruments | Analog Synth, FM Synth, Drum Synth, Sampler, Tonewheel Organ, Plucked String | `set_instrument` `set_plugin_params` |
-| Built-in effects | 18 audio effects (EQ and a four-band dynamic EQ, dynamics with a de-esser, delay, reverb, modulation, distortion, filters, utility) + 4 MIDI effects | `add_effect` `add_midi_effect` |
+| Built-in effects | 19 audio effects (EQ and a four-band dynamic EQ, dynamics with a de-esser, delay, reverb, modulation, distortion, filters, utility with a three-band stereo imager) + 4 MIDI effects | `add_effect` `add_midi_effect` |
 | VST3 plug-ins | scan and host third-party VST3 instruments and effects (`.vst3` bundles on local drives only; MCP clients and the assistant load them, also from projects they open, only from the standard VST3 folders and the folders added in the library), native editor windows, parameters set with `set_plugin_param` (not automatable yet), state saved in the project | `scan_vst3` `add_vst3` `open_plugin_editor` `set_plugin_param` |
 | Mastering and loudness | integrated LUFS, true peak, LRA, spectrum, correlation, advice; automatic mastering | `analyze_mix` `auto_master` |
 | Bounce and export | WAV 16/24/32-float with dither, peak or loudness normalization (-14/-16/-23 LUFS or any target from -30 to -6, with a true-peak ceiling), reverb and delay tails rendered until they fade (or an exact length with tail_sec), MIDI, bounce in place, multichannel surround | `bounce` `export_midi` `bounce_in_place` |
@@ -272,7 +272,7 @@ region start, MIDI pitch 60 = C4, `track_id` 0 = master.
 | Crate | Responsibility |
 |---|---|
 | `ondina-core` | project model, the `Command` enum (= the API), music theory, generators, MIDI I/O |
-| `ondina-dsp` | instruments (6), effects (18), MIDI effects (4), time warp, pitch edit, stem and tempo audio operations, spatial audio, VST3 host |
+| `ondina-dsp` | instruments (6), effects (19), MIDI effects (4), time warp, pitch edit, stem and tempo audio operations, spatial audio, VST3 host |
 | `ondina-engine` | renderer, real-time `cpal`/WASAPI engine, clip grid, recording, stereo/surround bounce, LUFS analysis, ADM |
 | `ondina-studio` | `Session` (executes commands, undo/redo), MCP server (HTTP + stdio + bridge), AI assistant (Claude and local) |
 | `ondina-app` | egui GUI: `ondina.exe` (desktop) and `ondina-mcp.exe` (console, for stdio MCP clients) |
