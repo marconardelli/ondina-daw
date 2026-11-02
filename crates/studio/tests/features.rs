@@ -3375,3 +3375,48 @@ fn plugin_window_ai_and_mcp_changes_are_undoable() {
     s.execute(Command::Undo {}, Source::Gui).unwrap();
     assert_eq!(plugin_values(&mut s, fx), before);
 }
+
+#[test]
+fn plugin_window_ai_changes_to_a_vst3_are_one_undo_step() {
+    use ondina_core::model::{PluginInstance, Vst3Param};
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Keys"}))["track_id"].as_u64().unwrap();
+    let pid = s.project.alloc_id();
+    let vst3_params = vec![
+        Vst3Param { id: "p1".into(), name: "Gain".into(), default: 0.5, unit: "dB".into() },
+        Vst3Param { id: "p2".into(), name: "Mix".into(), default: 0.25, unit: String::new() },
+    ];
+    let path = Some(r"C:\NotThere\Test Synth.vst3".to_string());
+    let inst = PluginInstance { id: pid, kind: "vst3".into(), params: Default::default(), bypass: false, preset: Some("Test Synth".into()), sample: None, vst3_path: path, vst3_params, vst3_state: None };
+    s.project.track_mut(t).unwrap().channel.inserts.push(inst);
+
+    // MCP: name, unit and range of every parameter
+    let info = ok(&mut s, "get_plugin", json!({"plugin_id": pid}));
+    let p1 = info["params"].as_array().unwrap().iter().find(|p| p["id"] == "p1").unwrap().clone();
+    assert_eq!(p1["unit"], "dB", "{p1}");
+    assert_eq!((p1["min"].as_f64(), p1["max"].as_f64()), (Some(0.0), Some(1.0)), "{p1}");
+    assert_eq!(p1["normalized"], true, "{p1}");
+
+    // what the window's AI bar sends with the request
+    let text = ondina_studio::prompts::plugin_bar_context(&s.project, pid).unwrap();
+    assert!(text.contains("- p1 \"Gain\" = 0.5 [0..1, shown in dB]"), "{text}");
+    assert!(text.contains("- p2 \"Mix\" = 0.25 [0..1]"), "{text}");
+
+    let params = [("p1".to_string(), 0.8f32), ("p2".to_string(), 0.6)].into_iter().collect();
+    s.execute(Command::SetPluginParams { plugin_id: pid, params }, Source::Ai).unwrap();
+    assert!(s.last_undo_is_ai());
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    let (a, b) = (plugin_value(&mut s, pid, "p1"), plugin_value(&mut s, pid, "p2"));
+    assert!(near(a, 0.8) && near(b, 0.6), "{a} {b}");
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    let (a, b) = (plugin_value(&mut s, pid, "p1"), plugin_value(&mut s, pid, "p2"));
+    assert!(near(a, 0.5) && near(b, 0.25), "one undo restores both: {a} {b}");
+    s.execute(Command::Redo {}, Source::Gui).unwrap();
+    let (a, b) = (plugin_value(&mut s, pid, "p1"), plugin_value(&mut s, pid, "p2"));
+    assert!(near(a, 0.8) && near(b, 0.6), "{a} {b}");
+
+    ok(&mut s, "set_plugin_param", json!({"plugin_id": pid, "param": "p1", "value": 1.7}));
+    assert_eq!(plugin_value(&mut s, pid, "p1"), 1.0);
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert!(near(plugin_value(&mut s, pid, "p1"), 0.8));
+}
