@@ -715,6 +715,53 @@ pub fn plugin_detail(p: &PluginInstance) -> Value {
     json!({"id": p.id, "kind": p.kind, "name": info.map(|i| i.name), "preset": p.preset, "bypass": p.bypass, "sample_file_id": p.sample, "params": params})
 }
 
+/// What get_plugin says about a third-party plug-in instead of a registry description.
+const VST3_DESCRIPTION: &str = "Third-party VST3 plug-in: parameter values are normalized 0..1 (unit is the plug-in's display unit).";
+
+/// What get_plugin returns: plugin_detail plus the plug-in's description, each parameter's default and where the
+/// plug-in sits. The extra fields stay out of plugin_detail, which get_track and add_track repeat for every plug-in.
+pub fn plugin_read(project: &Project, p: &PluginInstance) -> Value {
+    let mut v = plugin_detail(p);
+    let info = plugins::find(&p.kind);
+    v["description"] = match info {
+        Some(i) => json!(i.description),
+        None if p.kind == "vst3" => json!(VST3_DESCRIPTION),
+        None => Value::Null,
+    };
+    if let Some(params) = v["params"].as_array_mut() {
+        for o in params {
+            let id = o["id"].as_str().unwrap_or_default().to_string();
+            let default = if p.kind == "vst3" {
+                p.vst3_params.iter().find(|vp| vp.id == id).map(|vp| vp.default)
+            } else {
+                info.and_then(|i| i.params.iter().find(|pi| pi.id == id)).map(|pi| pi.default)
+            };
+            if let Some(d) = default {
+                o["default"] = json!(d);
+            }
+        }
+    }
+    v["track"] = plugin_place(project, p.id);
+    v
+}
+
+/// The track get_plugin says a plug-in sits on: id, name and kind ("master" and id 0 for the master channel), its
+/// slot and, for a MIDI effect or an insert, its index in that chain.
+fn plugin_place(project: &Project, plugin_id: Id) -> Value {
+    let Some((track, slot)) = project.plugin_slot(plugin_id) else {
+        return Value::Null;
+    };
+    let mut v = match track {
+        Some(t) => json!({"id": t.id, "name": t.name, "kind": t.kind}),
+        None => json!({"id": MASTER_ID, "name": "Master", "kind": "master"}),
+    };
+    v["slot"] = json!(slot.name());
+    if let Some(i) = slot.index() {
+        v["index"] = json!(i);
+    }
+    v
+}
+
 fn channel_brief(c: &Channel) -> Value {
     json!({
         "volume_db": c.volume_db, "pan": c.pan, "mute": c.mute, "solo": c.solo,
@@ -1196,7 +1243,7 @@ pub fn apply(project: &mut Project, cmd: &Command) -> R {
         }
         GetPlugin { plugin_id } => {
             let p = project.find_plugin(*plugin_id).ok_or("plug-in not found")?;
-            ok(plugin_detail(p))
+            ok(plugin_read(project, p))
         }
 
         // regions
@@ -3068,5 +3115,33 @@ mod tests {
         let v = run(&mut p, Command::AddPatternRow { region_id: rid, name: "Kick".into(), pitch: 36 });
         assert_eq!(v, json!({"row": 0}));
         assert_eq!(pattern_of(&p, rid).rows[0].steps, vec![0; 16]);
+    }
+
+    #[test]
+    fn plugin_slot_names_the_track_and_the_chain_position() {
+        let mut p = Project::new("t");
+        let lead = run(&mut p, Command::AddTrack { kind: TrackKind::Instrument, name: Some("Lead".into()), patch: None, instrument: Some("analog_synth".into()), preset: None, index: None })["track_id"].as_u64().unwrap();
+        let synth = p.track(lead).unwrap().instrument.as_ref().unwrap().id;
+        let arp = run(&mut p, Command::AddMidiEffect { track_id: lead, kind: "arpeggiator".into(), preset: None })["plugin_id"].as_u64().unwrap();
+        run(&mut p, Command::AddEffect { track_id: lead, kind: "compressor".into(), preset: None, index: None });
+        let eq = run(&mut p, Command::AddEffect { track_id: lead, kind: "channel_eq".into(), preset: None, index: None })["plugin_id"].as_u64().unwrap();
+        let lim = run(&mut p, Command::AddEffect { track_id: MASTER_ID, kind: "limiter".into(), preset: None, index: None })["plugin_id"].as_u64().unwrap();
+
+        let (t, slot) = p.plugin_slot(synth).unwrap();
+        assert_eq!(t.map(|t| t.name.as_str()), Some("Lead"));
+        assert_eq!(slot, PluginSlot::Instrument);
+        let (t, slot) = p.plugin_slot(arp).unwrap();
+        assert_eq!(t.map(|t| t.id), Some(lead));
+        assert_eq!(slot, PluginSlot::MidiFx(0));
+        assert_eq!(p.plugin_slot(eq).unwrap().1, PluginSlot::Insert(1));
+        let (t, slot) = p.plugin_slot(lim).unwrap();
+        assert!(t.is_none());
+        assert_eq!(slot, PluginSlot::Insert(0));
+        assert!(p.plugin_slot(9999).is_none());
+        assert_eq!(PluginSlot::Insert(1).name(), "insert");
+        assert_eq!(PluginSlot::Insert(1).index(), Some(1));
+        assert_eq!(PluginSlot::MidiFx(0).name(), "midi_fx");
+        assert_eq!(PluginSlot::Instrument.name(), "instrument");
+        assert_eq!(PluginSlot::Instrument.index(), None);
     }
 }

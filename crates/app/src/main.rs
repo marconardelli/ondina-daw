@@ -34,6 +34,7 @@ mod note_selection;
 mod panel_layout;
 mod piano_roll_view;
 mod pr_toolbar;
+mod plugin_ai;
 mod plugin_params;
 mod region_edit;
 mod region_clipboard;

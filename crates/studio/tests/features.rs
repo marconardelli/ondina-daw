@@ -2935,3 +2935,97 @@ fn session_players_return_a_seed_that_repeats_the_part() {
     ok(&mut s, "undo", json!({}));
     assert!(s.project.find_region(second).is_none(), "one undo removes the last generated part");
 }
+
+#[test]
+fn get_plugin_reports_description_defaults_and_track() {
+    let mut s = Session::new(false);
+    let vocals = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vocals"}))["track_id"].as_u64().unwrap();
+    ok(&mut s, "add_effect", json!({"track_id": vocals, "kind": "compressor"}));
+    let eq = ok(&mut s, "add_effect", json!({"track_id": vocals, "kind": "channel_eq"}))["plugin_id"].as_u64().unwrap();
+    let lead = ok(&mut s, "add_track", json!({"kind": "instrument", "name": "Lead", "instrument": "analog_synth"}))["track_id"].as_u64().unwrap();
+    let synth = ok(&mut s, "get_track", json!({"track_id": lead}))["instrument"]["id"].as_u64().unwrap();
+    let arp = ok(&mut s, "add_midi_effect", json!({"track_id": lead, "kind": "arpeggiator"}))["plugin_id"].as_u64().unwrap();
+    let lim = ok(&mut s, "add_effect", json!({"track_id": 0, "kind": "limiter"}))["plugin_id"].as_u64().unwrap();
+
+    let v = ok(&mut s, "get_plugin", json!({"plugin_id": eq}));
+    let info = ondina_core::plugins::find("channel_eq").unwrap();
+    assert_eq!(v["id"], json!(eq));
+    assert_eq!(v["kind"], json!("channel_eq"));
+    assert_eq!(v["name"], json!("Channel EQ"));
+    assert_eq!(v["description"], json!(info.description));
+    let params = v["params"].as_array().unwrap();
+    assert_eq!(params.len(), info.params.len());
+    for (o, pi) in params.iter().zip(info.params) {
+        assert_eq!(o["id"], json!(pi.id));
+        assert_eq!(o["default"], json!(pi.default), "{o}");
+        assert_eq!(o["value"], json!(pi.default), "{o}");
+        assert_eq!(o["min"], json!(pi.min));
+        assert_eq!(o["max"], json!(pi.max));
+        assert_eq!(o["unit"], json!(pi.unit));
+    }
+    let hp_on = params.iter().find(|o| o["id"] == "hp_on").unwrap();
+    assert!(hp_on["choices"].is_array());
+    assert_eq!(hp_on["selected"], json!("Off"));
+    assert_eq!(v["track"], json!({"id": vocals, "name": "Vocals", "kind": "audio", "slot": "insert", "index": 1}));
+
+    let v = ok(&mut s, "get_plugin", json!({"plugin_id": synth}));
+    assert_eq!(v["description"], json!(ondina_core::plugins::find("analog_synth").unwrap().description));
+    assert_eq!(v["track"]["id"], json!(lead));
+    assert_eq!(v["track"]["name"], json!("Lead"));
+    assert_eq!(v["track"]["slot"], json!("instrument"));
+    assert_eq!(v["track"]["kind"], json!("instrument"));
+    assert!(v["track"].get("index").is_none(), "{v}");
+    let cutoff = v["params"].as_array().unwrap().iter().find(|o| o["id"] == "cutoff").unwrap();
+    assert_eq!(cutoff["default"], json!(2500.0));
+
+    let v = ok(&mut s, "get_plugin", json!({"plugin_id": arp}));
+    assert_eq!(v["track"]["slot"], json!("midi_fx"));
+    assert_eq!(v["track"]["index"], json!(0));
+
+    let v = ok(&mut s, "get_plugin", json!({"plugin_id": lim}));
+    assert_eq!(v["track"], json!({"id": 0, "name": "Master", "kind": "master", "slot": "insert", "index": 0}));
+
+    // get_track keeps the short form of every plug-in
+    let t = ok(&mut s, "get_track", json!({"track_id": vocals}));
+    let inserts = t["channel"]["inserts"].as_array().unwrap();
+    assert_eq!(inserts.len(), 2);
+    for p in inserts {
+        assert!(p.get("description").is_none(), "{p}");
+        assert!(p.get("track").is_none(), "{p}");
+    }
+}
+
+#[test]
+fn plugin_bar_edits_undo_in_one_step() {
+    let mut s = Session::new(false);
+    let vocals = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vocals"}))["track_id"].as_u64().unwrap();
+    let eq = ok(&mut s, "add_effect", json!({"track_id": vocals, "kind": "channel_eq"}))["plugin_id"].as_u64().unwrap();
+    let changed = [("hp_on", 1.0), ("hp_freq", 120.0), ("low_gain", -4.0), ("low_freq", 250.0), ("mid1_gain", -3.0)];
+
+    s.begin_undo_group("assistant: Clean up the muddy frequencies");
+    run(&mut s, "get_plugin", json!({"plugin_id": eq}), Source::Ai);
+    run(&mut s, "set_plugin_params", json!({"plugin_id": eq, "params": {"hp_on": 1, "hp_freq": 120, "low_gain": -4, "low_freq": 250}}), Source::Ai);
+    run(&mut s, "set_plugin_param", json!({"plugin_id": eq, "param": "mid1_gain", "value": -3}), Source::Ai);
+    s.end_undo_group();
+
+    // the plug-in panel reads its sliders from the project, so it shows the change at once
+    let p = s.project.find_plugin(eq).unwrap();
+    for (id, v) in changed {
+        assert_eq!(p.param(id), v, "{id}");
+    }
+    assert_eq!(s.can_undo(), Some("assistant: Clean up the muddy frequencies"));
+    assert!(s.last_undo_is_ai());
+
+    run(&mut s, "undo", json!({}), Source::Gui);
+    let v = ok(&mut s, "get_plugin", json!({"plugin_id": eq}));
+    for o in v["params"].as_array().unwrap() {
+        assert_eq!(o["value"], o["default"], "{o}");
+    }
+    assert_eq!(s.can_undo().map(|l| l.starts_with("assistant")), Some(false));
+
+    run(&mut s, "redo", json!({}), Source::Gui);
+    let p = s.project.find_plugin(eq).unwrap();
+    for (id, v) in changed {
+        assert_eq!(p.param(id), v, "{id}");
+    }
+}

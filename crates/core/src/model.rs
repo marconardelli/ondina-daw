@@ -292,6 +292,36 @@ impl PluginInstance {
     }
 }
 
+/// Where a plug-in sits on its track or on the master channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginSlot {
+    /// The instrument of an instrument track.
+    Instrument,
+    /// A MIDI effect, by its index among the track's MIDI effects.
+    MidiFx(usize),
+    /// An audio insert, by its index in the channel strip (as move_plugin counts it).
+    Insert(usize),
+}
+
+impl PluginSlot {
+    /// "instrument", "midi_fx" or "insert", as get_plugin reports it.
+    pub fn name(self) -> &'static str {
+        match self {
+            PluginSlot::Instrument => "instrument",
+            PluginSlot::MidiFx(_) => "midi_fx",
+            PluginSlot::Insert(_) => "insert",
+        }
+    }
+
+    /// Index in its chain; None for the instrument.
+    pub fn index(self) -> Option<usize> {
+        match self {
+            PluginSlot::Instrument => None,
+            PluginSlot::MidiFx(i) | PluginSlot::Insert(i) => Some(i),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Region {
     pub id: Id,
@@ -628,6 +658,25 @@ impl Project {
                     || t.channel.inserts.iter().any(|p| p.id == plugin_id)
             })
             .map(|t| t.id)
+    }
+
+    /// The track a plug-in sits on (None for the master channel) and its slot there.
+    pub fn plugin_slot(&self, plugin_id: Id) -> Option<(Option<&Track>, PluginSlot)> {
+        if let Some(i) = self.master.inserts.iter().position(|p| p.id == plugin_id) {
+            return Some((None, PluginSlot::Insert(i)));
+        }
+        for t in &self.tracks {
+            if t.instrument.as_ref().is_some_and(|p| p.id == plugin_id) {
+                return Some((Some(t), PluginSlot::Instrument));
+            }
+            if let Some(i) = t.midi_fx.iter().position(|p| p.id == plugin_id) {
+                return Some((Some(t), PluginSlot::MidiFx(i)));
+            }
+            if let Some(i) = t.channel.inserts.iter().position(|p| p.id == plugin_id) {
+                return Some((Some(t), PluginSlot::Insert(i)));
+            }
+        }
+        None
     }
 
     /// End of the last region (or marker), in beats.

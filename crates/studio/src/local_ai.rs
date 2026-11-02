@@ -44,8 +44,10 @@ const MIN_HISTORY_CHARS: usize = 6000;
 const OMITTED_NOTE: &str = "(earlier conversation omitted)";
 /// Characters of a tool result the model sees.
 const TOOL_RESULT_CHARS: usize = 1500;
-/// The reads the ✨ requests depend on (a synth has about 3000 characters of parameters) get more room.
-const READ_RESULT_CHARS: usize = 4000;
+/// The reads the AI requests depend on get more room: get_plugin of the largest built-in synth, with defaults,
+/// description and track, is about 3900 characters, and every_builtin_get_plugin_reaches_the_local_model_whole keeps
+/// each built-in plug-in under this.
+const READ_RESULT_CHARS: usize = 6000;
 const LONG_READS: &[&str] = &["get_region", "get_plugin"];
 
 /// The part of a tool result that goes back to the model.
@@ -952,5 +954,48 @@ mod tests {
         let tools = local_tools().to_string();
         assert!(!tools.contains("\"format\":\""), "a numeric format hint is left in the local schema");
         assert!(tools.contains("\"bounce\""));
+    }
+
+    #[test]
+    fn local_tools_cover_the_plugin_bar() {
+        let all: Vec<&str> = mcp::tools().iter().map(|t| t.name.as_str()).collect();
+        let kinds = ondina_core::plugins::registry().iter().map(|i| i.kind).chain(["vst3"]);
+        let mut texts: Vec<String> = kinds.flat_map(|k| prompts::plugin_quick_actions(k).iter().map(|&a| prompts::quick_action_request(a, 7, "X"))).collect();
+        texts.push(prompts::plugin_bar_rules(7, "X"));
+        for text in &texts {
+            for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                if all.contains(&word) {
+                    assert!(LOCAL_TOOLS.contains(&word), "{word}, named in {text:?}, is not offered to the local model");
+                }
+            }
+        }
+        for tool in ["get_plugin", "set_plugin_params", "analyze_mix"] {
+            assert!(LOCAL_TOOLS.contains(&tool), "{tool} is needed by the plug-in AI bar");
+        }
+    }
+
+    #[test]
+    fn every_builtin_get_plugin_reaches_the_local_model_whole() {
+        use ondina_core::command::Command;
+        use ondina_core::model::TrackKind;
+        use ondina_core::plugins::{registry, PluginCategory};
+        let mut s = Session::new(false);
+        let add = Command::AddTrack { kind: TrackKind::Instrument, name: None, patch: None, instrument: None, preset: None, index: None };
+        let track_id = s.execute(add, Source::Mcp).unwrap()["track_id"].as_u64().unwrap();
+        for info in registry() {
+            let kind = info.kind.to_string();
+            let plugin_id = match info.category {
+                PluginCategory::Instrument => {
+                    s.execute(Command::SetInstrument { track_id, kind, preset: None }, Source::Mcp).unwrap();
+                    s.project.track(track_id).unwrap().instrument.as_ref().unwrap().id
+                }
+                PluginCategory::Effect => s.execute(Command::AddEffect { track_id, kind, preset: None, index: None }, Source::Mcp).unwrap()["plugin_id"].as_u64().unwrap(),
+                PluginCategory::MidiEffect => s.execute(Command::AddMidiEffect { track_id, kind, preset: None }, Source::Mcp).unwrap()["plugin_id"].as_u64().unwrap(),
+            };
+            let out = s.execute(Command::GetPlugin { plugin_id }, Source::Mcp).unwrap().to_string();
+            let len = out.chars().count();
+            assert!(len <= READ_RESULT_CHARS, "get_plugin of {} is {len} characters, the local model reads {READ_RESULT_CHARS}", info.kind);
+            assert_eq!(result_for_model("get_plugin", &out), out);
+        }
     }
 }

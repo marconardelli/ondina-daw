@@ -575,6 +575,25 @@ percorso non ha estensione, Ondina la aggiunge.
 - Dai menu e dalle finestre di salvataggio dell'app puoi continuare a scegliere qualsiasi cartella,
   anche su un NAS. Un progetto aperto da una cartella di rete si risalva con Ctrl+S, non dall'assistente.
 
+## Barra AI dei plug-in
+
+In fondo ai parametri di ogni plug-in, nell'inspector, c'è la barra **Ask the AI**: vale per gli strumenti, gli
+effetti e gli effetti MIDI di Ondina e per i plug-in VST3.
+
+- Scrivi cosa vuoi nella casella ("più aria sulla voce", "togli il rimbombo sotto i 200 Hz", "un pad caldo che si
+  apre lentamente") e premi Invio o **Ask**. L'assistente regola proprio quel plug-in.
+- Sotto la casella ci sono due o tre richieste pronte adatte al plug-in: per l'EQ *Clean up the muddy
+  frequencies*, per il limiter *Bring the master to -14 LUFS*, per gli strumenti *Design a sound* e altre.
+- L'assistente riceve con la richiesta il plug-in, la traccia su cui sta, il resto della catena e tutti i
+  parametri con valori e intervalli (per un VST3 i primi 64). Quando serve misura il mix con `analyze_mix`.
+- Cambia i parametri solo con i comandi della sessione: i cursori del pannello si muovono subito e tutto quello
+  che ha fatto per una richiesta si annulla con un solo Ctrl+Z (o **Undo AI edit**).
+- Nel pannello dell'assistente risponde in poche righe: quali parametri ha cambiato e perché.
+- Funziona con Claude e con il modello locale; **Stop** interrompe. Senza modello la barra è disattivata, e
+  mentre l'assistente lavora i bottoni aspettano.
+- Un agente MCP legge le stesse informazioni con `get_plugin`: descrizione, valori, intervalli e default dei
+  parametri, traccia e slot.
+
 ## Plug-in VST3
 
 Ondina carica i plug-in VST3 solo da un bundle `.vst3` su un disco locale, per esempio
@@ -620,8 +639,8 @@ compatibile OpenAI all'indirizzo scelto in **Settings ⚙** (di default `http://
   quando chiudi Ondina. Un server già acceso prima (Ollama, LM Studio, un `llama-server` avviato a
   mano) viene usato così com'è e resta acceso.
 - Il modello locale riceve 46 tool, scelti perché stiano nel suo contesto. Bastano per i pulsanti ✨
-  del piano roll (*continue / improve*), dello step sequencer (*write a groove*), degli editor dei
-  plug-in (*design a sound*), della Clip Grid (*fill the grid*), del report del mix e dei menu della
+  del piano roll (*continue / improve*), dello step sequencer (*write a groove*), della barra AI
+  dei plug-in, della Clip Grid (*fill the grid*), del report del mix e dei menu della
   finestra di arrangiamento. Se nel piano roll hai selezionato delle note, il modello modifica solo
   quelle: può quantizzarle, umanizzarle, trasporle, portarle nella tonalità del progetto o aggiungere
   una voce in armonia (per esempio "umanizza le note selezionate"). Claude riceve tutti i tool.
