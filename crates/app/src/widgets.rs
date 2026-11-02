@@ -49,6 +49,104 @@ pub fn knob_angle(u: f32) -> f32 {
     KNOB_START + u.clamp(0.0, 1.0) * KNOB_SWEEP
 }
 
+/// Whether a parameter is better turned on a logarithmic scale: frequencies, and times that span more than two
+/// decades (attack 1 ms..5 s).
+pub fn param_is_log(unit: &str, min: f32, max: f32) -> bool {
+    unit == "Hz" || ((unit == "s" || unit == "ms") && max / min.max(1e-4) > 100.0)
+}
+
+/// The bottom of the log curve: the minimum, or a thousandth of the maximum when the range starts at 0 (Glide
+/// 0..1 s, Hold 0..500 ms), so the curve has somewhere to start.
+pub fn log_floor(min: f32, max: f32) -> f32 {
+    if min > 0.0 {
+        min
+    } else {
+        (max * 1e-3).max(1e-6)
+    }
+}
+
+/// Position of `v` inside `min..=max` on a log scale, as 0..1 (clamped). An empty range maps to 0.
+pub fn value_to_unit_log(v: f32, min: f32, max: f32) -> f32 {
+    let lo = log_floor(min, max);
+    if max <= min || max <= lo || v <= min || v <= lo {
+        return 0.0;
+    }
+    ((v / lo).ln() / (max / lo).ln()).clamp(0.0, 1.0)
+}
+
+/// The value at position `u` (0..1, clamped) of `min..=max` on a log scale; 0 gives the minimum exactly.
+pub fn unit_to_value_log(u: f32, min: f32, max: f32) -> f32 {
+    let lo = log_floor(min, max);
+    if max <= min || max <= lo || u <= 0.0 {
+        return min;
+    }
+    (lo * (max / lo).powf(u.min(1.0))).clamp(min, max)
+}
+
+/// A number with a sign when it is not zero once rounded to `decimals`.
+fn signed(v: f32, decimals: usize) -> String {
+    let s = format!("{:.*}", decimals, v.abs());
+    if s.chars().all(|c| c == '0' || c == '.') {
+        s
+    } else if v < 0.0 {
+        format!("-{s}")
+    } else {
+        format!("+{s}")
+    }
+}
+
+/// How a parameter value reads with its unit: "2.40 kHz", "-6.0 dB", "250 ms", "4.0:1", "+7 ct". The minus is the
+/// ASCII hyphen so the text can be typed back ([`parse_param_value`]).
+pub fn format_param_value(v: f32, unit: &str) -> String {
+    let ms = |m: f32| if m.abs() >= 100.0 { format!("{m:.0} ms") } else { format!("{m:.1} ms") };
+    match unit {
+        "Hz" if v.abs() >= 10000.0 => format!("{:.1} kHz", v / 1000.0),
+        "Hz" if v.abs() >= 1000.0 => format!("{:.2} kHz", v / 1000.0),
+        "Hz" if v.abs() >= 100.0 => format!("{v:.0} Hz"),
+        "Hz" => format!("{v:.1} Hz"),
+        "dB" => format!("{} dB", signed(v, 1)),
+        "ms" => ms(v),
+        "s" if v.abs() < 1.0 => ms(v * 1000.0),
+        "s" => format!("{v:.2} s"),
+        ":1" => format!("{v:.1}:1"),
+        "st" | "ct" if (v - v.round()).abs() < 1e-3 => format!("{} {unit}", signed(v.round(), 0)),
+        "st" | "ct" => format!("{} {unit}", signed(v, 1)),
+        "x" => format!("{v:.2}x"),
+        "bit" => format!("{v:.0} bit"),
+        "beats" => format!("{v:.2} beats"),
+        "" => format!("{v:.2}"),
+        _ => format!("{v:.2} {unit}"),
+    }
+}
+
+/// A value typed for a parameter in `unit`: "2.4k", "2.4 kHz", "-6", "250ms", "0,5 s". A unit after the number is
+/// optional; "k" multiplies by a thousand and seconds and milliseconds convert into the parameter's unit. None when
+/// the text is not a finite number. The caller clamps it to the range.
+pub fn parse_param_value(text: &str, unit: &str) -> Option<f32> {
+    let lower = text.trim().to_lowercase().replace(',', ".").replace('\u{2212}', "-");
+    let mut t = lower.trim();
+    let mut scale = 1.0f32;
+    // longer suffixes first: "beats" and "ms" before "s", "khz" before "hz"
+    for suffix in ["beats", "khz", "hz", "ms", "db", "st", "ct", "bit", ":1", "x", "s"] {
+        if let Some(rest) = t.strip_suffix(suffix) {
+            match suffix {
+                "khz" => scale = 1000.0,
+                "ms" if unit == "s" => scale = 0.001,
+                "s" if unit == "ms" => scale = 1000.0,
+                _ => {}
+            }
+            t = rest.trim_end();
+            break;
+        }
+    }
+    if let Some(rest) = t.strip_suffix('k') {
+        scale *= 1000.0;
+        t = rest.trim_end();
+    }
+    let v = t.parse::<f32>().ok()? * scale;
+    v.is_finite().then_some(v)
+}
+
 // ===================================================================================== fader and meter scale
 
 /// The fader scale marks, top to bottom, evenly spaced along the travel (the mixer draws them as labels).
@@ -1673,5 +1771,99 @@ mod tests {
         assert_eq!(parse_path("M1 1L").len(), 1);
         assert!(parse_path("Q1 2 3 4").is_empty());
         assert_eq!(parse_path("M1 1 2 2 3 3")[0].points.len(), 3);
+    }
+
+    #[test]
+    fn log_rule_matches_the_old_parameter_editor() {
+        assert!(param_is_log("Hz", 20.0, 20000.0));
+        assert!(param_is_log("s", 0.001, 5.0));
+        assert!(param_is_log("ms", 0.0, 500.0));
+        assert!(!param_is_log("dB", -24.0, 24.0));
+        assert!(!param_is_log("s", 0.3, 4.0));
+        assert!(!param_is_log("ms", 1.0, 50.0));
+        assert!(!param_is_log("", 0.0, 1.0));
+    }
+
+    #[test]
+    fn log_mapping_round_trips_and_hits_the_ends() {
+        assert_eq!(value_to_unit_log(20.0, 20.0, 20000.0), 0.0);
+        assert_eq!(value_to_unit_log(20000.0, 20.0, 20000.0), 1.0);
+        assert!(close(value_to_unit_log(632.5, 20.0, 20000.0), 0.5, 0.01));
+        for v in [50.0, 440.0, 2500.0, 12000.0] {
+            let back = unit_to_value_log(value_to_unit_log(v, 20.0, 20000.0), 20.0, 20000.0);
+            assert!((back - v).abs() / v < 1e-3, "{v} -> {back}");
+        }
+        let mut last = -1.0;
+        for k in 0..=100 {
+            let v = unit_to_value_log(k as f32 / 100.0, 20.0, 20000.0);
+            assert!(v > last, "not increasing at {k}");
+            last = v;
+        }
+        // a range starting at 0 (Hold 0..500 ms): the ends are exact, the curve still rises
+        assert_eq!(unit_to_value_log(0.0, 0.0, 500.0), 0.0);
+        assert_eq!(unit_to_value_log(1.0, 0.0, 500.0), 500.0);
+        assert_eq!(value_to_unit_log(0.0, 0.0, 500.0), 0.0);
+        let mut last = -1.0;
+        for k in 0..=100 {
+            let v = unit_to_value_log(k as f32 / 100.0, 0.0, 500.0);
+            assert!(v > last, "not increasing at {k}");
+            last = v;
+        }
+        assert_eq!(value_to_unit_log(5.0, 3.0, 3.0), 0.0);
+        assert_eq!(unit_to_value_log(0.5, 3.0, 3.0), 3.0);
+    }
+
+    const SHOWN: [(f32, &str, &str); 15] = [
+        (2400.0, "Hz", "2.40 kHz"),
+        (12500.0, "Hz", "12.5 kHz"),
+        (440.0, "Hz", "440 Hz"),
+        (52.0, "Hz", "52.0 Hz"),
+        (-6.0, "dB", "-6.0 dB"),
+        (2.5, "dB", "+2.5 dB"),
+        (0.0, "dB", "0.0 dB"),
+        (0.005, "s", "5.0 ms"),
+        (1.2, "s", "1.20 s"),
+        (350.0, "ms", "350 ms"),
+        (4.0, ":1", "4.0:1"),
+        (7.0, "ct", "+7 ct"),
+        (0.5, "", "0.50"),
+        (1.0, "x", "1.00x"),
+        (8.0, "bit", "8 bit"),
+    ];
+
+    #[test]
+    fn values_read_with_their_unit() {
+        for (v, unit, text) in SHOWN {
+            assert_eq!(format_param_value(v, unit), text, "{v} {unit}");
+        }
+        assert_eq!(format_param_value(-12.0, "st"), "-12 st");
+        assert_eq!(format_param_value(0.0, "st"), "0 st");
+        assert_eq!(format_param_value(0.75, "beats"), "0.75 beats");
+        assert_eq!(format_param_value(-0.01, "dB"), "0.0 dB");
+    }
+
+    #[test]
+    fn typed_values_parse_with_or_without_units() {
+        let cases: [(&str, &str, f32); 8] = [
+            ("2.4k", "Hz", 2400.0),
+            ("2.4 kHz", "Hz", 2400.0),
+            ("880", "Hz", 880.0),
+            ("-6", "dB", -6.0),
+            ("\u{2212}3,5 dB", "dB", -3.5),
+            ("250ms", "s", 0.25),
+            ("0.5s", "ms", 500.0),
+            ("4:1", ":1", 4.0),
+        ];
+        for (text, unit, v) in cases {
+            let got = parse_param_value(text, unit).unwrap_or_else(|| panic!("{text} did not parse"));
+            assert!(close(got, v, 1e-4), "{text}: {got}");
+        }
+        assert_eq!(parse_param_value("abc", "Hz"), None);
+        assert_eq!(parse_param_value("", "dB"), None);
+        assert_eq!(parse_param_value("inf", ""), None);
+        for (v, unit, text) in SHOWN {
+            let back = parse_param_value(text, unit).unwrap_or_else(|| panic!("{text} did not parse"));
+            assert!((back - v).abs() <= v.abs() * 0.01 + 1e-3, "{text} -> {back}, not {v}");
+        }
     }
 }
