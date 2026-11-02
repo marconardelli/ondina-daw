@@ -44,12 +44,31 @@ pub struct Settings {
     /// Sizes of the main window's panels as the person left them (points, before the UI scale). `None` until a
     /// panel is resized, so the window picks a size that fits the screen.
     pub panels: PanelSizes,
+    /// Position and size of each plug-in window as the person left it, by plug-in: the built-in kind
+    /// ("compressor") or "vst3:<bundle path>". Kept to PLUGIN_WINDOW_RECTS entries.
+    pub plugin_windows: std::collections::BTreeMap<String, WindowRect>,
+    /// Plug-in windows open as separate windows (true) or float inside the main window (false: for a graphics
+    /// driver that does not cope with several windows).
+    pub plugin_windows_separate: bool,
     /// True when settings.json exists but could not be read (or could not be set aside after failing to parse):
     /// these are the defaults, and `save_to`/`try_save`/`save` leave the file alone until the person presses
     /// Save settings in the Settings window (`save_replacing`).
     #[serde(skip)]
     pub file_unread: bool,
 }
+
+/// Where a plug-in window was and how big (points, before the UI scale): the outer position and the inner size.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowRect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+/// Most plug-in window rectangles kept in the settings.
+pub const PLUGIN_WINDOW_RECTS: usize = 256;
 
 /// Width of the side panels and height of the bottom panel in the main window.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -73,7 +92,7 @@ pub struct PanelSizes {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { api_key: None, model: crate::ai::DEFAULT_MODEL.into(), effort: "medium".into(), mcp_enabled: true, mcp_port: 3917, audio_output: None, recent_projects: vec![], ui_scale: 1.0, provider: "auto".into(), local_url: "http://127.0.0.1:8080/v1".into(), local_model: "local".into(), openai_api_key: String::new(), openai_model: String::new(), google_api_key: String::new(), google_model: String::new(), kimi_api_key: String::new(), kimi_model: String::new(), vst3_folders: vec![], autosave_minutes: 3, keep_save_backup: true, panels: PanelSizes::default(), file_unread: false }
+        Settings { api_key: None, model: crate::ai::DEFAULT_MODEL.into(), effort: "medium".into(), mcp_enabled: true, mcp_port: 3917, audio_output: None, recent_projects: vec![], ui_scale: 1.0, provider: "auto".into(), local_url: "http://127.0.0.1:8080/v1".into(), local_model: "local".into(), openai_api_key: String::new(), openai_model: String::new(), google_api_key: String::new(), google_model: String::new(), kimi_api_key: String::new(), kimi_model: String::new(), vst3_folders: vec![], autosave_minutes: 3, keep_save_backup: true, panels: PanelSizes::default(), plugin_windows: Default::default(), plugin_windows_separate: true, file_unread: false }
     }
 }
 
@@ -86,6 +105,24 @@ impl Settings {
     /// Folder of the recovery copies written by autosave (next to settings.json).
     pub fn autosave_dir() -> PathBuf {
         Self::path().parent().map(|d| d.join("Autosave")).unwrap_or_else(|| std::env::temp_dir().join("OndinaDAW").join("Autosave"))
+    }
+
+    /// Remembers where the window of plug-in `key` is. True only when it moved or changed size by more than half a
+    /// point, so a window standing still does not count as a change of the settings every frame. The map keeps at
+    /// most PLUGIN_WINDOW_RECTS entries: past that the first key goes.
+    pub fn remember_plugin_window(&mut self, key: &str, r: WindowRect) -> bool {
+        if let Some(old) = self.plugin_windows.get(key) {
+            let moved = [(old.x, r.x), (old.y, r.y), (old.w, r.w), (old.h, r.h)].iter().any(|(a, b)| (a - b).abs() > 0.5);
+            if !moved {
+                return false;
+            }
+        }
+        self.plugin_windows.insert(key.to_string(), r);
+        while self.plugin_windows.len() > PLUGIN_WINDOW_RECTS {
+            let Some(first) = self.plugin_windows.keys().find(|k| k.as_str() != key).cloned() else { break };
+            self.plugin_windows.remove(&first);
+        }
+        true
     }
 
     /// Reads the settings at `path`. A missing file gives the defaults silently. A file that exists but does not
@@ -489,5 +526,36 @@ mod tests {
         assert!(!s.file_unread);
         s.save_to(&p).unwrap();
         assert!(p.is_file());
+    }
+
+    #[test]
+    fn plugin_window_rects_round_trip_and_old_files_load() {
+        let old: Settings = serde_json::from_str(r#"{"model":"x"}"#).unwrap();
+        assert!(old.plugin_windows.is_empty());
+        assert!(old.plugin_windows_separate);
+        let mut s = old;
+        s.plugin_windows.insert("compressor".into(), WindowRect { x: 100.0, y: 80.0, w: 560.0, h: 440.0 });
+        s.plugin_windows.insert(r"vst3:C:\VST3\A.vst3".into(), WindowRect { x: -1200.0, y: 40.0, w: 900.0, h: 700.0 });
+        s.plugin_windows_separate = false;
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.plugin_windows, s.plugin_windows);
+        assert!(!back.plugin_windows_separate);
+        let partial: Settings = serde_json::from_str(r#"{"plugin_windows":{"reverb":{"x":10,"y":20}}}"#).unwrap();
+        let r = partial.plugin_windows["reverb"];
+        assert_eq!((r.x, r.y, r.w, r.h), (10.0, 20.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn remembering_a_plugin_window_is_bounded_and_ignores_jitter() {
+        let mut s = Settings::default();
+        let r = WindowRect { x: 10.0, y: 10.0, w: 500.0, h: 400.0 };
+        assert!(s.remember_plugin_window("eq", r));
+        assert!(!s.remember_plugin_window("eq", WindowRect { x: 10.3, ..r }));
+        assert!(s.remember_plugin_window("eq", WindowRect { x: 12.0, ..r }));
+        assert_eq!(s.plugin_windows["eq"].x, 12.0);
+        for i in 0..PLUGIN_WINDOW_RECTS + 10 {
+            s.remember_plugin_window(&format!("vst3:{i:04}"), r);
+        }
+        assert_eq!(s.plugin_windows.len(), PLUGIN_WINDOW_RECTS);
     }
 }
