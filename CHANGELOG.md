@@ -7,6 +7,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-11-03
+
+### Added
+
+- EQ window: Channel EQ and Dynamic EQ draw their response curve with a point per band. Drag a point for frequency
+  and gain (Shift for fine steps), use the wheel for Q, double-click for the default and right-click to switch a
+  band on or off. The Dynamic EQ shades how far each band can move with its Range.
+- Live plug-in meters: input, output and gain reduction of every insert, measured by the engine without slowing
+  the audio. MCP clients read them with `get_plugin` (new `meters` field) and `get_meters` (new `plugins` field).
+- The plug-in AI bar sends the insert's live meters with the request, so the assistant knows how hard a compressor
+  or limiter is working.
+- Limiter with a true-peak ceiling, and true peak measured for real (4x oversampled) in `analyze_mix`, bounce and
+  the mastering assistant.
+
+### Fixed
+
+- Shorter tool descriptions, so the local model keeps room for the conversation.
+- EQ points at the edges of the graph are drawn and grabbed whole.
+
 ## [0.23.0] - 2026-11-03
 
 ### Added
@@ -768,7 +787,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/marconardelli/ondina-daw/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/marconardelli/ondina-daw/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/marconardelli/ondina-daw/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/marconardelli/ondina-daw/compare/v0.20.1...v0.21.0
