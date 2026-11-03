@@ -161,7 +161,12 @@ extension: Ondina opens both.
   double-click for the default, right-click to type a value) or a selector. Channel EQ and Dynamic EQ windows draw
   the response curve with a point per band: drag for frequency and gain (Shift for fine steps), the wheel for Q,
   double-click for the default, right-click to switch a band on or off; the Dynamic EQ shades how far each band can
-  move with its Range. A loaded VST3 opens its own editor and,
+  move with its Range. Compressor, Limiter, Noise Gate and De-Esser windows draw the transfer curve (input against
+  output level) with the threshold point to drag (sideways the threshold, up and down the ratio, ceiling,
+  reduction or range; the wheel for knee, release, reduction or range; Shift for fine steps; double-click for the
+  default), a dot that follows the input level while the song plays, and input, gain reduction and output meters
+  with peak hold; the De-Esser also shows the band it turns down, with its frequency to drag. A loaded VST3 opens
+  its own editor and,
   beside it, a compact Ondina window with the same header and AI bar plus **Generic controls** (it closes with the
   editor; Settings → Display → *Show the AI bar beside a plug-in's own window* turns it off); one without an
   editor, or not loaded, opens Ondina's generic window with a knob per parameter (labelled with the unit the

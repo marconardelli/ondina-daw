@@ -701,6 +701,18 @@ Ogni plug-in (strumenti, effetti ed effetti MIDI di Ondina, plug-in VST3) si reg
   guadagno e Q della banda al default, il clic destro accende o spegne la banda se ha un interruttore. Passando
   sopra un punto ne leggi nome e valori con le unità; sullo sfondo, in alto a destra, la frequenza sotto il
   mouse. Con il plug-in in Bypass la curva diventa grigia.
+- **Curva delle dinamiche**: Compressor, Limiter, Noise Gate e De-Esser mostrano sopra le manopole la curva di
+  trasferimento: in orizzontale il livello che entra, in verticale quello che esce, in dB; la diagonale è "nessun
+  effetto" e la zona colorata è quanto il plug-in toglie. Il punto azzurro è la soglia (per il Limiter il livello
+  da cui comincia a limitare): trascinalo di lato per spostarla, in su e in giù per il rapporto (Compressor), il
+  ceiling (Limiter), la riduzione (Noise Gate) o il range (De-Esser); con Shift il movimento è dieci volte più fine e
+  ogni trascinamento è un passo di annulla. La rotella sopra il punto cambia il knee del Compressor, il release del
+  Limiter, la riduzione della Noise Gate e il range del De-Esser; il doppio clic riporta quei parametri al default.
+  Durante la riproduzione un pallino verde segue sulla curva il livello d'ingresso, e a destra tre misuratori
+  mostrano ingresso (IN), riduzione del guadagno (GR, una barra arancione che scende dall'alto, con il valore e il
+  picco che resta un attimo) e uscita (OUT). Il De-Esser mostra anche la banda che abbassa: la zona chiara è il
+  massimo (Range), la linea quanto sta abbassando adesso; trascina il marcatore per cambiare la frequenza. In
+  Bypass la curva diventa grigia e la GR torna a 0.
 - I parametri a scelta (forme d'onda, modi, on/off) sono pulsanti affiancati o un menu. I parametri con lo stesso
   inizio di nome stanno insieme sotto un titolo (per esempio *Band 1*, *Filter*, *Low Shelf*). Allargando la
   finestra le manopole si ridistribuiscono; se non ci stanno, la vista scorre.
@@ -728,8 +740,8 @@ apre accanto alla loro finestra.
 - Scrivi cosa vuoi nella casella ("più aria sulla voce", "togli il rimbombo sotto i 200 Hz", "un pad caldo che si
   apre lentamente") e premi Invio o **Ask**. L'assistente regola proprio quel plug-in.
 - Sotto la casella ci sono due o tre richieste pronte adatte al plug-in: per l'EQ *Clean up the muddy
-  frequencies*, per il limiter sul master *Bring the master to -14 LUFS*, per gli strumenti *Design a sound* e
-  altre.
+  frequencies*, per il limiter sul master *Bring the master to -14 LUFS*, per la Noise Gate *Clean up the pauses*,
+  per gli strumenti *Design a sound* e altre.
 - L'assistente riceve con la richiesta il plug-in, la traccia su cui sta, il resto della catena e tutti i
   parametri con valori e intervalli (per un VST3 i primi 64). Quando serve misura il mix con `analyze_mix`.
 - Per gli effetti sul canale e sul master la richiesta porta anche i misuratori del momento: picco d'ingresso e
