@@ -264,6 +264,9 @@ pub fn default_size(inst: &PluginInstance) -> Vec2 {
     if crate::eq_view::has_eq_view(&inst.kind) {
         return egui::vec2(680.0, 640.0);
     }
+    if crate::delay_view::has_delay_view(&inst.kind) {
+        return egui::vec2(640.0, 600.0);
+    }
     match plugins::find(&inst.kind).map(|i| i.category) {
         Some(PluginCategory::Instrument) => egui::vec2(680.0, 600.0),
         Some(_) => egui::vec2(560.0, 440.0),
@@ -487,21 +490,24 @@ pub fn show_window(ctx: &egui::Context, separate: bool, id: Id, spec: WindowSpec
 }
 
 /// The view a plug-in window shows under the header: the EQ graph above the knobs for the equalizers, the synth
-/// drawings for the Analog and FM Synth. The next slices add dynamics.
+/// drawings for the Analog and FM Synth, the repeats on the tempo grid for the Stereo and Tape Delay. The next
+/// slices add dynamics.
 enum PluginView {
     Generic(&'static PluginInfo),
     Eq(&'static PluginInfo),
     Synth(&'static PluginInfo),
+    Delay(&'static PluginInfo),
     Vst3,
     Unknown,
 }
 
-/// The view a plug-in window shows for `kind`: the EQ graph or the synth drawings above the knobs when the plug-in
-/// has them, the knobs alone for the other built-ins, Ondina's generic window for a VST3.
+/// The view a plug-in window shows for `kind`: the EQ graph, the synth drawings or the delay repeats above the knobs
+/// when the plug-in has them, the knobs alone for the other built-ins, Ondina's generic window for a VST3.
 fn plugin_view(kind: &str) -> PluginView {
     match plugins::find(kind) {
         Some(info) if crate::eq_view::has_eq_view(info.kind) => PluginView::Eq(info),
         Some(info) if crate::synth_view::has_synth_view(info.kind) => PluginView::Synth(info),
+        Some(info) if crate::delay_view::has_delay_view(info.kind) => PluginView::Delay(info),
         Some(info) => PluginView::Generic(info),
         None if kind == "vst3" => PluginView::Vst3,
         None => PluginView::Unknown,
@@ -689,13 +695,24 @@ impl OndinaApp {
                 self.apply_params_edits(id, out.edits);
                 ui.add_space(theme::SP_3);
             }
+            if let PluginView::Delay(_) = view {
+                // the repeats stay above the scrolling knobs, so the wheel over them never scrolls the knobs
+                let tempo = crate::delay_view::DelayTempo::at(&p.tempo, p.time_signature, self.position());
+                let out = crate::delay_view::delay_graph(ui, &inst, tempo, &mut self.plugin_windows.gesture);
+                self.apply_params_edits(id, out.edits);
+                if tempo.varies && self.playing() {
+                    // the ms follow the tempo at the playhead, also in a separate window the main one does not repaint
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+                }
+                ui.add_space(theme::SP_3);
+            }
             let instrument = plugins::find(&inst.kind).is_some_and(|i| i.category == PluginCategory::Instrument);
             let reserve = if instrument { crate::widgets::KEYBOARD_BLOCK_H + theme::SP_3 } else { 0.0 };
             let edits = egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .max_height((ui.available_height() - reserve).max(60.0))
                 .show(ui, |ui| match view {
-                    PluginView::Generic(info) | PluginView::Eq(info) | PluginView::Synth(info) => builtin_controls(ui, id, info, &inst, &mut self.plugin_windows.gesture),
+                    PluginView::Generic(info) | PluginView::Eq(info) | PluginView::Synth(info) | PluginView::Delay(info) => builtin_controls(ui, id, info, &inst, &mut self.plugin_windows.gesture),
                     PluginView::Vst3 => {
                         let mut filter = self.plugin_windows.filters.get(&id).cloned().unwrap_or_default();
                         let edits = vst3_controls(ui, id, &inst, &mut filter, &mut self.plugin_windows.gesture);
@@ -1256,18 +1273,29 @@ mod tests {
     }
 
     #[test]
+    fn delay_kinds_get_the_delay_view() {
+        for kind in ["stereo_delay", "tape_delay"] {
+            assert!(matches!(plugin_view(kind), PluginView::Delay(i) if i.kind == kind), "{kind}");
+            assert!(default_size(&instance(kind, None)).y >= 560.0, "{kind}");
+        }
+        assert!(matches!(plugin_view("reverb"), PluginView::Generic(i) if i.kind == "reverb"));
+    }
+
+    #[test]
     fn every_builtin_kind_gets_its_view() {
         let eq = |k: &str| matches!(plugin_view(k), PluginView::Eq(i) if i.kind == k);
         let synth = |k: &str| matches!(plugin_view(k), PluginView::Synth(i) if i.kind == k);
+        let delay = |k: &str| matches!(plugin_view(k), PluginView::Delay(i) if i.kind == k);
         let generic = |k: &str| matches!(plugin_view(k), PluginView::Generic(i) if i.kind == k);
         assert!(eq("channel_eq") && eq("dynamic_eq"));
         assert!(synth("analog_synth") && synth("fm_synth"));
+        assert!(delay("stereo_delay") && delay("tape_delay"));
         assert!(generic("compressor") && generic("organ") && generic("arpeggiator"));
         assert!(matches!(plugin_view("vst3"), PluginView::Vst3));
         assert!(matches!(plugin_view("from_the_future"), PluginView::Unknown));
         // every built-in opens a window of its own: none falls to the VST3 or unknown view
         for info in plugins::registry() {
-            assert!(eq(info.kind) || synth(info.kind) || generic(info.kind), "{}", info.kind);
+            assert!(eq(info.kind) || synth(info.kind) || delay(info.kind) || generic(info.kind), "{}", info.kind);
         }
     }
 
@@ -1296,10 +1324,14 @@ mod tests {
                         PluginView::Synth(_) => {
                             edits += crate::synth_view::synth_graph(ui, inst, crate::synth_view::curve_sample_rate(48000), gesture).edits.len();
                         }
+                        PluginView::Delay(_) => {
+                            let tempo = crate::delay_view::DelayTempo { bpm: 120.0, sig: ondina_core::model::TimeSignature { numerator: 4, denominator: 4 }, varies: false };
+                            edits += crate::delay_view::delay_graph(ui, inst, tempo, gesture).edits.len();
+                        }
                         _ => {}
                     }
                     graph_h = ui.cursor().top() - top;
-                    if let PluginView::Generic(info) | PluginView::Eq(info) | PluginView::Synth(info) = view {
+                    if let PluginView::Generic(info) | PluginView::Eq(info) | PluginView::Synth(info) | PluginView::Delay(info) = view {
                         egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| edits += builtin_controls(ui, inst.id, info, inst, gesture).len());
                         if info.category == PluginCategory::Instrument {
                             notes.extend(crate::widgets::keyboard(ui, &mut crate::widgets::KeyboardState::default(), false, true));
@@ -1321,7 +1353,7 @@ mod tests {
             assert!(notes.is_empty(), "{}: {notes:?}", info.kind);
             assert_eq!(g, 0, "{}", info.kind);
             match plugin_view(info.kind) {
-                PluginView::Eq(_) | PluginView::Synth(_) => assert!(graph_h > 100.0, "{}: drawing {graph_h}", info.kind),
+                PluginView::Eq(_) | PluginView::Synth(_) | PluginView::Delay(_) => assert!(graph_h > 100.0, "{}: drawing {graph_h}", info.kind),
                 _ => assert_eq!(graph_h, 0.0, "{}", info.kind),
             }
         }
