@@ -741,6 +741,24 @@ pub fn plugin_read(project: &Project, p: &PluginInstance) -> Value {
             }
         }
     }
+    // the delays: what their times are at the project's tempo, as note values and ms
+    let bpm = project.tempo.initial_bpm();
+    if let Some(t) = crate::note_value::delay_times(p, bpm) {
+        let changes = project.tempo.points.len() > 1;
+        let tenth = |ms: f64| (ms * 10.0).round() / 10.0;
+        if let Some(params) = v["params"].as_array_mut() {
+            for o in params.iter_mut().filter(|o| o["unit"] == "beats") {
+                let beats = p.param(o["id"].as_str().unwrap_or_default());
+                o["note_value"] = json!(crate::note_value::note_value_name(beats));
+                o["ms"] = json!(tenth(crate::note_value::beats_to_ms(beats as f64, bpm)));
+            }
+        }
+        let summary = crate::note_value::timing_summary(p, bpm, changes);
+        v["timing"] = match t.right_ms {
+            Some(right) => json!({"bpm": bpm, "tempo_changes": changes, "synced": t.synced, "left_ms": tenth(t.left_ms as f64), "right_ms": tenth(right as f64), "summary": summary}),
+            None => json!({"bpm": bpm, "tempo_changes": changes, "synced": true, "repeat_ms": tenth(t.left_ms as f64), "summary": summary}),
+        };
+    }
     v["track"] = plugin_place(project, p.id);
     v
 }

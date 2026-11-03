@@ -319,7 +319,7 @@ pub static REGISTRY: &[PluginInfo] = &[
         name: "Stereo Delay",
         category: Effect,
         group: "Delay",
-        description: "Tempo-synced stereo delay with feedback filtering and ping-pong crossfeed. Times are in beats when synced (0.75 = dotted eighth).",
+        description: "Tempo-synced stereo delay with feedback filtering and ping-pong crossfeed. With Tempo Sync on, Left Time and Right Time are in beats (quarter notes: 0.75 = dotted eighth, 0.5 = eighth); with it off, Time (unsynced) is the left delay in ms and the right one is 3/4 of it. Feedback sets how much of each repeat comes back (0.5 = each repeat 6 dB lower), Ping-Pong how much crosses to the other side, Low Cut and High Cut thin the repeats.",
         params: &[
             c("sync", "Tempo Sync", 1.0, ONOFF),
             p("time_l", "Left Time", 0.0625, 4.0, 0.75, "beats"),
@@ -337,7 +337,7 @@ pub static REGISTRY: &[PluginInfo] = &[
         name: "Tape Delay",
         category: Effect,
         group: "Delay",
-        description: "Vintage tape echo: tempo-synced delay with wow/flutter modulation, saturation and darkening repeats.",
+        description: "Vintage tape echo, always in time with the project: Time is in beats (0.75 = dotted eighth). Feedback sets how much of each repeat comes back, Saturation drives the tape (with high Saturation the repeats fade slowly or hold), Tone darkens every repeat, Wow/Flutter wobbles the pitch.",
         params: &[
             p("time", "Time", 0.0625, 4.0, 0.5, "beats"),
             p("feedback", "Feedback", 0.0, 1.0, 0.4, ""),
@@ -889,6 +889,21 @@ mod tests {
         for (id, v) in preset.params {
             let p = info.params.iter().find(|p| p.id == *id).unwrap_or_else(|| panic!("no parameter {id}"));
             assert!((p.min..=p.max).contains(v), "{id} = {v} out of range");
+        }
+    }
+
+    #[test]
+    fn delay_descriptions_explain_their_times() {
+        let stereo = find("stereo_delay").unwrap().description;
+        for word in ["Tempo Sync", "3/4", "Feedback", "Ping-Pong", "beats"] {
+            assert!(stereo.contains(word), "stereo_delay: missing {word:?} in {stereo}");
+        }
+        let tape = find("tape_delay").unwrap().description;
+        for word in ["beats", "Saturation", "Tone", "Feedback"] {
+            assert!(tape.contains(word), "tape_delay: missing {word:?} in {tape}");
+        }
+        for d in [stereo, tape] {
+            assert!(d.len() < 450, "{} characters: {d}", d.len());
         }
     }
 }

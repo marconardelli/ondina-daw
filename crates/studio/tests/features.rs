@@ -3935,3 +3935,58 @@ fn every_window_family_reads_and_sets_its_parameters_over_mcp() {
         assert_eq!(plugin_value(&mut s, fx, &id), old, "{kind}: {id}");
     }
 }
+
+/// A param object of get_plugin's result for plug-in `fx`.
+fn plugin_param(s: &mut Session, fx: u64, id: &str) -> Value {
+    let v = ok(s, "get_plugin", json!({"plugin_id": fx}));
+    v["params"].as_array().unwrap().iter().find(|p| p["id"] == id).cloned().unwrap_or_else(|| panic!("no {id}"))
+}
+
+#[test]
+fn get_plugin_reads_delay_times_as_note_values() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
+    let st = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "stereo_delay"}))["plugin_id"].as_u64().unwrap();
+    let tape = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "tape_delay"}))["plugin_id"].as_u64().unwrap();
+    let comp = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "compressor"}))["plugin_id"].as_u64().unwrap();
+
+    let l = plugin_param(&mut s, st, "time_l");
+    assert_eq!((l["note_value"].clone(), l["ms"].clone()), (json!("1/8 dotted"), json!(375.0)), "{l}");
+    for key in ["id", "name", "value", "min", "max", "unit", "default"] {
+        assert!(!l[key].is_null(), "{key} is still there: {l}");
+    }
+    let r = plugin_param(&mut s, st, "time_r");
+    assert_eq!((r["note_value"].clone(), r["ms"].clone()), (json!("1/8"), json!(250.0)), "{r}");
+    assert!(plugin_param(&mut s, st, "feedback").get("note_value").is_none(), "only times in beats carry a note value");
+    let v = ok(&mut s, "get_plugin", json!({"plugin_id": st}));
+    assert_eq!(v["timing"]["synced"], json!(true));
+    assert_eq!(v["timing"]["bpm"], json!(120.0));
+    assert_eq!(v["timing"]["tempo_changes"], json!(false));
+    assert_eq!((v["timing"]["left_ms"].clone(), v["timing"]["right_ms"].clone()), (json!(375.0), json!(250.0)));
+    assert!(v["timing"]["summary"].as_str().unwrap().contains("1/8 dotted (375 ms)"), "{}", v["timing"]);
+
+    ok(&mut s, "set_tempo", json!({"bpm": 90}));
+    assert_eq!(plugin_param(&mut s, st, "time_l")["ms"], json!(500.0));
+    ok(&mut s, "set_tempo", json!({"bpm": 120}));
+    ok(&mut s, "set_plugin_params", json!({"plugin_id": st, "params": {"sync": 0, "time_ms": 200}}));
+    let v = ok(&mut s, "get_plugin", json!({"plugin_id": st}));
+    assert_eq!(v["timing"]["synced"], json!(false));
+    assert_eq!((v["timing"]["left_ms"].clone(), v["timing"]["right_ms"].clone()), (json!(200.0), json!(150.0)));
+    assert!(v["timing"]["summary"].as_str().unwrap().contains("3/4 of the left"), "{}", v["timing"]);
+    ok(&mut s, "set_plugin_params", json!({"plugin_id": st, "params": {"time_l": 0.71}}));
+    assert_eq!(plugin_param(&mut s, st, "time_l")["note_value"], Value::Null);
+
+    let time = plugin_param(&mut s, tape, "time");
+    assert_eq!(time["note_value"], json!("1/8"));
+    let v = ok(&mut s, "get_plugin", json!({"plugin_id": tape}));
+    assert_eq!(v["timing"]["repeat_ms"], json!(250.0));
+    assert_eq!(v["timing"]["synced"], json!(true));
+    assert!(v["timing"].get("left_ms").is_none());
+
+    let v = ok(&mut s, "get_plugin", json!({"plugin_id": comp}));
+    assert!(v.get("timing").is_none());
+    assert!(v["params"].as_array().unwrap().iter().all(|p| p.get("note_value").is_none() && p.get("ms").is_none()));
+
+    ok(&mut s, "undo", json!({}));
+    assert_eq!(plugin_value(&mut s, st, "time_l"), 0.75);
+}
