@@ -3723,10 +3723,10 @@ fn dynamics_curve_follows_the_assistant_and_undo() {
     let lim = ok(&mut s, "add_effect", json!({"track_id": 0, "kind": "limiter"}))["plugin_id"].as_u64().unwrap();
     let gate = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "noise_gate"}))["plugin_id"].as_u64().unwrap();
     // (plug-in, new values, input level, the curve's output there after the change)
-    let cases: [(u64, &[(&str, f32)], f32, f32); 3] = [
-        (comp, &[("threshold", -30.0), ("ratio", 8.0), ("knee", 0.0)], -6.0, -30.0 + 24.0 / 8.0),
-        (lim, &[("gain", 6.0), ("ceiling", -3.0)], 0.0, -3.0),
-        (gate, &[("threshold", -40.0), ("reduction", -20.0)], -50.0, -70.0),
+    let cases = [
+        (comp, &[("threshold", -30.0), ("ratio", 8.0), ("knee", 0.0)][..], -6.0, -30.0 + 24.0 / 8.0),
+        (lim, &[("gain", 6.0), ("ceiling", -3.0)][..], 0.0, -3.0),
+        (gate, &[("threshold", -40.0), ("reduction", -20.0)][..], -50.0, -70.0),
     ];
     for (fx, values, in_db, out_db) in cases {
         let kind = s.project.find_plugin(fx).unwrap().kind.clone();
