@@ -107,18 +107,18 @@ pub fn selector_style(choices: &[&str]) -> Control {
     }
 }
 
+/// The control of one parameter: a selector for choices, a knob for the rest.
+pub fn param_control(pi: &ParamInfo) -> Control {
+    if pi.choices.is_empty() {
+        Control::Knob { log: widgets::param_is_log(pi.unit, pi.min, pi.max), bipolar: pi.min < 0.0 && pi.max > 0.0 }
+    } else {
+        selector_style(pi.choices)
+    }
+}
+
 /// The control of every parameter of `info`, in order: a selector for choices, a knob for the rest.
 pub fn param_controls(info: &PluginInfo) -> Vec<Control> {
-    info.params
-        .iter()
-        .map(|pi| {
-            if pi.choices.is_empty() {
-                Control::Knob { log: widgets::param_is_log(pi.unit, pi.min, pi.max), bipolar: pi.min < 0.0 && pi.max > 0.0 }
-            } else {
-                selector_style(pi.choices)
-            }
-        })
-        .collect()
+    info.params.iter().map(param_control).collect()
 }
 
 /// The undo merge key of one knob drag: a new gesture is a new undo step.
@@ -154,9 +154,14 @@ pub fn vst3_visible<'a>(params: &'a [Vst3Param], filter: &str, limit: usize) -> 
 
 /// Knobs and selectors for every parameter of a built-in plug-in, in sections that wrap with the width.
 pub fn builtin_controls(ui: &mut egui::Ui, pid: Id, info: &PluginInfo, inst: &PluginInstance, gesture: &mut u64) -> Vec<ParamEdit> {
-    let controls = param_controls(info);
+    param_knobs(ui, pid, info.params, inst, gesture)
+}
+
+/// Knobs and selectors for `params` (a built-in plug-in's parameters or some of them), in sections that wrap with the
+/// width.
+pub fn param_knobs(ui: &mut egui::Ui, pid: Id, params: &[ParamInfo], inst: &PluginInstance, gesture: &mut u64) -> Vec<ParamEdit> {
     let mut edits = Vec::new();
-    for section in param_sections(info.params) {
+    for section in param_sections(params) {
         if let Some(title) = &section.title {
             ui.add_space(theme::SP_2);
             chrome::section_label(ui, title);
@@ -164,10 +169,10 @@ pub fn builtin_controls(ui: &mut egui::Ui, pid: Id, info: &PluginInfo, inst: &Pl
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(theme::SP_4, theme::SP_4);
             for (idx, label) in &section.params {
-                let pi = &info.params[*idx];
+                let pi = &params[*idx];
                 ui.push_id(pi.id, |ui| {
                     let v = inst.param(pi.id);
-                    match controls[*idx] {
+                    match param_control(pi) {
                         Control::Knob { log, bipolar } => {
                             let mut x = v;
                             let knob = Knob::new(&mut x, pi.min..=pi.max)
@@ -452,6 +457,21 @@ mod tests {
             let edits = draw_headless(|ui| builtin_controls(ui, 3, info, &inst, &mut g));
             assert!(edits.is_empty(), "{}: {edits:?}", info.kind);
             assert_eq!(g, 0);
+        }
+    }
+
+    #[test]
+    fn param_knobs_draw_only_the_parameters_given() {
+        let info = plugins::find("drum_synth").unwrap();
+        let subset: Vec<ParamInfo> = info.params.iter().filter(|p| p.id.starts_with("snare_")).copied().collect();
+        assert_eq!(subset.len(), 3);
+        let inst = instance("drum_synth");
+        let mut g = 0;
+        assert!(draw_headless(|ui| param_knobs(ui, 3, &subset, &inst, &mut g)).is_empty());
+        assert_eq!(g, 0);
+        for kind in ["drum_synth", "analog_synth"] {
+            let info = plugins::find(kind).unwrap();
+            assert_eq!(param_controls(info), info.params.iter().map(param_control).collect::<Vec<_>>(), "{kind}");
         }
     }
 
