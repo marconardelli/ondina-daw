@@ -164,4 +164,23 @@ mod tests {
         assert!(context.contains(prompts::synth_bar_note("analog_synth")), "{context}");
         assert!(context.contains("- cutoff \"Cutoff\" = "), "{context}");
     }
+
+    #[test]
+    fn bar_request_from_a_saturation_window_carries_the_curve_note() {
+        use ondina_core::command::Command;
+        use ondina_engine::PluginMeter;
+        use ondina_studio::{Session, Source};
+        let mut s = Session::new(false);
+        let add = |s: &mut Session, name: &str, args: serde_json::Value| s.execute(Command::from_tool_call(name, &args).unwrap(), Source::Gui).unwrap();
+        let t = add(&mut s, "add_track", serde_json::json!({"kind": "audio", "name": "Gtr"}))["track_id"].as_u64().unwrap();
+        let od = add(&mut s, "add_effect", serde_json::json!({"track_id": t, "kind": "overdrive"}))["plugin_id"].as_u64().unwrap();
+        let m = PluginMeter { input_peak: 0.5, output_peak: 0.6, gain_reduction_db: None };
+        let (request, context) = bar_ask(&s.project, od, "warmer".into(), Some(m));
+        assert_eq!(request, "warmer");
+        assert_eq!(context, prompts::plugin_bar_context_live(&s.project, od, Some(&m)));
+        let context = context.unwrap();
+        for part in [prompts::saturation_bar_note("overdrive"), "Live meters now", "- drive \"Drive\" = 0.4", "Gtr", "At the live input peak"] {
+            assert!(context.contains(part), "{part} missing from {context}");
+        }
+    }
 }
