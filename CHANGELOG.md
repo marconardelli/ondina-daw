@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-11-03
+
+### Fixed
+
+- Opening a project puts every plug-in parameter back in its range, and a value that is not a number goes back to
+  its default. A hand-edited or damaged project file could otherwise freeze the window when the delay window
+  opened with an absurd delay time.
+- The delay window draws at most a few bars of tempo grid, whatever the delay time.
+
 ## [0.29.0] - 2026-11-03
 
 ### Added
@@ -853,7 +862,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.29.1...HEAD
+[0.29.1]: https://github.com/marconardelli/ondina-daw/compare/v0.29.0...v0.29.1
 [0.29.0]: https://github.com/marconardelli/ondina-daw/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/marconardelli/ondina-daw/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/marconardelli/ondina-daw/compare/v0.26.0...v0.27.0
