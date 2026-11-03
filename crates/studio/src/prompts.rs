@@ -72,7 +72,8 @@ pub const DESIGN_A_SOUND: &str = "Design a sound";
 /// A plug-in kind without its own row gets the generic set.
 pub fn plugin_quick_actions(kind: &str) -> &'static [(&'static str, &'static str)] {
     match kind {
-        "analog_synth" | "fm_synth" => SYNTH_ACTIONS,
+        "analog_synth" => SYNTH_ACTIONS,
+        "fm_synth" => FM_SYNTH_ACTIONS,
         "pluck_synth" | "organ" | "sampler" => INSTRUMENT_ACTIONS,
         "drum_synth" => DRUM_ACTIONS,
         "channel_eq" => EQ_ACTIONS,
@@ -98,8 +99,8 @@ pub fn quick_action_request(action: (&str, &str), plugin_id: Id, name: &str) -> 
 
 const SYNTH_ACTIONS: &[(&str, &str)] = &[
     (DESIGN_A_SOUND, ""),
-    ("A bass for this song", "Turn this synth into a bass sound that fits this song: solid low end, controlled resonance, short release."),
-    ("A warm pad that opens slowly", "Turn this synth into a warm pad that opens slowly: slow attack, a filter that opens over a few seconds, long release."),
+    ("Give me a bass for this song", "Turn this Analog Synth into a bass that fits this song: read the tempo, key and the other tracks with get_project, then use Saw or Square oscillators with the Sub Osc Level up, a Lowpass Cutoff low enough to leave room for the kick, moderate Resonance, a short Filter Decay with some Filter Env Amount for the attack of each note and a short Amp Release so the notes do not blur. Change the parameters with set_plugin_params, then explain in a few lines which parameters you changed and why."),
+    ("A warm pad that opens slowly", "Turn this Analog Synth into a warm pad that opens slowly: two Saw oscillators slightly detuned, a Lowpass Cutoff low at the start with a positive Filter Env Amount and a slow Filter Attack (1.5 to 3 s) so the sound opens over a few seconds, a slow Amp Attack (0.5 to 1.5 s), high Amp Sustain, a long Amp Release (1.5 to 3 s) and a little LFO on the cutoff. Change the parameters with set_plugin_params, then explain in a few lines which parameters you changed and why."),
 ];
 const INSTRUMENT_ACTIONS: &[(&str, &str)] = &[
     (DESIGN_A_SOUND, ""),
@@ -110,6 +111,12 @@ const DRUM_ACTIONS: &[(&str, &str)] = &[
     (DESIGN_A_SOUND, ""),
     ("Punchier kit", "Make this drum kit punchier: a tighter kick with more attack, a crisper snare, shorter hats."),
     ("Softer vintage kit", "Make this drum kit softer and vintage: a rounder kick, darker hats, a little drive."),
+];
+/// FM Synth: a bass and a pluck, the sounds two operators do best besides bells and electric pianos.
+const FM_SYNTH_ACTIONS: &[(&str, &str)] = &[
+    (DESIGN_A_SOUND, ""),
+    ("Give me a bass for this song", "Turn this FM Synth into a bass that fits this song: read the tempo, key and the other tracks with get_project, then use a Modulator Ratio of 1 or 0.5, a Mod Index that starts high and falls fast (short Index Decay, low Index Sustain) for a bright attack, enough Sustain to hold the note and a short Release. Change the parameters with set_plugin_params, then explain in a few lines which parameters you changed and why."),
+    ("A short pluck", "Turn this FM Synth into a short pluck: a fast Attack, a short Decay (0.15 to 0.4 s), Sustain at 0, a short Release and an Index Decay shorter than the Decay, so only the start of each note is bright. Change the parameters with set_plugin_params, then explain in a few lines which parameters you changed and why."),
 ];
 const EQ_ACTIONS: &[(&str, &str)] = &[
     ("Clean up the muddy frequencies", "Clean up the muddy frequencies of this track (usually between 150 and 500 Hz) without making it thin, and add a high-pass if its lowest frequencies are not useful."),
@@ -269,7 +276,7 @@ pub fn plugin_bar_rules(plugin_id: Id, label: &str) -> String {
 pub fn plugin_bar_context(project: &Project, plugin_id: Id) -> Option<String> {
     let inst = project.find_plugin(plugin_id)?;
     let label = plugins::plugin_label(inst);
-    Some(format!("{}{}\n{}", plugin_bar_rules(plugin_id, &label), eq_bar_note(&inst.kind), plugin_context(project, plugin_id)?))
+    Some(format!("{}{}{}\n{}", plugin_bar_rules(plugin_id, &label), eq_bar_note(&inst.kind), synth_bar_note(&inst.kind), plugin_context(project, plugin_id)?))
 }
 
 /// What an equalizer's AI bar adds to the rules: its window draws the bands as points, so the answer names them.
@@ -277,6 +284,16 @@ pub fn eq_bar_note(kind: &str) -> &'static str {
     match kind {
         "channel_eq" => " This equalizer's window draws each band as a point on its response curve: in your answer name each band you changed (High Pass, Low Shelf, Mid 1, Mid 2, High Shelf, Low Pass) with its frequency, gain and Q before and after, and say why.",
         "dynamic_eq" => " This dynamic equalizer's window draws each band as a point on its response curve, with the reach of its Range shaded: in your answer name each band you changed (Band 1 to Band 4) with its type, frequency, gain, Q, threshold and range before and after, and say why.",
+        _ => "",
+    }
+}
+
+/// What a synth's AI bar adds to the rules: its window draws the envelopes (and the Analog Synth's oscillators and
+/// filter curve), so the answer names what changed in those terms.
+pub fn synth_bar_note(kind: &str) -> &'static str {
+    match kind {
+        "analog_synth" => " This synth's window draws the two oscillator shapes, the filter curve and the amp and filter envelopes: in your answer name each stage you changed (Osc 1 and Osc 2 shapes, Cutoff, Resonance, Filter Env Amount, the Amp and Filter Attack, Decay, Sustain and Release) with its value before and after, and say why.",
+        "fm_synth" => " This synth's window draws the amp envelope and the modulation index envelope: in your answer name each stage you changed (Attack, Decay, Sustain, Release, Mod Index, Index Decay, Index Sustain) with its value before and after, and say why.",
         _ => "",
     }
 }
@@ -328,6 +345,61 @@ mod tests {
         assert_eq!(quick_action_request((DESIGN_A_SOUND, ""), 7, "Analog Synth"), design_sound(7, "Analog Synth"));
         let other = EQ_ACTIONS[1];
         assert_eq!(quick_action_request(other, 7, "Channel EQ"), other.1);
+    }
+
+    #[test]
+    fn synth_quick_actions_shape_the_sound() {
+        let labels = |kind| plugin_quick_actions(kind).iter().map(|a| a.0).collect::<Vec<_>>();
+        assert_eq!(labels("analog_synth"), [DESIGN_A_SOUND, "Give me a bass for this song", "A warm pad that opens slowly"]);
+        assert_eq!(labels("fm_synth"), [DESIGN_A_SOUND, "Give me a bass for this song", "A short pluck"]);
+        assert_ne!(plugin_quick_actions("analog_synth"), plugin_quick_actions("fm_synth"));
+        // parameter names each request cites, as the registry names them (or without their "Amp"/"Filter" prefix)
+        let cited: [(&str, &[&str]); 2] = [
+            ("analog_synth", &["Sub Osc Level", "Cutoff", "Resonance", "Filter Decay", "Filter Env Amount", "Amp Release", "Filter Attack", "Amp Attack", "Amp Sustain"]),
+            ("fm_synth", &["Modulator Ratio", "Mod Index", "Index Decay", "Index Sustain", "Sustain", "Release", "Attack", "Decay"]),
+        ];
+        for (kind, names) in cited {
+            let info = plugins::find(kind).unwrap();
+            let known = |n: &str| info.params.iter().any(|p| p.name == n || p.name == format!("Amp {n}") || p.name == format!("Filter {n}"));
+            for n in names {
+                assert!(known(n), "{kind}: '{n}' is not a parameter name");
+            }
+            for (label, request) in plugin_quick_actions(kind).iter().filter(|a| !a.1.is_empty()) {
+                assert!(request.contains("set_plugin_params"), "{kind} '{label}'");
+                assert!(request.contains("explain in a few lines which parameters you changed and why"), "{kind} '{label}'");
+                let named = names.iter().filter(|n| request.contains(*n)).count();
+                assert!(named >= 2, "{kind} '{label}' names {named} parameters");
+            }
+        }
+    }
+
+    #[test]
+    fn synth_bar_context_asks_to_name_the_stages() {
+        let mut s = Session::new(false);
+        let a = id(&run(&mut s, "add_track", json!({"kind": "instrument", "name": "Lead", "instrument": "analog_synth"})), "track_id");
+        let f = id(&run(&mut s, "add_track", json!({"kind": "instrument", "name": "Keys", "instrument": "fm_synth"})), "track_id");
+        let pid = |t: Id| s.project.track(t).unwrap().instrument.as_ref().unwrap().id;
+        let (ap, fp) = (pid(a), pid(f));
+        for (p, kind, label) in [(ap, "analog_synth", "Analog Synth"), (fp, "fm_synth", "FM Synth")] {
+            let text = plugin_bar_context(&s.project, p).unwrap();
+            assert!(text.starts_with(&plugin_bar_rules(p, label)), "{text}");
+            assert!(!synth_bar_note(kind).is_empty());
+            assert!(text.contains(synth_bar_note(kind)), "{text}");
+            assert!(text.contains(&plugin_context(&s.project, p).unwrap()));
+        }
+        let at = plugin_bar_context(&s.project, ap).unwrap();
+        for want in ["Cutoff", "Osc 1", "Filter Env Amount", "say why"] {
+            assert!(at.contains(want), "missing {want:?}");
+        }
+        assert!(plugin_bar_context(&s.project, fp).unwrap().contains("Index Decay"));
+        assert_eq!(synth_bar_note("compressor"), "");
+        assert_eq!(synth_bar_note("organ"), "");
+        let tools: Vec<String> = ondina_core::command::tool_specs().into_iter().map(|t| t.name).collect();
+        for kind in ["analog_synth", "fm_synth"] {
+            for word in synth_bar_note(kind).split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                assert!(!tools.iter().any(|t| t == word), "{word} names a tool");
+            }
+        }
     }
 
     #[test]
