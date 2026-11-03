@@ -496,6 +496,18 @@ enum PluginView {
     Unknown,
 }
 
+/// The view a plug-in window shows for `kind`: the EQ graph or the synth drawings above the knobs when the plug-in
+/// has them, the knobs alone for the other built-ins, Ondina's generic window for a VST3.
+fn plugin_view(kind: &str) -> PluginView {
+    match plugins::find(kind) {
+        Some(info) if crate::eq_view::has_eq_view(info.kind) => PluginView::Eq(info),
+        Some(info) if crate::synth_view::has_synth_view(info.kind) => PluginView::Synth(info),
+        Some(info) => PluginView::Generic(info),
+        None if kind == "vst3" => PluginView::Vst3,
+        None => PluginView::Unknown,
+    }
+}
+
 impl OndinaApp {
     /// A click on a plug-in's slot: a loaded VST3 opens its own editor, everything else (and a VST3 whose editor
     /// cannot open) Ondina's plug-in window; an open window comes to the front.
@@ -661,13 +673,7 @@ impl OndinaApp {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
             ui.painter().hline(rect.x_range(), rect.center().y, egui::Stroke::new(1.0_f32, theme::CONTROL));
             ui.add_space(theme::SP_3);
-            let view = match plugins::find(&inst.kind) {
-                Some(info) if crate::eq_view::has_eq_view(info.kind) => PluginView::Eq(info),
-                Some(info) if crate::synth_view::has_synth_view(info.kind) => PluginView::Synth(info),
-                Some(info) => PluginView::Generic(info),
-                None if inst.kind == "vst3" => PluginView::Vst3,
-                None => PluginView::Unknown,
-            };
+            let view = plugin_view(&inst.kind);
             if let PluginView::Eq(_) = view {
                 // the graph stays above the scrolling knobs, so the wheel over a point never scrolls them
                 let sr = crate::eq_view::curve_sample_rate(self.view.sample_rate);
@@ -1246,6 +1252,22 @@ mod tests {
         for kind in ["analog_synth", "fm_synth", "organ", "drum_synth", "pluck_synth", "sampler"] {
             let info = plugins::find(kind).unwrap_or_else(|| panic!("{kind}"));
             assert_eq!(info.category, PluginCategory::Instrument, "{kind}");
+        }
+    }
+
+    #[test]
+    fn every_builtin_kind_gets_its_view() {
+        let eq = |k: &str| matches!(plugin_view(k), PluginView::Eq(i) if i.kind == k);
+        let synth = |k: &str| matches!(plugin_view(k), PluginView::Synth(i) if i.kind == k);
+        let generic = |k: &str| matches!(plugin_view(k), PluginView::Generic(i) if i.kind == k);
+        assert!(eq("channel_eq") && eq("dynamic_eq"));
+        assert!(synth("analog_synth") && synth("fm_synth"));
+        assert!(generic("compressor") && generic("organ") && generic("arpeggiator"));
+        assert!(matches!(plugin_view("vst3"), PluginView::Vst3));
+        assert!(matches!(plugin_view("from_the_future"), PluginView::Unknown));
+        // every built-in opens a window of its own: none falls to the VST3 or unknown view
+        for info in plugins::registry() {
+            assert!(eq(info.kind) || synth(info.kind) || generic(info.kind), "{}", info.kind);
         }
     }
 }
