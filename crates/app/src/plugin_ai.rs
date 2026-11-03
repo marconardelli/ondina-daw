@@ -21,10 +21,17 @@ fn bar_request(pressed: bool, blocked: bool, text: &str) -> Option<String> {
     (pressed && !blocked && !t.is_empty()).then(|| t.to_string())
 }
 
-/// What the bar sends to the assistant: the request and, as context, the plug-in's id, kind, track and role, every
-/// parameter with its value and range and, for an insert, its live meters (None when the plug-in is gone).
+/// What the bar sends to the assistant, without what a window adds (the tests of the plain bar).
+#[cfg(test)]
 fn bar_ask(project: &Project, pid: Id, request: String, meter: Option<PluginMeter>) -> (String, Option<String>) {
-    (request, prompts::plugin_bar_context_live(project, pid, meter.as_ref()))
+    bar_ask_window(project, pid, request, meter, prompts::WindowContext::default())
+}
+
+/// What the bar sends to the assistant: the request and, as context, the plug-in's id, kind, track and role, every
+/// parameter with its value and range, for an insert its live meters, and what its window shows besides (the Drum
+/// Synth's selected pad, the Sampler's sample and its pitch). None when the plug-in is gone.
+fn bar_ask_window(project: &Project, pid: Id, request: String, meter: Option<PluginMeter>, window: prompts::WindowContext) -> (String, Option<String>) {
+    (request, prompts::plugin_bar_context_window(project, pid, meter.as_ref(), window))
 }
 
 /// What the person did on the AI bar in one frame.
@@ -93,8 +100,25 @@ impl OndinaApp {
         if let Some(request) = out.send {
             // an atomic read of the meter table, without the session lock
             let meter = self.shared.plugin_meter(pid);
-            let (request, context) = bar_ask(project, pid, request, meter);
+            let window = self.bar_window(project, pid);
+            let (request, context) = bar_ask_window(project, pid, request, meter, window);
             self.ask_ai_with(request, context);
+        }
+    }
+
+    /// What the window of `pid` adds to its bar's request: the pad selected in a Drum Synth window, the estimated
+    /// pitch of a Sampler's sample (its audio is taken from the session in a short lock and analysed after it).
+    fn bar_window(&mut self, project: &Project, pid: Id) -> prompts::WindowContext {
+        let Some(inst) = project.find_plugin(pid) else {
+            return prompts::WindowContext::default();
+        };
+        match (inst.kind.as_str(), inst.sample) {
+            ("drum_synth", _) => prompts::WindowContext { pad: Some(self.plugin_windows.drum_pad(pid)), ..Default::default() },
+            ("sampler", Some(f)) => {
+                let data = self.exec_with(|s| s.pool.get(&f).cloned()).flatten();
+                prompts::WindowContext { sample_pitch_hz: data.and_then(|d| ondina_dsp::audio_ops::sample_pitch(&d)), ..Default::default() }
+            }
+            _ => prompts::WindowContext::default(),
         }
     }
 }
@@ -200,5 +224,36 @@ mod tests {
         for part in [prompts::saturation_bar_note("overdrive"), "Live meters now", "- drive \"Drive\" = 0.4", "Gtr", "At the live input peak"] {
             assert!(context.contains(part), "{part} missing from {context}");
         }
+    }
+
+    #[test]
+    fn bar_request_from_a_drum_window_carries_the_selected_pad() {
+        use ondina_core::command::Command;
+        use ondina_studio::{Session, Source};
+        let mut s = Session::new(false);
+        let add = |s: &mut Session, name: &str, args: serde_json::Value| s.execute(Command::from_tool_call(name, &args).unwrap(), Source::Gui).unwrap();
+        let t = add(&mut s, "add_track", serde_json::json!({"kind": "instrument", "name": "Drums", "instrument": "drum_synth"}))["track_id"].as_u64().unwrap();
+        let drums = s.project.track(t).unwrap().instrument.as_ref().unwrap().id;
+        let (request, context) = bar_ask_window(&s.project, drums, "tighter".into(), None, prompts::WindowContext { pad: Some(38), ..Default::default() });
+        assert_eq!(request, "tighter");
+        let context = context.unwrap();
+        assert!(context.contains(prompts::drum_bar_note("drum_synth")), "{context}");
+        assert!(context.contains("Snare (note 38") && context.contains("snare_tune \"Snare Tune\" = 190"), "{context}");
+        assert!(context.contains("- snare_tune \"Snare Tune\" = 190"), "{context}");
+        let plain = bar_ask(&s.project, drums, "tighter".into(), None).1.unwrap();
+        assert!(plain.contains(prompts::drum_bar_note("drum_synth")) && !plain.contains("The pad selected"), "{plain}");
+    }
+
+    #[test]
+    fn bar_request_from_a_sampler_window_carries_the_sample_note() {
+        use ondina_core::command::Command;
+        use ondina_studio::{Session, Source};
+        let mut s = Session::new(false);
+        let add = |s: &mut Session, name: &str, args: serde_json::Value| s.execute(Command::from_tool_call(name, &args).unwrap(), Source::Gui).unwrap();
+        let t = add(&mut s, "add_track", serde_json::json!({"kind": "instrument", "name": "Keys", "instrument": "sampler"}))["track_id"].as_u64().unwrap();
+        let sampler = s.project.track(t).unwrap().instrument.as_ref().unwrap().id;
+        let context = bar_ask_window(&s.project, sampler, "in tune".into(), None, prompts::WindowContext::default()).1.unwrap();
+        assert!(context.contains("no sample loaded yet"), "{context}");
+        assert!(context.contains("- root_note \"Root Note\" = 60"), "{context}");
     }
 }

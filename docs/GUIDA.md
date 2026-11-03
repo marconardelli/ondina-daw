@@ -780,6 +780,28 @@ Ogni plug-in (strumenti, effetti ed effetti MIDI di Ondina, plug-in VST3) si reg
   song* e *A warm pad that opens slowly*; quella dell'FM Synth *Design a sound*, *Give me a bass for this song* e *A
   short pluck*. Nella risposta l'assistente nomina le fasi dell'inviluppo e il filtro che ha cambiato, con i valori
   prima e dopo, e dice perché.
+- **Batteria: pad**: la finestra del Drum Synth mostra un pad per ogni suono del kit, sulla mappa General MIDI
+  (Kick 36, Snare 38, Clap 39, hi-hat 42/44/46, tom, Crash 49, Ride 51, Rim, Tambourine, Cowbell, Claves), colorati
+  per gruppo: Kick arancio, Snare giallo, Clap rosso, Hats verde, Toms blu, Cymbals viola, percussioni grigie. Un
+  clic su un pad lo suona finché tieni premuto (più forte verso il bordo basso) e lo seleziona; scivolando su un
+  altro pad col pulsante giù il primo si ferma e suona il secondo; uscendo dai pad, perdendo il fuoco o chiudendo la
+  finestra la nota si ferma. Il clic destro seleziona un pad senza suonarlo. Sotto i pad ci sono solo le manopole
+  del suono selezionato (per lo Snare Tune, Snappy e Decay) e la sezione **Kit** con Drive e Level, che cambiano
+  tutto il kit; Rim, Tambourine, Cowbell e Claves hanno solo quelle. Durante la riproduzione i pad delle note che la
+  traccia suona si accendono. La finestra della batteria non ha la tastiera in fondo: i pad la sostituiscono. La
+  barra AI offre *Design a sound*, *Punchier kit* e *Shape the selected sound*: la richiesta porta con sé il pad
+  selezionato con i suoi parametri, e nella risposta l'assistente nomina ogni suono del kit che ha cambiato con i
+  valori prima e dopo.
+- **Sampler: campione e root note**: la finestra del Sampler mostra sopra le manopole la forma d'onda del campione,
+  con nome, durata, frequenza di campionamento e canali in alto a sinistra, *Loop: the whole sample* (con una linea
+  gialla lungo il bordo) o *One-shot* in alto a destra e la root note con il Tune in basso a destra. Sotto c'è una
+  striscia di tasti: un clic porta la root sul tasto cliccato, il trascinamento la sposta a semitoni (un
+  trascinamento è un passo di annulla), la rotella la sposta di un semitono per scatto e il doppio clic la riporta
+  a C4 (60). Sotto ancora l'inviluppo d'ampiezza da trascinare come nei synth, e nella tastiera in fondo il tasto
+  della root è giallo. Senza campione la finestra lo dice e offre **Load sample…**, lo stesso dialogo del menu dello
+  slot dello strumento. La barra AI offre *Design a sound*, *Tune the sample to the song's key* e *Hold long notes*:
+  la richiesta porta con sé il campione e la sua altezza stimata; se il campione non ha una nota chiara (un colpo
+  di batteria, un rumore, un accordo) l'assistente non cambia nulla e lo dice.
 - I parametri a scelta (forme d'onda, modi, on/off) sono pulsanti affiancati o un menu. I parametri con lo stesso
   inizio di nome stanno insieme sotto un titolo (per esempio *Band 1*, *Filter*, *Low Shelf*). Allargando la
   finestra le manopole si ridistribuiscono; se non ci stanno, la vista scorre.

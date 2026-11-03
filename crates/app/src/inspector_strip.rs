@@ -362,12 +362,7 @@ impl OndinaApp {
             if inst.kind == "sampler" {
                 if ui.button("Load sample…").clicked() {
                     ui.close_menu();
-                    if let Some(f) = rfd::FileDialog::new()
-                        .add_filter("Audio", &["wav", "aif", "aiff", "flac", "mp3", "ogg"])
-                        .pick_file()
-                    {
-                        self.exec(Command::SetSamplerSample { plugin_id: iid, path: f.display().to_string() });
-                    }
+                    self.load_sampler_sample(iid);
                 }
                 if let Some(s) = inst.sample.and_then(|id| p.audio_file(id)) {
                     ui.label(RichText::new(&s.name).small().color(theme::TEXT_2));

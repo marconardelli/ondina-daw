@@ -199,6 +199,14 @@ extension: Ondina opens both.
   the times as note values too. The AI bar offers *Dotted-eighth echo in time* and *Slapback for the vocal* (plus
   *Wide ping-pong* or *Dark dub echoes*), the request carries the project tempo and the answer names the times as
   note values.
+- **Drum Synth and Sampler windows**: the Drum Synth window shows a pad for every sound of the kit (General MIDI
+  notes, colored by group): click a pad to play it (lower is louder) and select it, right-click to select it
+  silently; under the pads only the selected sound's knobs show, with Drive and Level for the whole kit, and pads
+  light up on what the track plays. It has the pads instead of the keyboard. The Sampler window draws the sample's
+  waveform with its name, length and loop, the root note on a strip of keys (click, drag or wheel; double-click for
+  C4) and the amp envelope, and marks the root on its keyboard; without a sample it offers **Load sample…**. The AI
+  bar offers *Shape the selected sound* (the request carries the selected pad and its parameters) and *Tune the
+  sample to the song's key* (it carries the sample and its estimated pitch).
 - **Unsaved changes**: when the project has unsaved changes (the • in the title bar), closing the window, New,
   Open or a recent project first asks *Save*, *Don't Save* or *Cancel*. Esc cancels, Enter saves. A recording in
   progress is stopped and kept before the question.

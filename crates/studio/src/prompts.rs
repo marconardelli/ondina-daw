@@ -3,6 +3,7 @@
 
 use std::fmt::Write;
 
+use ondina_core::drum_kit;
 use ondina_core::model::{Id, PluginInstance, PluginSlot, Project, TrackKind};
 use ondina_core::note_value;
 use ondina_core::plugins;
@@ -93,7 +94,8 @@ pub fn plugin_quick_actions(kind: &str) -> &'static [(&'static str, &'static str
     match kind {
         "analog_synth" => SYNTH_ACTIONS,
         "fm_synth" => FM_SYNTH_ACTIONS,
-        "pluck_synth" | "organ" | "sampler" => INSTRUMENT_ACTIONS,
+        "pluck_synth" | "organ" => INSTRUMENT_ACTIONS,
+        "sampler" => SAMPLER_ACTIONS,
         "drum_synth" => DRUM_ACTIONS,
         "channel_eq" => EQ_ACTIONS,
         "dynamic_eq" => DYNAMIC_EQ_ACTIONS,
@@ -149,10 +151,17 @@ const INSTRUMENT_ACTIONS: &[(&str, &str)] = &[
     ("Warmer and softer", "Make this instrument warmer and softer: less brightness and attack, a little more body."),
     ("Brighter, more present", "Make this instrument brighter and more present in the mix without making it harsh."),
 ];
+/// Drum Synth: the whole kit, and the pad selected in its window (the context names it with its parameters).
 const DRUM_ACTIONS: &[(&str, &str)] = &[
     (DESIGN_A_SOUND, ""),
-    ("Punchier kit", "Make this drum kit punchier: a tighter kick with more attack, a crisper snare, shorter hats."),
-    ("Softer vintage kit", "Make this drum kit softer and vintage: a rounder kick, darker hats, a little drive."),
+    ("Punchier kit", "Make this drum kit punchier: a shorter Kick Decay with more Kick Punch, more Snare Snappy with a shorter Snare Decay, and a shorter Closed Hat Decay. Change the parameters with set_plugin_params, then explain in a few lines which parameters you changed and why."),
+    ("Shape the selected sound", "Work on the sound of the pad selected in this Drum Synth's window (the context below names it with its parameters): fit it to this song, reading the tempo and the other tracks with get_project when it helps, and change only that pad's parameters, plus Drive or Level only if the whole kit needs it. If the pad has no parameters of its own, change nothing and say which pads have some. Change the parameters with set_plugin_params, then explain in a few lines which parameters you changed and why."),
+];
+/// Sampler: in tune with the song from the sample's estimated pitch, and smooth held notes.
+const SAMPLER_ACTIONS: &[(&str, &str)] = &[
+    (DESIGN_A_SOUND, ""),
+    ("Tune the sample to the song's key", "Tune this Sampler to the song: read the key with get_project. The context below gives the sample's estimated pitch; if no clear pitch was found (a drum hit, a noise, a chord), change nothing and say so. Otherwise set Root Note to the MIDI note nearest to that pitch (MIDI note = 69 + 12 x log2(Hz / 440)) and Tune to what is left with the opposite sign (a pitch of 57.3 gives Root Note 57 and Tune -0.3), so every key plays its own pitch and the notes of the song's key play in tune; say which key plays the tonic of the song's key. Change the parameters with set_plugin_params, then explain in a few lines which parameters you changed and why."),
+    ("Hold long notes", "Make this Sampler hold long notes smoothly: Loop On so a held key keeps sounding, an Attack of 0.01 to 0.05 s against clicks, Sustain at 1, a Release of 0.3 to 0.8 s and a Velocity Sensitivity around 0.5. Change the parameters with set_plugin_params, then explain in a few lines which parameters you changed and why."),
 ];
 /// FM Synth: a bass and a pluck, the sounds two operators do best besides bells and electric pianos.
 const FM_SYNTH_ACTIONS: &[(&str, &str)] = &[
@@ -363,6 +372,94 @@ pub fn delay_bar_note(project: &Project, inst: &PluginInstance) -> String {
         sig.numerator,
         sig.denominator
     )
+}
+
+/// What a Drum Synth's AI bar adds to the rules: its window shows a pad per sound and the selected pad's knobs, so
+/// the answer names the sounds. Empty for other kinds.
+pub fn drum_bar_note(kind: &str) -> &'static str {
+    match kind {
+        "drum_synth" => " This Drum Synth's window shows a pad for each sound of the kit (General MIDI notes) and the knobs of the selected pad; Drive and Level shape the whole kit. In your answer name each sound of the kit you changed (Kick, Snare, Clap, Hats, Toms, Cymbals) with each parameter before and after, and say why.",
+        _ => "",
+    }
+}
+
+/// The pad selected in a Drum Synth's window, with the parameters that shape it (value and range, as plugin_context
+/// writes them). Empty for other kinds and for a note without a pad.
+pub fn drum_pad_note(inst: &PluginInstance, pad: u8) -> String {
+    let (Some(info), Some(p)) = (plugins::find(&inst.kind).filter(|_| inst.kind == "drum_synth"), drum_kit::pad(pad)) else {
+        return String::new();
+    };
+    let head = format!(" The pad selected in this window is {} (note {}, {})", p.name, p.note, ondina_core::theory::note_name(p.note));
+    if p.params.is_empty() {
+        return format!("{head}: it has no parameters of its own; only Drive and Level change it, and they change the whole kit.");
+    }
+    let list: Vec<String> = p
+        .params
+        .iter()
+        .filter_map(|id| info.params.iter().find(|pi| pi.id == *id))
+        .map(|pi| {
+            let unit = if pi.unit.is_empty() { String::new() } else { format!(" {}", pi.unit) };
+            let shared = match drum_kit::owner(pi.id) {
+                Some(g) if g.name != p.group => format!(" (shared with the {})", g.name),
+                _ => String::new(),
+            };
+            format!("{} \"{}\" = {} [{}..{}{unit}]{shared}", pi.id, pi.name, num(inst.param(pi.id)), num(pi.min), num(pi.max))
+        })
+        .collect();
+    format!("{head}: its parameters are {}. Drive and Level shape the whole kit. When the request does not name another sound of the kit, change only this pad's parameters.", list.join(", "))
+}
+
+/// What a Sampler's AI bar adds: its window draws the sample, the root note and the loop, so the request carries the
+/// sample (name, length, rate, channels) and its estimated pitch (`pitch_hz`, None when none was found). Empty for
+/// other kinds.
+pub fn sampler_bar_note(project: &Project, inst: &PluginInstance, pitch_hz: Option<f32>) -> String {
+    if inst.kind != "sampler" {
+        return String::new();
+    }
+    let Some(file) = inst.sample.and_then(|id| project.audio_file(id)) else {
+        return " This Sampler has no sample loaded yet, so it plays nothing: ask the person to load one with Load sample\u{2026} in its window or in the instrument slot's menu before changing its sound.".to_string();
+    };
+    let channels = match file.channels {
+        1 => "mono".to_string(),
+        2 => "stereo".to_string(),
+        n => format!("{n} channels"),
+    };
+    let pitch = match pitch_hz.filter(|hz| hz.is_finite() && *hz > 0.0) {
+        Some(hz) => {
+            let midi = 69.0 + 12.0 * (hz / 440.0).log2();
+            format!("estimated pitch {} ({hz:.1} Hz, MIDI note {midi:.2})", ondina_core::theory::note_name(midi.round().clamp(0.0, 127.0) as u8))
+        }
+        None => "no clear pitch was found (a drum hit, a noise or a chord)".to_string(),
+    };
+    let root = inst.param("root_note").round().clamp(0.0, 127.0) as u8;
+    format!(
+        " This Sampler's window draws the waveform of its sample with the root note and the loop, and marks the root note on its keyboard. Sample: \"{}\", {:.2} s, {} Hz, {channels}; {pitch}. Root Note {root} ({}) plays the sample at its own speed; Tune moves every note by semitones (fractions are cents); Loop On repeats the whole sample while a key is held. In your answer give Root Note, Tune, Loop and the envelope values you changed, before and after, and say why.",
+        file.name,
+        file.duration_sec,
+        file.sample_rate,
+        ondina_core::theory::note_name(root)
+    )
+}
+
+/// What the open window knows besides the project: the pad selected in a Drum Synth window, the estimated pitch of
+/// a Sampler's sample.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct WindowContext {
+    pub pad: Option<u8>,
+    pub sample_pitch_hz: Option<f32>,
+}
+
+/// plugin_bar_context_live plus what the plug-in's window adds: the Drum Synth's note and selected pad, the Sampler's
+/// note with its sample. The same as plugin_bar_context_live for every other kind. None when the plug-in is gone.
+pub fn plugin_bar_context_window(project: &Project, plugin_id: Id, meter: Option<&ondina_engine::PluginMeter>, window: WindowContext) -> Option<String> {
+    let mut text = plugin_bar_context_live(project, plugin_id, meter)?;
+    let inst = project.find_plugin(plugin_id)?;
+    text.push_str(drum_bar_note(&inst.kind));
+    if let Some(pad) = window.pad {
+        text.push_str(&drum_pad_note(inst, pad));
+    }
+    text.push_str(&sampler_bar_note(project, inst, window.sample_pitch_hz));
+    Some(text)
 }
 
 /// plugin_bar_context plus the insert's live meters when there are any (instruments and MIDI effects have none), so
@@ -992,5 +1089,118 @@ mod tests {
         for tool in ["set_plugin_params", "get_plugin", "analyze_mix"] {
             assert!(crate::local_ai::LOCAL_TOOLS.contains(&tool), "{tool}");
         }
+    }
+
+    fn no_word_is_a_tool(text: &str) {
+        let tools: Vec<String> = ondina_core::command::tool_specs().into_iter().map(|t| t.name).collect();
+        for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            assert!(!tools.iter().any(|t| t == word), "{word} names a tool in: {text}");
+        }
+    }
+
+    fn instrument(s: &mut Session, kind: &str) -> Id {
+        let t = id(&run(s, "add_track", json!({"kind": "instrument", "name": kind, "instrument": kind})), "track_id");
+        s.project.track(t).unwrap().instrument.as_ref().unwrap().id
+    }
+
+    #[test]
+    fn drum_and_sampler_quick_actions_name_their_parameters() {
+        let labels = |kind: &str| plugin_quick_actions(kind).iter().map(|a| a.0).collect::<Vec<_>>();
+        assert_eq!(labels("drum_synth"), [DESIGN_A_SOUND, "Punchier kit", "Shape the selected sound"]);
+        assert_eq!(labels("sampler"), [DESIGN_A_SOUND, "Tune the sample to the song's key", "Hold long notes"]);
+        let names: [(&str, &[&str]); 2] = [("drum_synth", &["Kick Decay", "Kick Punch", "Snare Snappy", "Snare Decay", "Closed Hat Decay"]), ("sampler", &["Root Note", "Tune", "Loop", "Attack", "Sustain", "Release", "Velocity Sensitivity"])];
+        for (kind, cited) in names {
+            let info = plugins::find(kind).unwrap();
+            for name in cited {
+                assert!(info.params.iter().any(|p| p.name == *name), "{kind}: {name} is not a parameter");
+                assert!(plugin_quick_actions(kind).iter().any(|a| a.1.contains(name)), "{kind}: no request names {name}");
+            }
+            for (label, request) in plugin_quick_actions(kind).iter().filter(|a| !a.1.is_empty()) {
+                assert!(request.contains("set_plugin_params"), "{kind}: {label}");
+                assert!(request.contains("explain in a few lines which parameters you changed and why"), "{kind}: {label}");
+            }
+        }
+        let tune = plugin_quick_actions("sampler").iter().find(|a| a.0 == "Tune the sample to the song's key").unwrap().1;
+        assert!(tune.contains("get_project") && tune.contains("estimated pitch"));
+        assert_eq!(plugin_quick_actions("pluck_synth"), INSTRUMENT_ACTIONS);
+        assert_eq!(plugin_quick_actions("organ"), INSTRUMENT_ACTIONS);
+    }
+
+    #[test]
+    fn drum_bar_note_asks_to_name_the_sounds() {
+        let note = drum_bar_note("drum_synth");
+        for want in ["Kick", "Snare", "Clap", "Hats", "Toms", "Cymbals", "before and after", "say why"] {
+            assert!(note.contains(want), "missing {want:?} in {note}");
+        }
+        no_word_is_a_tool(note);
+        assert_eq!(drum_bar_note("analog_synth"), "");
+        assert_eq!(drum_bar_note("sampler"), "");
+    }
+
+    #[test]
+    fn drum_pad_note_names_the_pad_and_its_parameters() {
+        let mut s = Session::new(false);
+        let d = instrument(&mut s, "drum_synth");
+        run(&mut s, "set_plugin_param", json!({"plugin_id": d, "param": "snare_tune", "value": 240}));
+        let inst = s.project.find_plugin(d).unwrap();
+        let note = drum_pad_note(inst, 38);
+        for want in ["Snare (note 38, D2)", "snare_tune \"Snare Tune\" = 240 [100..400 Hz]", "snare_snappy", "snare_decay", "Drive and Level"] {
+            assert!(note.contains(want), "missing {want:?} in {note}");
+        }
+        assert!(!note.contains("kick_tune"), "{note}");
+        no_word_is_a_tool(&note);
+        let crash = drum_pad_note(inst, 49);
+        assert!(crash.contains("hat_tone \"Hat Tone\" = 0.6 [0..1] (shared with the Hats)") && crash.contains("cymbal_decay"), "{crash}");
+        assert!(!crash.contains("cymbal_decay \"Cymbal Decay\" = 1.6 [0.3..4 s] (shared"), "{crash}");
+        no_word_is_a_tool(&crash);
+        let cowbell = drum_pad_note(inst, 56);
+        assert!(cowbell.contains("Cowbell (note 56") && cowbell.contains("no parameters of its own"), "{cowbell}");
+        no_word_is_a_tool(&cowbell);
+        assert_eq!(drum_pad_note(inst, 60), "");
+        let comp = PluginInstance { id: 9, kind: "compressor".into(), params: Default::default(), bypass: false, preset: None, sample: None, vst3_path: None, vst3_params: vec![], vst3_state: None };
+        assert_eq!(drum_pad_note(&comp, 38), "");
+    }
+
+    #[test]
+    fn sampler_bar_note_names_the_sample_and_its_pitch() {
+        let mut s = Session::new(false);
+        let sp = instrument(&mut s, "sampler");
+        let empty = sampler_bar_note(&s.project, s.project.find_plugin(sp).unwrap(), None);
+        assert!(empty.contains("no sample loaded yet"), "{empty}");
+        no_word_is_a_tool(&empty);
+        let mut project = s.project.clone();
+        project.audio_files.push(ondina_core::model::AudioFileRef { id: 900, path: "pad.wav".into(), name: "pad.wav".into(), sample_rate: 44100, channels: 2, duration_sec: 2.5 });
+        project.find_plugin_mut(sp).unwrap().sample = Some(900);
+        let inst = project.find_plugin(sp).unwrap();
+        let note = sampler_bar_note(&project, inst, Some(220.0));
+        for want in ["\"pad.wav\", 2.50 s, 44100 Hz, stereo", "estimated pitch A3 (220.0 Hz, MIDI note 57.00)", "Root Note 60 (C4)", "Tune", "Loop", "before and after", "say why"] {
+            assert!(note.contains(want), "missing {want:?} in {note}");
+        }
+        no_word_is_a_tool(&note);
+        let unclear = sampler_bar_note(&project, inst, None);
+        assert!(unclear.contains("no clear pitch was found"), "{unclear}");
+        let synth = PluginInstance { id: 9, kind: "analog_synth".into(), params: Default::default(), bypass: false, preset: None, sample: None, vst3_path: None, vst3_params: vec![], vst3_state: None };
+        assert_eq!(sampler_bar_note(&project, &synth, Some(220.0)), "");
+    }
+
+    #[test]
+    fn window_context_adds_only_what_the_window_knows() {
+        let mut s = Session::new(false);
+        let t = id(&run(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"})), "track_id");
+        let comp = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "compressor"})), "plugin_id");
+        let synth = instrument(&mut s, "analog_synth");
+        for pid in [comp, synth] {
+            assert_eq!(plugin_bar_context_window(&s.project, pid, None, WindowContext::default()), plugin_bar_context_live(&s.project, pid, None));
+        }
+        let d = instrument(&mut s, "drum_synth");
+        let plain = plugin_bar_context_window(&s.project, d, None, WindowContext::default()).unwrap();
+        assert!(plain.contains(drum_bar_note("drum_synth")) && !plain.contains("The pad selected"), "{plain}");
+        let with_pad = plugin_bar_context_window(&s.project, d, None, WindowContext { pad: Some(38), ..Default::default() }).unwrap();
+        assert!(with_pad.contains("The pad selected in this window is Snare"), "{with_pad}");
+        assert!(with_pad.starts_with(&plugin_bar_context_live(&s.project, d, None).unwrap()));
+        let sp = instrument(&mut s, "sampler");
+        let sampler = plugin_bar_context_window(&s.project, sp, None, WindowContext::default()).unwrap();
+        assert!(sampler.contains("no sample loaded yet"), "{sampler}");
+        assert_eq!(plugin_bar_context_window(&s.project, 999_999, None, WindowContext::default()), None);
     }
 }
