@@ -11,7 +11,7 @@ use ondina_engine::PluginMeter;
 use ondina_studio::prompts;
 
 use crate::app::OndinaApp;
-use crate::assistant::{ai_controls, ask_blocked_reason};
+use crate::assistant::{ai_button_for, ai_controls, ask_blocked_reason, AiEngine};
 use crate::{chrome, theme};
 
 /// The request a press of the send button or of Enter in the box sends: the trimmed text, or None when nothing was
@@ -27,51 +27,70 @@ fn bar_ask(project: &Project, pid: Id, request: String, meter: Option<PluginMete
     (request, prompts::plugin_bar_context_live(project, pid, meter.as_ref()))
 }
 
+/// What the person did on the AI bar in one frame.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct BarOut {
+    /// The request to send: the text in the box (button or Enter) or a ready-made request.
+    pub send: Option<String>,
+    /// Stop was pressed while the assistant works.
+    pub stop: bool,
+}
+
+/// The widgets of the AI bar of plug-in `pid`: the request box with its button (Stop while the assistant works) and
+/// the plug-in's ready-made requests, enabled for `engine` and `busy` like every AI button. It sends nothing itself:
+/// plugin_ai_bar does, so a test can draw the bar without the app.
+pub(crate) fn ai_bar_widgets(ui: &mut egui::Ui, project: &Project, pid: Id, engine: AiEngine, busy: bool) -> BarOut {
+    let mut out = BarOut::default();
+    let Some(inst) = project.find_plugin(pid) else {
+        return out;
+    };
+    let label = plugins::plugin_label(inst);
+    let controls = ai_controls(engine, busy);
+    let reason = ask_blocked_reason(engine, busy);
+    // the draft lives in egui's memory, one per plug-in, so switching plug-ins keeps what was typed
+    let draft_id = egui::Id::new(("plugin_ai_draft", pid));
+    let mut text = ui.data_mut(|d| d.get_temp::<String>(draft_id)).unwrap_or_default();
+
+    ui.add_space(theme::SP_4);
+    chrome::section_label(ui, "Ask the AI");
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // right to left: the button is laid out first and the box takes the rest of the row
+            let clicked = ai_button_for(ui, "Ask", reason);
+            if controls.stop && ui.button("Stop").on_hover_text("Stop the assistant").clicked() {
+                out.stop = true;
+            }
+            let hint = if controls.prompt { "Ask the AI to change this plug-in… (Enter)" } else { "Connect a model in Settings to ask the AI" };
+            let resp = ui.add_enabled(
+                controls.prompt,
+                egui::TextEdit::singleline(&mut text).hint_text(hint).desired_width(ui.available_width()),
+            );
+            let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if let Some(req) = bar_request(clicked || enter, reason.is_some(), &text) {
+                text.clear();
+                out.send = Some(req);
+            }
+        });
+    });
+    ui.horizontal_wrapped(|ui| {
+        for &action in prompts::plugin_bar_actions(project, pid) {
+            if ai_button_for(ui, action.0, reason) {
+                out.send = Some(prompts::quick_action_request(action, pid, &label));
+            }
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(draft_id, text));
+    out
+}
+
 impl OndinaApp {
     /// The AI bar of the plug-in `pid`, drawn in the header of every plug-in window.
     pub(crate) fn plugin_ai_bar(&mut self, ui: &mut egui::Ui, project: &Project, pid: Id) {
-        let Some(inst) = project.find_plugin(pid) else {
-            return;
-        };
-        let label = plugins::plugin_label(inst);
-        let engine = self.ai_engine();
-        let controls = ai_controls(engine, self.ai.busy);
-        let blocked = ask_blocked_reason(engine, self.ai.busy).is_some();
-        // the draft lives in egui's memory, one per plug-in, so switching plug-ins keeps what was typed
-        let draft_id = egui::Id::new(("plugin_ai_draft", pid));
-        let mut text = ui.data_mut(|d| d.get_temp::<String>(draft_id)).unwrap_or_default();
-        let mut send: Option<String> = None;
-
-        ui.add_space(theme::SP_4);
-        chrome::section_label(ui, "Ask the AI");
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // right to left: the button is laid out first and the box takes the rest of the row
-                let clicked = self.ai_button(ui, "Ask");
-                if controls.stop && ui.button("Stop").on_hover_text("Stop the assistant").clicked() {
-                    self.ai.cancel.store(true, Ordering::Relaxed);
-                }
-                let hint = if controls.prompt { "Ask the AI to change this plug-in… (Enter)" } else { "Connect a model in Settings to ask the AI" };
-                let resp = ui.add_enabled(
-                    controls.prompt,
-                    egui::TextEdit::singleline(&mut text).hint_text(hint).desired_width(ui.available_width()),
-                );
-                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if let Some(req) = bar_request(clicked || enter, blocked, &text) {
-                    text.clear();
-                    send = Some(req);
-                }
-            });
-        });
-        ui.horizontal_wrapped(|ui| {
-            for &action in prompts::plugin_bar_actions(project, pid) {
-                if self.ai_button(ui, action.0) {
-                    send = Some(prompts::quick_action_request(action, pid, &label));
-                }
-            }
-        });
-        ui.data_mut(|d| d.insert_temp(draft_id, text));
-        if let Some(request) = send {
+        let out = ai_bar_widgets(ui, project, pid, self.ai_engine(), self.ai.busy);
+        if out.stop {
+            self.ai.cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(request) = out.send {
             // an atomic read of the meter table, without the session lock
             let meter = self.shared.plugin_meter(pid);
             let (request, context) = bar_ask(project, pid, request, meter);
