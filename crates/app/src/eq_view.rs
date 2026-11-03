@@ -884,7 +884,7 @@ mod tests {
     fn plot_inset_keeps_edge_points_inside() {
         let r = plot();
         let p = plot_rect(r);
-        assert!(PLOT_INSET >= POINT_R);
+        const { assert!(PLOT_INSET >= POINT_R) };
         // the point, its hover ring (POINT_R + 2) and half of the ring's stroke stay in the frame
         let whole = r.shrink(POINT_R + 2.75).expand(1e-3);
         for f in [F_LO, F_HI] {
