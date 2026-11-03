@@ -298,6 +298,9 @@ impl Svf {
     }
 }
 
+/// Floor of `Biquad::magnitude_db`: a filter's deep stop band reads as this instead of minus infinity.
+pub const MIN_RESPONSE_DB: f32 = -120.0;
+
 /// RBJ biquad.
 #[derive(Clone, Copy, Default)]
 pub struct Biquad {
@@ -366,6 +369,28 @@ impl Biquad {
     pub fn reset(&mut self) {
         self.z1 = 0.0;
         self.z2 = 0.0;
+    }
+
+    /// Gain in dB of the filter at `freq` Hz for sample rate `sr`: the magnitude of its transfer function on the unit
+    /// circle, never below `MIN_RESPONSE_DB`. For drawing a response; not meant for the audio thread.
+    pub fn magnitude_db(&self, freq: f32, sr: f32) -> f32 {
+        if sr <= 0.0 || !sr.is_finite() {
+            return 0.0;
+        }
+        let sr = sr as f64;
+        let f = (freq as f64).clamp(0.0, sr / 2.0);
+        let w = 2.0 * std::f64::consts::PI * f / sr;
+        let (b0, b1, b2, a1, a2) = (self.b0 as f64, self.b1 as f64, self.b2 as f64, self.a1 as f64, self.a2 as f64);
+        let (s1, c1) = w.sin_cos();
+        let (s2, c2) = (2.0 * w).sin_cos();
+        let nr = b0 + b1 * c1 + b2 * c2;
+        let ni = -(b1 * s1 + b2 * s2);
+        let dr = 1.0 + a1 * c1 + a2 * c2;
+        let di = -(a1 * s1 + a2 * s2);
+        let num = nr * nr + ni * ni;
+        let den = (dr * dr + di * di).max(1e-300);
+        let db = 10.0 * (num / den).max(1e-30).log10();
+        (db as f32).max(MIN_RESPONSE_DB)
     }
 }
 
@@ -453,6 +478,41 @@ impl DcBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn biquad_magnitude_matches_known_points() {
+        let sr = 48000.0;
+        let peak = Biquad::new(BiquadKind::Peak, 1000.0, 1.0, 6.0, sr);
+        assert!((peak.magnitude_db(1000.0, sr) - 6.0).abs() <= 0.05, "{}", peak.magnitude_db(1000.0, sr));
+        assert!(peak.magnitude_db(20.0, sr).abs() <= 0.1);
+        assert!(peak.magnitude_db(20000.0, sr).abs() <= 0.1);
+        let lp = Biquad::new(BiquadKind::LowPass, 1000.0, 0.707, 0.0, sr);
+        assert!((lp.magnitude_db(1000.0, sr) + 3.01).abs() <= 0.05, "{}", lp.magnitude_db(1000.0, sr));
+        assert!(lp.magnitude_db(100.0, sr).abs() <= 0.05);
+        assert!(lp.magnitude_db(10000.0, sr) < -35.0);
+        let hs = Biquad::new(BiquadKind::HighShelf, 2000.0, 0.707, 6.0, sr);
+        assert!((hs.magnitude_db(18000.0, sr) - 6.0).abs() <= 0.2, "{}", hs.magnitude_db(18000.0, sr));
+        assert!(hs.magnitude_db(50.0, sr).abs() <= 0.1);
+        let hp = Biquad::new(BiquadKind::HighPass, 1000.0, 0.707, 0.0, sr);
+        let low = hp.magnitude_db(5.0, sr);
+        assert!((MIN_RESPONSE_DB..-60.0).contains(&low), "{low}");
+    }
+
+    #[test]
+    fn biquad_magnitude_is_finite_everywhere() {
+        let kinds = [BiquadKind::LowPass, BiquadKind::HighPass, BiquadKind::BandPass, BiquadKind::Peak, BiquadKind::LowShelf, BiquadKind::HighShelf];
+        for kind in kinds {
+            for sr in [44100.0, 48000.0, 96000.0] {
+                let b = Biquad::new(kind, 1000.0, 0.707, 6.0, sr);
+                for f in [0.0, 1.0, 20.0, 1000.0, 23999.0, 24000.0, 30000.0, -5.0] {
+                    let db = b.magnitude_db(f, sr);
+                    assert!(db.is_finite() && db >= MIN_RESPONSE_DB, "{f} Hz at {sr}: {db}");
+                }
+            }
+        }
+        let b = Biquad::new(BiquadKind::Peak, 1000.0, 1.0, 6.0, 48000.0);
+        assert_eq!(b.magnitude_db(1000.0, 0.0), 0.0);
+    }
 
     #[test]
     fn adsr_cycle() {

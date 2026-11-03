@@ -267,8 +267,18 @@ pub fn plugin_bar_rules(plugin_id: Id, label: &str) -> String {
 
 /// The context a request from the plug-in's AI bar adds: the rules above and plugin_context. None when the plug-in is gone.
 pub fn plugin_bar_context(project: &Project, plugin_id: Id) -> Option<String> {
-    let label = plugins::plugin_label(project.find_plugin(plugin_id)?);
-    Some(format!("{}\n{}", plugin_bar_rules(plugin_id, &label), plugin_context(project, plugin_id)?))
+    let inst = project.find_plugin(plugin_id)?;
+    let label = plugins::plugin_label(inst);
+    Some(format!("{}{}\n{}", plugin_bar_rules(plugin_id, &label), eq_bar_note(&inst.kind), plugin_context(project, plugin_id)?))
+}
+
+/// What an equalizer's AI bar adds to the rules: its window draws the bands as points, so the answer names them.
+pub fn eq_bar_note(kind: &str) -> &'static str {
+    match kind {
+        "channel_eq" => " This equalizer's window draws each band as a point on its response curve: in your answer name each band you changed (High Pass, Low Shelf, Mid 1, Mid 2, High Shelf, Low Pass) with its frequency, gain and Q before and after, and say why.",
+        "dynamic_eq" => " This dynamic equalizer's window draws each band as a point on its response curve, with the reach of its Range shaded: in your answer name each band you changed (Band 1 to Band 4) with its type, frequency, gain, Q, threshold and range before and after, and say why.",
+        _ => "",
+    }
 }
 
 #[cfg(test)]
@@ -411,6 +421,38 @@ mod tests {
             assert!(text.contains(&want), "missing {want:?}");
         }
         assert!(plugin_bar_context(&s.project, 9999).is_none());
+    }
+
+    #[test]
+    fn eq_bar_context_asks_to_name_the_bands() {
+        let mut s = Session::new(false);
+        let t = id(&run(&mut s, "add_track", json!({"kind": "audio", "name": "Vocals"})), "track_id");
+        let ceq = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "channel_eq"})), "plugin_id");
+        let deq = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "dynamic_eq"})), "plugin_id");
+        let comp = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "compressor"})), "plugin_id");
+        for (pid, kind, label) in [(ceq, "channel_eq", "Channel EQ"), (deq, "dynamic_eq", "Dynamic EQ")] {
+            let text = plugin_bar_context(&s.project, pid).unwrap();
+            assert!(text.starts_with(&plugin_bar_rules(pid, label)), "{text}");
+            assert!(text.contains(eq_bar_note(kind)), "{text}");
+            assert!(text.contains(&plugin_context(&s.project, pid).unwrap()));
+        }
+        let c = plugin_bar_context(&s.project, ceq).unwrap();
+        for want in ["Mid 1", "frequency, gain and Q", "say why"] {
+            assert!(c.contains(want), "missing {want:?}");
+        }
+        let d = plugin_bar_context(&s.project, deq).unwrap();
+        for want in ["Band 1 to Band 4", "range"] {
+            assert!(d.contains(want), "missing {want:?}");
+        }
+        assert_eq!(eq_bar_note("compressor"), "");
+        let rules = plugin_bar_rules(comp, &plugins::plugin_label(s.project.find_plugin(comp).unwrap()));
+        assert_eq!(plugin_bar_context(&s.project, comp).unwrap(), format!("{rules}\n{}", plugin_context(&s.project, comp).unwrap()));
+        let tools: Vec<String> = ondina_core::command::tool_specs().into_iter().map(|t| t.name).collect();
+        for kind in ["channel_eq", "dynamic_eq"] {
+            for word in eq_bar_note(kind).split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                assert!(!tools.iter().any(|t| t == word), "{word} names a tool");
+            }
+        }
     }
 
     #[test]

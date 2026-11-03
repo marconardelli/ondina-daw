@@ -3420,3 +3420,113 @@ fn plugin_window_ai_changes_to_a_vst3_are_one_undo_step() {
     s.execute(Command::Undo {}, Source::Gui).unwrap();
     assert!(near(plugin_value(&mut s, pid, "p1"), 0.8));
 }
+
+/// The Channel EQ curve the plug-in window draws for `fx`, at `f` Hz.
+fn ceq_curve(s: &Session, fx: u64, f: f32) -> f32 {
+    use ondina_dsp::effects::{channel_eq_params, channel_eq_response_db};
+    let inst = s.project.find_plugin(fx).unwrap();
+    channel_eq_response_db(&channel_eq_params(|id| inst.param(id)), f, 48000.0)
+}
+
+/// The Dynamic EQ curve the plug-in window draws for `fx`, at `f` Hz, with `extra` dB per band.
+fn deq_curve(s: &Session, fx: u64, f: f32, extra: [f32; 4]) -> f32 {
+    use ondina_dsp::effects::{dynamic_eq_params, dynamic_eq_response_db};
+    let inst = s.project.find_plugin(fx).unwrap();
+    dynamic_eq_response_db(&dynamic_eq_params(|id| inst.param(id)), f, 48000.0, &extra)
+}
+
+#[test]
+fn eq_curve_follows_the_assistant_and_undo() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
+    let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "channel_eq"}))["plugin_id"].as_u64().unwrap();
+    let before = plugin_values(&mut s, fx);
+    assert!(ceq_curve(&s, fx, 300.0).abs() <= 0.01);
+    let params = [("mid1_freq".to_string(), 300.0f32), ("mid1_gain".to_string(), -6.0), ("mid1_q".to_string(), 2.0)].into_iter().collect();
+    s.execute(Command::SetPluginParams { plugin_id: fx, params }, Source::Ai).unwrap();
+    assert!(s.last_undo_is_ai());
+    // the window reads the project the session publishes every frame: this is the curve it draws at once
+    let at = ceq_curve(&s, fx, 300.0);
+    assert!((at + 6.0).abs() <= 0.1, "{at}");
+    let far = ceq_curve(&s, fx, 5000.0);
+    assert!(far.abs() <= 0.3, "{far}");
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(plugin_values(&mut s, fx), before);
+    assert!(ceq_curve(&s, fx, 300.0).abs() <= 0.01);
+}
+
+#[test]
+fn eq_point_drag_is_one_undo_step() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
+    let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "channel_eq"}))["plugin_id"].as_u64().unwrap();
+    // the merge keys have the format of the EQ graph's drag_key ("pw{plugin}:eq{band}#{gesture}") and wheel_key
+    // ("pw{plugin}:eq{band}:q"); Mid 1 is band 2
+    let drag = |s: &mut Session, freq: f32, gain: f32, key: &str| {
+        let params = [("mid1_freq".to_string(), freq), ("mid1_gain".to_string(), gain)].into_iter().collect();
+        s.execute_coalesced(Command::SetPluginParams { plugin_id: fx, params }, key).unwrap();
+    };
+    let first = format!("pw{fx}:eq2#1");
+    let second = format!("pw{fx}:eq2#2");
+    for (f, g) in [(500.0, 2.0), (700.0, 4.0), (900.0, 6.0)] {
+        drag(&mut s, f, g, &first);
+    }
+    for (f, g) in [(1200.0, -3.0), (1500.0, -6.0)] {
+        drag(&mut s, f, g, &second);
+    }
+    let mid1 = |s: &mut Session| (plugin_value(s, fx, "mid1_freq"), plugin_value(s, fx, "mid1_gain"));
+    assert_eq!(mid1(&mut s), (1500.0, -6.0));
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(mid1(&mut s), (900.0, 6.0), "the second drag is its own step");
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(mid1(&mut s), (400.0, 0.0), "the first drag is one step");
+    let wheel = format!("pw{fx}:eq2:q");
+    for q in [1.2, 1.4, 1.7] {
+        let params = [("mid1_q".to_string(), q)].into_iter().collect();
+        s.execute_coalesced(Command::SetPluginParams { plugin_id: fx, params }, &wheel).unwrap();
+    }
+    assert!((plugin_value(&mut s, fx, "mid1_q") - 1.7).abs() < 1e-6);
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(plugin_value(&mut s, fx, "mid1_q"), 1.0, "close wheel turns are one step");
+}
+
+#[test]
+fn get_plugin_explains_every_eq_band() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
+    let ceq = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "channel_eq"}))["plugin_id"].as_u64().unwrap();
+    let deq = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "dynamic_eq"}))["plugin_id"].as_u64().unwrap();
+    for (fx, kind) in [(ceq, "channel_eq"), (deq, "dynamic_eq")] {
+        let info = ok(&mut s, "get_plugin", json!({"plugin_id": fx}));
+        let params = info["params"].as_array().unwrap();
+        assert!(!params.is_empty());
+        for p in params {
+            let id = p["id"].as_str().unwrap();
+            let name = p["name"].as_str().unwrap();
+            let unit = p["unit"].as_str().unwrap_or_default();
+            assert!(!name.is_empty(), "{kind}: {id} has no name");
+            assert!(p["min"].as_f64().unwrap() < p["max"].as_f64().unwrap(), "{kind}: {id} has no range");
+            if id.ends_with("_freq") {
+                assert_eq!(unit, "Hz", "{kind}: {id}");
+            }
+            if id.ends_with("_gain") || id.ends_with("_threshold") || id.ends_with("_range") || id == "output" {
+                assert_eq!(unit, "dB", "{kind}: {id}");
+            }
+            let band_param = id.len() > 2 && id.starts_with('b') && id.as_bytes()[1].is_ascii_digit();
+            if kind == "dynamic_eq" && band_param {
+                assert!(name.starts_with("Band"), "{id}: {name}");
+            }
+        }
+    }
+    let info = ok(&mut s, "get_plugin", json!({"plugin_id": ceq}));
+    assert!(info["description"].as_str().unwrap().contains("Mid 1"));
+    ok(&mut s, "set_plugin_param", json!({"plugin_id": deq, "param": "b2_freq", "value": 500}));
+    ok(&mut s, "set_plugin_param", json!({"plugin_id": deq, "param": "b2_gain", "value": 6}));
+    let at = deq_curve(&s, deq, 500.0, [0.0; 4]);
+    assert!((at - 6.0).abs() <= 0.1, "{at}");
+    ok(&mut s, "set_plugin_param", json!({"plugin_id": deq, "param": "b2_range", "value": -6}));
+    let reach = deq_curve(&s, deq, 500.0, [0.0, -6.0, 0.0, 0.0]);
+    assert!(reach.abs() <= 0.1, "{reach}");
+    let still = deq_curve(&s, deq, 500.0, [0.0; 4]);
+    assert!((still - 6.0).abs() <= 0.1, "{still}");
+}
