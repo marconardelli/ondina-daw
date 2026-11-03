@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use eframe::egui::{self, Color32, CursorIcon, PointerButton, Pos2, Rect, Sense, Stroke, Vec2};
 use ondina_core::model::{Id, PluginInstance, TimeSignature};
-use ondina_core::note_value::{beats_to_ms, bpm_text, delay_times, ms_text, snap_note_value, time_label, FREE_RIGHT_RATIO};
+use ondina_core::note_value::{beats_to_ms, bpm_text, delay_times, ms_text, ms_to_beats, snap_note_value, time_label, FREE_RIGHT_RATIO};
 use ondina_core::plugins;
 use ondina_core::tempo::TempoMap;
 use ondina_dsp::echoes::{stereo_echoes, stereo_repeats_to_floor, tape_brightness, tape_echoes, tape_repeats_to_floor, tape_sustain_db, Side, Tap};
@@ -582,6 +582,12 @@ pub fn delay_graph(ui: &mut egui::Ui, inst: &PluginInstance, tempo: DelayTempo, 
             let text = if feedback { feedback_readout(inst) } else { handle_readout(inst, h, tempo) };
             paint_graph_readout(&painter, text, pos, rect, POINT_R);
         }
+    }
+    if let Some(p) = bg.hover_pos().filter(|p| hot.is_none() && plot.x_range().contains(p.x)) {
+        // the time under the pointer, in the units the grid shows
+        let ms = x_to_ms(p.x, window, plot);
+        let text = if is_free { ms_text(ms as f64) } else { time_label(ms_to_beats(ms as f64, tempo.bpm) as f32, tempo.bpm) };
+        painter.text(egui::pos2(plot.right() - theme::SP_2, plot.top()), egui::Align2::RIGHT_TOP, text, theme::number_font(), theme::TEXT_3);
     }
     painter.text(rect.left_top() + egui::vec2(theme::SP_4, theme::SP_2 + HEADER_H / 2.0), egui::Align2::LEFT_CENTER, "ECHOES", theme::label_font(), theme::TEXT_3);
     let label_right = sync_rect.map_or(rect.right() - theme::SP_4, |r| r.left() - theme::SP_3);
