@@ -1370,6 +1370,24 @@ mod tests {
         graph_h
     }
 
+    #[test]
+    fn the_window_and_the_drawing_tests_draw_the_same_families() {
+        // draw_view repeats the drawing dispatch of plugin_window_body: a family drawn by only one of the two would
+        // leave the drawing tests blind to it
+        let src = include_str!("plugin_window.rs");
+        let body = &src[src.find(concat!("fn plugin_window_", "body(")).unwrap()..];
+        let body = &body[..body.find(concat!("let instrument = ", "plugins::find")).unwrap()];
+        let helper = &src[src.find(concat!("fn draw_", "view(ui")).unwrap()..];
+        let helper = &helper[..helper.find(concat!("let graph_h = ", "ui.cursor()")).unwrap()];
+        let families = ["Eq", "Synth", "Dynamics", "Delay"];
+        for family in families {
+            assert!(body.contains(&format!("if let PluginView::{family}(_) = view {{")), "{family}: not drawn by plugin_window_body");
+            assert!(helper.contains(&format!("PluginView::{family}(_) => {{")), "{family}: not drawn by draw_view");
+        }
+        assert_eq!(body.matches(concat!("if let ", "PluginView::")).count(), families.len(), "plugin_window_body draws a family missing from the list");
+        assert_eq!(helper.matches("(_) => {").count(), families.len(), "draw_view draws a family missing from the list");
+    }
+
     /// What draw_bar_and_view measured.
     struct BarAndView {
         bar: egui::Rect,
