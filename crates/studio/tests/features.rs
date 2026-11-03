@@ -4270,3 +4270,136 @@ fn delay_times_follow_tempo_changes_at_the_playhead() {
     assert_eq!(v["timing"]["tempo_changes"], json!(true));
     assert!(v["timing"]["summary"].as_str().unwrap().contains("The tempo changes along the song"), "{}", v["timing"]);
 }
+
+/// The values the Drum Synth window shows under pad `note`, read from the project the session publishes.
+fn pad_values(s: &Session, fx: u64, note: u8) -> Vec<f32> {
+    let inst = s.project.find_plugin(fx).unwrap();
+    ondina_core::drum_kit::pad(note).unwrap().params.iter().map(|id| inst.param(id)).collect()
+}
+
+#[test]
+fn drum_pads_follow_the_assistant_and_undo() {
+    use ondina_studio::prompts::{plugin_bar_context_window, WindowContext};
+    let mut s = Session::new(false);
+    let (_, fx) = synth_track(&mut s, "Drums", "drum_synth");
+    let window = WindowContext { pad: Some(38), ..Default::default() };
+    let before = plugin_values(&mut s, fx);
+    let shown = pad_values(&s, fx, 38);
+    let ctx = plugin_bar_context_window(&s.project, fx, None, window).unwrap();
+    assert!(ctx.contains("Snare (note 38") && ctx.contains("snare_tune \"Snare Tune\" = 190"), "{ctx}");
+    s.begin_undo_group("assistant: Shape the selected sound");
+    run(&mut s, "set_plugin_params", json!({"plugin_id": fx, "params": {"snare_tune": 240, "snare_decay": 0.35}}), Source::Ai);
+    s.end_undo_group();
+    // the window reads the project the session publishes every frame: these are the knobs of the pad at once
+    let after = pad_values(&s, fx, 38);
+    for (got, want) in after.iter().zip([240.0, 0.6, 0.35]) {
+        assert!((got - want).abs() <= 1e-4, "{after:?}");
+    }
+    let ctx = plugin_bar_context_window(&s.project, fx, None, window).unwrap();
+    assert!(ctx.contains("snare_tune \"Snare Tune\" = 240"), "{ctx}");
+    assert_eq!(s.can_undo(), Some("assistant: Shape the selected sound"));
+    assert!(s.last_undo_is_ai());
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(plugin_values(&mut s, fx), before, "one undo restores every parameter");
+    assert_eq!(pad_values(&s, fx, 38), shown, "the pad's knobs show the old values at once");
+}
+
+#[test]
+fn assistant_changes_to_the_sampler_are_one_undo_step() {
+    let mut s = Session::new(false);
+    let (_, fx) = synth_track(&mut s, "Keys", "sampler");
+    let before = plugin_values(&mut s, fx);
+    s.begin_undo_group("assistant: Tune the sample to the song's key");
+    run(&mut s, "set_plugin_params", json!({"plugin_id": fx, "params": {"root_note": 57, "tune": -0.3, "loop": 1, "release": 0.5}}), Source::Ai);
+    s.end_undo_group();
+    assert_eq!(plugin_value(&mut s, fx, "root_note"), 57.0);
+    assert!((plugin_value(&mut s, fx, "tune") + 0.3).abs() <= 1e-4);
+    assert_eq!(plugin_value(&mut s, fx, "loop"), 1.0);
+    assert!(s.last_undo_is_ai());
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(plugin_values(&mut s, fx), before, "one undo restores every parameter");
+}
+
+#[test]
+fn sampler_root_drag_is_one_undo_step() {
+    let mut s = Session::new(false);
+    let (_, fx) = synth_track(&mut s, "Keys", "sampler");
+    // the merge keys have the format of the root strip's root_drag_key ("pw{plugin}:root#{gesture}")
+    let drag = |s: &mut Session, root: f32, key: &str| {
+        let params = [("root_note".to_string(), root)].into_iter().collect();
+        s.execute_coalesced(Command::SetPluginParams { plugin_id: fx, params }, key).unwrap();
+    };
+    let first = format!("pw{fx}:root#1");
+    for r in [61.0, 62.0, 63.0] {
+        drag(&mut s, r, &first);
+    }
+    drag(&mut s, 50.0, &format!("pw{fx}:root#2"));
+    assert_eq!(plugin_value(&mut s, fx, "root_note"), 50.0);
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(plugin_value(&mut s, fx, "root_note"), 63.0, "the second drag is its own step");
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(plugin_value(&mut s, fx, "root_note"), 60.0, "the first drag is one step");
+}
+
+#[test]
+fn sampler_window_context_names_the_sample_and_its_pitch() {
+    use ondina_studio::prompts::{plugin_bar_context_window, WindowContext};
+    let mut s = Session::new(false);
+    let (_, fx) = synth_track(&mut s, "Keys", "sampler");
+    let sr = 44100u32;
+    let a3: Vec<f32> = (0..sr as usize).map(|i| (std::f32::consts::TAU * 220.0 * i as f32 / sr as f32).sin() * 0.5).collect();
+    let path = tmp("sampler-a3.wav");
+    write_wav(&path, &[a3], sr);
+    let file_id = ok(&mut s, "set_sampler_sample", json!({"plugin_id": fx, "path": path.display().to_string()}))["file_id"].as_u64().unwrap();
+    let pitch = ondina_dsp::audio_ops::sample_pitch(&s.pool[&file_id]);
+    assert!(pitch.is_some_and(|hz| (hz - 220.0).abs() < 1.0), "{pitch:?}");
+    let ctx = plugin_bar_context_window(&s.project, fx, None, WindowContext { sample_pitch_hz: pitch, ..Default::default() }).unwrap();
+    let name = s.project.audio_file(file_id).unwrap().name.clone();
+    for want in [name.as_str(), "1.00 s", "44100 Hz", "mono", "A3", "Root Note 60 (C4)"] {
+        assert!(ctx.contains(want), "missing {want:?} in {ctx}");
+    }
+}
+
+#[test]
+fn drum_and_sampler_read_and_set_their_parameters_over_mcp() {
+    let mut s = Session::new(false);
+    let drums = synth_track(&mut s, "Drums", "drum_synth").1;
+    let keys = synth_track(&mut s, "Keys", "sampler").1;
+    for (fx, kind, param, value) in [(drums, "drum_synth", "hat_tone", 0.9), (keys, "sampler", "root_note", 48.0)] {
+        let info = ok(&mut s, "get_plugin", json!({"plugin_id": fx}));
+        assert!(info["description"].as_str().is_some_and(|d| !d.is_empty()), "{kind}: {info}");
+        let params = info["params"].as_array().unwrap();
+        assert_eq!(params.len(), ondina_core::plugins::find(kind).unwrap().params.len(), "{kind}");
+        for p in params {
+            let (min, max, default) = (p["min"].as_f64().unwrap(), p["max"].as_f64().unwrap(), p["default"].as_f64().unwrap());
+            assert!(p["name"].as_str().is_some_and(|n| !n.is_empty()), "{kind}: {p}");
+            assert!(p["unit"].is_string(), "{kind}: {p}");
+            assert!(min < max && (min..=max).contains(&default), "{kind}: {p}");
+        }
+        // instruments have no meters in the engine
+        assert!(info.get("meters").is_none(), "{kind}: {info}");
+        let old = plugin_value(&mut s, fx, param);
+        ok(&mut s, "set_plugin_param", json!({"plugin_id": fx, "param": param, "value": value}));
+        assert!((plugin_value(&mut s, fx, param) - value).abs() <= 1e-4, "{kind}: {param}");
+        s.execute(Command::Undo {}, Source::Gui).unwrap();
+        assert_eq!(plugin_value(&mut s, fx, param), old, "{kind}: {param}");
+    }
+}
+
+#[test]
+fn drum_and_sampler_quick_actions_are_covered_by_the_local_tools() {
+    use ondina_studio::local_ai::LOCAL_TOOLS;
+    use ondina_studio::prompts::plugin_quick_actions;
+    let all: Vec<String> = tool_specs().into_iter().map(|t| t.name).collect();
+    for kind in ["drum_synth", "sampler"] {
+        for (label, text) in plugin_quick_actions(kind).iter().filter(|a| !a.1.is_empty()) {
+            for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                if all.iter().any(|t| t == word) {
+                    assert!(LOCAL_TOOLS.contains(&word), "{word}, named by {kind} {label:?}, is not offered to the local model");
+                }
+            }
+            assert!(text.contains("set_plugin_params"), "{kind} {label:?} changes the parameters with set_plugin_params");
+            assert!(text.contains("explain in a few lines which parameters you changed and why"), "{kind} {label:?} must ask for an explanation");
+        }
+    }
+}
