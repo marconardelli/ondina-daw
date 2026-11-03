@@ -168,6 +168,15 @@ extension: Ondina opens both.
   plug-in reports) and a filter by name (right-click → **Generic controls** opens it anyway). Space, Ctrl+Z and
   Ctrl+Shift+Z work in the window too; Settings → Display → *Open plug-ins in separate windows* off keeps them
   inside the main window.
+- **Synth windows**: the Analog Synth window draws the shapes of both oscillators (click or wheel to change them,
+  the square shows its pulse width), the filter curve (drag its point: left and right for the cutoff, up and down
+  for the resonance; the wheel for the resonance) and the amp and filter envelopes with points to drag (Shift for
+  fine steps, double-click for the default, value and unit while you drag); the FM Synth window draws the amp and
+  the modulation index envelopes. Every drag is one undo step. Every built-in instrument window ends with a
+  two-octave keyboard: a note plays as long as you hold its key, the velocity follows where you click, the octave
+  moves with the buttons or the arrow keys. The AI bar offers *Give me a bass for this song* and *A warm pad that
+  opens slowly* (Analog Synth) or *A short pluck* (FM Synth), and the answer names the envelope stages and the
+  filter it changed.
 - **Unsaved changes**: when the project has unsaved changes (the • in the title bar), closing the window, New,
   Open or a recent project first asks *Save*, *Don't Save* or *Cancel*. Esc cancels, Enter saves. A recording in
   progress is stopped and kept before the question.
