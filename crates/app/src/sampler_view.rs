@@ -138,11 +138,8 @@ pub fn sampler_graph(ui: &mut egui::Ui, inst: &PluginInstance, file: Option<&Aud
     let mut load = false;
     let wave_color = if inst.bypass { theme::TEXT_DISABLED } else { theme::ACCENT };
 
-    // the waveform: background first, hover only, so the button registered after it takes the clicks
+    // the waveform: background first, hover only, so the button registered and painted after it takes the clicks
     let (wave, _) = ui.allocate_exact_size(vec2(w, WAVE_H), Sense::hover());
-    if file.is_none() {
-        load = ui.put(load_button_rect(wave), egui::Button::new("Load sample\u{2026}")).on_hover_text("Pick an audio file for this Sampler").clicked();
-    }
     if ui.is_rect_visible(wave) {
         let painter = ui.painter_at(wave);
         painter.rect(wave, theme::R_MD, theme::INSET, Stroke::new(1.0_f32, theme::BORDER));
@@ -184,6 +181,9 @@ pub fn sampler_graph(ui: &mut egui::Ui, inst: &PluginInstance, file: Option<&Aud
                 painter.text(wave.center() + vec2(0.0, -8.0), Align2::CENTER_CENTER, "Load an audio file to play it from the keyboard", theme::label_font(), theme::TEXT_3);
             }
         }
+    }
+    if file.is_none() {
+        load = ui.put(load_button_rect(wave), egui::Button::new("Load sample\u{2026}")).on_hover_text("Pick an audio file for this Sampler").clicked();
     }
 
     ui.add_space(theme::SP_3);
@@ -471,6 +471,24 @@ mod tests {
         let run = run_frames(&inst, None, None, &mut 0, &[vec![], vec![Event::PointerMoved(b)], vec![press(b, PointerButton::Primary, true)], vec![press(b, PointerButton::Primary, false)]]);
         assert!(run.load);
         assert!(run.edits.is_empty(), "{:?}", run.edits);
+    }
+
+    #[test]
+    fn without_a_sample_the_load_button_is_painted_over_the_waveform_background() {
+        let inst = instance("sampler");
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(700.0, 600.0))), ..Default::default() };
+        let mut wave = Rect::NOTHING;
+        let out = ctx.run(raw, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                wave = sampler_graph(ui, &inst, None, None, &mut 0).layout.wave;
+            });
+        });
+        let shapes: Vec<&Shape> = out.shapes.iter().map(|c| &c.shape).collect();
+        let background = shapes.iter().position(|s| matches!(s, Shape::Rect(r) if r.rect == wave && r.fill == theme::INSET)).expect("waveform background");
+        let label = shapes.iter().position(|s| matches!(s, Shape::Text(t) if t.galley.text() == "Load sample\u{2026}")).expect("load button label");
+        assert!(label > background, "the background ({background}) covers the button ({label})");
     }
 
     #[test]
