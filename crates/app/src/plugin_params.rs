@@ -116,7 +116,9 @@ pub fn param_control(pi: &ParamInfo) -> Control {
     }
 }
 
-/// The control of every parameter of `info`, in order: a selector for choices, a knob for the rest.
+/// The control of every parameter of `info`, in order: a selector for choices, a knob for the rest (the tests read
+/// the whole list; the windows draw a parameter at a time with param_control).
+#[cfg(test)]
 pub fn param_controls(info: &PluginInfo) -> Vec<Control> {
     info.params.iter().map(param_control).collect()
 }

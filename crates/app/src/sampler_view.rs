@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use eframe::egui::{self, pos2, vec2, Align2, CursorIcon, Pos2, Rect, Sense, Shape, Stroke, Vec2};
+use eframe::egui::{self, pos2, vec2, Align2, CursorIcon, Rect, Sense, Shape, Stroke, Vec2};
 use ondina_core::command::Command;
 use ondina_core::model::{AudioFileRef, Id, PluginInstance};
 use ondina_core::plugins;
@@ -92,7 +92,7 @@ pub fn loop_label(inst: &PluginInstance) -> &'static str {
 
 /// "vox.wav · 2.35 s · 44.1 kHz · stereo" (mono, stereo, or "N ch").
 pub fn sample_caption(file: &AudioFileRef) -> String {
-    let rate = if file.sample_rate % 1000 == 0 { format!("{} kHz", file.sample_rate / 1000) } else { format!("{:.1} kHz", file.sample_rate as f32 / 1000.0) };
+    let rate = if file.sample_rate.is_multiple_of(1000) { format!("{} kHz", file.sample_rate / 1000) } else { format!("{:.1} kHz", file.sample_rate as f32 / 1000.0) };
     let channels = match file.channels {
         1 => "mono".to_string(),
         2 => "stereo".to_string(),
@@ -120,6 +120,11 @@ pub struct SamplerOut {
     pub layout: SamplerLayout,
 }
 
+/// Where the Load sample button sits in the empty waveform `wave`: under the two lines that say how to load one.
+fn load_button_rect(wave: Rect) -> Rect {
+    Rect::from_center_size(wave.center() + vec2(0.0, 26.0), vec2(124.0, 24.0))
+}
+
 fn root_edit(root: f32) -> BTreeMap<String, f32> {
     BTreeMap::from([("root_note".to_string(), root)])
 }
@@ -135,10 +140,8 @@ pub fn sampler_graph(ui: &mut egui::Ui, inst: &PluginInstance, file: Option<&Aud
 
     // the waveform: background first, hover only, so the button registered after it takes the clicks
     let (wave, _) = ui.allocate_exact_size(vec2(w, WAVE_H), Sense::hover());
-    let mut load_rect = Rect::NOTHING;
     if file.is_none() {
-        load_rect = Rect::from_center_size(wave.center() + vec2(0.0, 26.0), vec2(124.0, 24.0));
-        load = ui.put(load_rect, egui::Button::new("Load sample\u{2026}")).on_hover_text("Pick an audio file for this Sampler").clicked();
+        load = ui.put(load_button_rect(wave), egui::Button::new("Load sample\u{2026}")).on_hover_text("Pick an audio file for this Sampler").clicked();
     }
     if ui.is_rect_visible(wave) {
         let painter = ui.painter_at(wave);
@@ -197,7 +200,7 @@ pub fn sampler_graph(ui: &mut egui::Ui, inst: &PluginInstance, file: Option<&Aud
         edits,
         load,
         #[cfg(test)]
-        layout: SamplerLayout { wave, strip, env: Rect::from_min_size(pos2(wave.left(), env_top), vec2(w, ROW_ENV_H)), load: load_rect },
+        layout: SamplerLayout { wave, strip, env: Rect::from_min_size(pos2(wave.left(), env_top), vec2(w, ROW_ENV_H)), load: if file.is_none() { load_button_rect(wave) } else { Rect::NOTHING } },
     }
 }
 
@@ -288,7 +291,7 @@ impl OndinaApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eframe::egui::{Event, Modifiers, MouseWheelUnit, PointerButton};
+    use eframe::egui::{Event, Modifiers, MouseWheelUnit, PointerButton, Pos2};
 
     fn instance(kind: &str) -> PluginInstance {
         PluginInstance { id: 3, kind: kind.into(), params: Default::default(), bypass: false, preset: None, sample: None, vst3_path: None, vst3_params: vec![], vst3_state: None }
