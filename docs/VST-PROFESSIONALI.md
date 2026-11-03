@@ -10,6 +10,51 @@ Legenda colonna "Formati": V3 = VST3, AU = Audio Unit (solo macOS), AAX = Pro To
 
 ---
 
+## PRIORITÀ: ogni plug-in si apre nella sua finestra grafica
+
+È il requisito più importante del documento. Oggi i plug-in si regolano dentro l'inspector, di lato, con una lista
+di barre orizzontali con il nome del parametro: è scomodo e brutto. In ogni DAW professionale, quando clicchi su
+uno strumento o un effetto della traccia si apre la **finestra del plug-in**, con la sua grafica, e lo regoli lì.
+Ondina deve fare lo stesso.
+
+**Finché la finestra grafica non esiste ed è usata dai plug-in che ci sono già, è il lavoro con la precedenza su
+tutte le altre voci**: ogni ciclo dedica almeno un ramo a costruirla o a portarci i plug-in esistenti, e una
+proposta che aggiunge un nuovo plug-in con la vecchia lista di barre non è finita.
+
+1. **Si apre con un clic.** Clic (o doppio clic) sullo slot del plug-in nel mixer, nel channel strip o
+   nell'inspector apre la finestra del plug-in. Un secondo clic la porta in primo piano. Si possono tenere aperte
+   più finestre insieme; si chiudono con la X o con Esc.
+2. **Una finestra vera.** È una finestra separata (multi-viewport di egui), che si sposta anche su un secondo
+   monitor, si ridimensiona e ricorda posizione e dimensione per plug-in. Il titolo dice plug-in e traccia.
+3. **Intestazione comune a tutti i plug-in:** nome, traccia, bypass, menu dei preset (carica, salva), confronto
+   A/B, la barra AI del plug-in (vedi i requisiti sotto), e il pulsante per tornare ai valori di default.
+4. **Controlli grafici, non liste.** Manopole e controlli disegnati (trascini su e giù, Shift per la regolazione
+   fine, doppio clic per il default, valore e unità mentre trascini e al passaggio del mouse, clic destro per
+   scrivere il valore). Niente più colonne di slider orizzontali con il nome a fianco.
+5. **La grafica fa capire cosa succede.** Ogni tipo di plug-in mostra il suo suono:
+   - EQ: analizzatore di spettro in tempo reale e curva con i punti delle bande da trascinare (frequenza e
+     guadagno col drag, Q con la rotella);
+   - compressore, limiter, de-esser, gate: curva di trasferimento, misuratore di riduzione del guadagno,
+     misuratori di ingresso e uscita;
+   - riverbero e delay: rappresentazione del decadimento e dei tempi, sincronizzati al tempo del progetto;
+   - saturazione, nastro, amplificatore: curva di trasferimento o pannello in stile hardware (grafica originale di
+     Ondina);
+   - stereo imager: vettorscopio e correlazione;
+   - sintetizzatori: forma d'onda o wavetable dell'oscillatore, inviluppi ADSR da trascinare, curva del filtro,
+     tastiera cliccabile per provare il suono;
+   - campionatori e batteria: forma d'onda del campione, pad cliccabili.
+6. **Stile di Ondina.** Grafica originale, coerente con il tema dell'app (colori e tipografia di `theme.rs`),
+   leggibile sul tema scuro. Nessuna copia di interfacce di prodotti esistenti.
+7. **Stesse regole del prodotto.** Ogni modifica passa da un comando con undo (un trascinamento è un solo passo di
+   undo). I misuratori leggono dal motore senza lock che blocchino l'audio. La finestra non rallenta la GUI.
+8. **L'inspector diventa un riassunto.** Nell'inspector resta solo una riga compatta per plug-in (nome, bypass,
+   pulsante per aprire la finestra), non più l'elenco dei parametri.
+9. **VST3 di terzi.** Lo stesso clic apre la loro finestra nativa, se ce l'hanno; se non ce l'hanno, una finestra
+   generica di Ondina con manopole al posto delle barre.
+10. **Tutti i plug-in esistenti passano alla finestra**, non solo i nuovi. La prima fetta costruisce la finestra,
+    l'intestazione comune e le manopole e ci porta i plug-in interni con la vista generica; le fette successive
+    aggiungono le grafiche specifiche (EQ, dinamica, synth...) una famiglia per volta.
+
 ## Requisiti per ogni plug-in (valgono per tutte le voci)
 
 Ogni strumento o effetto costruito in Ondina a partire da questo documento ha l'AI integrata. Non è una voce a sé:
