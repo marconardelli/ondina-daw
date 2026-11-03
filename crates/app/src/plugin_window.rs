@@ -1270,4 +1270,72 @@ mod tests {
             assert!(eq(info.kind) || synth(info.kind) || generic(info.kind), "{}", info.kind);
         }
     }
+
+    /// What a plug-in window draws under its header for `inst`, in a headless 900x700 context, two frames without
+    /// input, with the functions plugin_window_body uses: every edit asked for, every note sent and the height of the
+    /// drawing above the knobs.
+    fn draw_window_view(inst: &PluginInstance, gesture: &mut u64) -> (usize, Vec<MidiKind>, f32) {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let (mut edits, mut notes, mut graph_h) = (0, Vec::new(), 0.0);
+        for k in 0..2 {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(900.0, 700.0))),
+                time: Some(k as f64 / 60.0),
+                ..Default::default()
+            };
+            let _ = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let view = plugin_view(&inst.kind);
+                    let top = ui.cursor().top();
+                    match view {
+                        PluginView::Eq(_) => {
+                            let h = crate::eq_view::graph_height(ui.available_height());
+                            edits += crate::eq_view::eq_graph(ui, inst, crate::eq_view::curve_sample_rate(48000), h, gesture).edits.len();
+                        }
+                        PluginView::Synth(_) => {
+                            edits += crate::synth_view::synth_graph(ui, inst, crate::synth_view::curve_sample_rate(48000), gesture).edits.len();
+                        }
+                        _ => {}
+                    }
+                    graph_h = ui.cursor().top() - top;
+                    if let PluginView::Generic(info) | PluginView::Eq(info) | PluginView::Synth(info) = view {
+                        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| edits += builtin_controls(ui, inst.id, info, inst, gesture).len());
+                        if info.category == PluginCategory::Instrument {
+                            notes.extend(crate::widgets::keyboard(ui, &mut crate::widgets::KeyboardState::default(), false, true));
+                        }
+                    }
+                });
+            });
+        }
+        (edits, notes, graph_h)
+    }
+
+    #[test]
+    fn every_builtin_plugin_window_draws_its_view_without_edits() {
+        for info in plugins::registry() {
+            let inst = instance(info.kind, None);
+            let mut g = 0;
+            let (edits, notes, graph_h) = draw_window_view(&inst, &mut g);
+            assert_eq!(edits, 0, "{}", info.kind);
+            assert!(notes.is_empty(), "{}: {notes:?}", info.kind);
+            assert_eq!(g, 0, "{}", info.kind);
+            match plugin_view(info.kind) {
+                PluginView::Eq(_) | PluginView::Synth(_) => assert!(graph_h > 100.0, "{}: drawing {graph_h}", info.kind),
+                _ => assert_eq!(graph_h, 0.0, "{}", info.kind),
+            }
+        }
+    }
+
+    #[test]
+    fn every_view_sits_under_the_header_with_the_ai_bar() {
+        let src = include_str!("plugin_window.rs");
+        let body = &src[src.find(concat!("fn plugin_window_", "body(")).unwrap()..];
+        let header = body.find(concat!("self.plugin_", "header(ui, p, &inst)")).unwrap();
+        let companion = body.find(concat!("WindowMode::", "Companion)")).unwrap();
+        let view = body.find(concat!("plugin_", "view(&inst.kind)")).unwrap();
+        assert!(header < companion && companion < view, "the header with the AI bar comes first, for every window");
+        let in_header = &src[src.find(concat!("fn plugin_", "header(")).unwrap()..];
+        assert!(in_header.contains(concat!("self.plugin_ai_", "bar(ui, p, pid)")));
+    }
 }
