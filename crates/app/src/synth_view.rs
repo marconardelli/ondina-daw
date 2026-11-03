@@ -492,14 +492,11 @@ impl OndinaApp {
 }
 
 /// One frame of an instrument keyboard: always drawn and registered, so the first click after the window gets its
-/// focus back already lands on the keys; a window without focus releases the held key.
+/// focus back already lands on the keys; a window without focus releases the held key and plays nothing, even if the
+/// button it lost the focus with never comes back up.
 fn instrument_keys_frame(ui: &mut egui::Ui, keys: &mut KeyboardState, own_keys: bool) -> Vec<MidiKind> {
     let focused = ui.ctx().input(|i| i.viewport().focused) != Some(false);
-    let mut events = crate::widgets::keyboard(ui, keys, own_keys);
-    if !focused {
-        events.extend(keys.release_all());
-    }
-    events
+    crate::widgets::keyboard(ui, keys, own_keys, focused)
 }
 
 #[cfg(test)]
@@ -838,5 +835,25 @@ mod tests {
         let (_, _, events) = keys_frames(&mut keys, &frames);
         assert!(matches!(events.first(), Some(MidiKind::NoteOn { pitch: 48, .. })), "{events:?}");
         assert_eq!(events.last(), Some(&MidiKind::NoteOff { pitch: 48 }));
+    }
+
+    #[test]
+    fn losing_focus_with_the_button_held_sends_one_note_off_and_no_new_note_on() {
+        use crate::widgets::keyboard_keys_rect;
+        let (start, _, _) = keys_frames(&mut KeyboardState { octave: 3, held: None }, &[(true, vec![])]);
+        let key = keyboard_keys_rect(start, 800.0 - 2.0 * start.x).left_bottom() + vec2(10.0, -5.0);
+        let mut keys = KeyboardState { octave: 3, held: None };
+        // the button goes down with focus, then the window loses it while the button is still held and the pointer
+        // keeps moving over the key: no release arrives
+        let frames = [
+            (true, vec![Event::PointerMoved(key)]),
+            (true, vec![press(key, PointerButton::Primary, true)]),
+            (false, vec![Event::PointerMoved(key + vec2(1.0, 0.0))]),
+            (false, vec![Event::PointerMoved(key)]),
+            (false, vec![Event::PointerMoved(key + vec2(0.0, -1.0))]),
+        ];
+        let (_, _, events) = keys_frames(&mut keys, &frames);
+        assert!(matches!(events.as_slice(), [MidiKind::NoteOn { pitch: 48, .. }, MidiKind::NoteOff { pitch: 48 }]), "{events:?}");
+        assert_eq!(keys.held, None);
     }
 }

@@ -2099,8 +2099,9 @@ impl KeyboardState {
 
 /// The keyboard across the available width: a row with the octave buttons and the held note, then the keys.
 /// `own_keys`: the window has its own keyboard focus (a separate window), so the Left and Right arrows move the
-/// octave while the pointer is over the keys.
-pub fn keyboard(ui: &mut Ui, state: &mut KeyboardState, own_keys: bool) -> Vec<MidiKind> {
+/// octave while the pointer is over the keys. `active`: the window has the focus; without it the keys play nothing and
+/// a held key is released.
+pub fn keyboard(ui: &mut Ui, state: &mut KeyboardState, own_keys: bool, active: bool) -> Vec<MidiKind> {
     let width = ui.available_width();
     let (block, _) = ui.allocate_exact_size(vec2(width, KEYBOARD_ROW_H + theme::SP_2 + KEYBOARD_H), Sense::hover());
     let mut out = Vec::new();
@@ -2128,7 +2129,7 @@ pub fn keyboard(ui: &mut Ui, state: &mut KeyboardState, own_keys: bool) -> Vec<M
     let base = keyboard_base(state.octave);
     let down = resp.is_pointer_button_down_on();
     let under = ui.input(|i| i.pointer.interact_pos()).and_then(|p| key_at(p, keys_rect, base));
-    out.extend(state.update(under, down));
+    out.extend(state.update(under, down && active));
 
     if !ui.is_rect_visible(block) {
         return out;
@@ -2996,14 +2997,14 @@ mod tests {
         use ondina_dsp::MidiKind::{NoteOff, NoteOn};
         let mut state = KeyboardState::default();
         let (start, width) = rig_frames(&[vec![]], |ui| {
-            keyboard(ui, &mut KeyboardState::default(), false);
+            keyboard(ui, &mut KeyboardState::default(), false, true);
         });
         let keys = keyboard_keys_rect(start, width);
         let white = pos2(keys.left() + keys.width() / 30.0, keys.bottom() - 5.0);
         let outside = pos2(white.x, keys.bottom() + 80.0);
         let frames = [vec![], vec![Event::PointerMoved(white)], vec![rig_press(white, PointerButton::Primary, true)], vec![Event::PointerMoved(outside)], vec![rig_press(outside, PointerButton::Primary, false)], vec![]];
         let mut events = Vec::new();
-        rig_frames(&frames, |ui| events.extend(keyboard(ui, &mut state, false)));
+        rig_frames(&frames, |ui| events.extend(keyboard(ui, &mut state, false, true)));
         assert_eq!(events.len(), 2, "{events:?}");
         assert!(matches!(events[0], NoteOn { pitch: 48, velocity } if velocity > 100), "{events:?}");
         assert_eq!(events[1], NoteOff { pitch: 48 });
