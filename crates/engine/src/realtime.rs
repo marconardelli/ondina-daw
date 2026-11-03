@@ -16,11 +16,14 @@ use cpal::{FromSample, SizedSample};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use parking_lot::Mutex;
 
+use crate::plugin_meters::{MeterCells, PluginMeter, PluginMeters};
 use crate::pool::AudioPool;
 use crate::renderer::{LiveAction, LiveLogEntry, RecordedEvent, Renderer};
 
 pub enum EngineMsg {
-    Project(Arc<Project>),
+    /// A project snapshot with the meter cells of its inserts: the map travels with the snapshot, built on the
+    /// control thread.
+    Project(Arc<Project>, Arc<MeterCells>),
     Pool(Arc<AudioPool>),
     Play { count_in_beats: f64, generation: u64 },
     Stop { generation: u64 },
@@ -117,11 +120,17 @@ pub struct Shared {
     pub input_device_name: Mutex<String>,
     pub live_state: Mutex<LiveState>,
     pub live_log: Mutex<Vec<LiveLogEntry>>,
+    /// Live meters of every insert, written by the audio thread without locks.
+    pub plugin_meters: Arc<PluginMeters>,
     device_notice: Mutex<Option<String>>,
     device_notices: AtomicU64,
 }
 
 impl Shared {
+    /// The live meters of insert `plugin_id`, read without locks; None when it has none (yet).
+    pub fn plugin_meter(&self, plugin_id: Id) -> Option<PluginMeter> {
+        self.plugin_meters.read(plugin_id)
+    }
     /// The last thing that happened to the output device on its own (it stopped working and was replaced), if any.
     pub fn device_notice(&self) -> Option<String> {
         self.device_notice.lock().clone()
@@ -212,7 +221,8 @@ impl Engine {
         let (tx, rx) = unbounded();
         let shared = Arc::new(Shared::default());
         shared.sample_rate.store(48000, Ordering::Relaxed);
-        let mut e = Engine { tx, rx, shared, song: Arc::new(Mutex::new(Song { project: project.clone(), pool: pool.clone() })), project, pool, device: None, input: None, output_name: None, input_name: None, audio_enabled };
+        let cells = shared.plugin_meters.assign_project(&project);
+        let mut e = Engine { tx, rx, shared, song: Arc::new(Mutex::new(Song { project: project.clone(), pool: pool.clone(), meter_cells: cells })), project, pool, device: None, input: None, output_name: None, input_name: None, audio_enabled };
         e.start_device();
         e
     }
@@ -237,7 +247,7 @@ impl Engine {
             .spawn(move || {
                 let open = |name: Option<&str>, ctx: &DeviceCtx, lost: Sender<String>| -> Result<Box<dyn std::any::Any>, String> {
                     let song = ctx.song.lock().clone();
-                    let stream = open_output(name, &ctx.rx, &ctx.shared, &song.project, &song.pool, ctx.shared.beat(), lost)?;
+                    let stream = open_output(name, &ctx.rx, &ctx.shared, &song, ctx.shared.beat(), lost)?;
                     Ok(Box::new(stream))
                 };
                 run_device(open, name, use_audio, ctx);
@@ -256,8 +266,19 @@ impl Engine {
 
     pub fn set_project(&mut self, p: Arc<Project>) {
         self.project = p.clone();
-        self.song.lock().project = p.clone();
-        self.send(EngineMsg::Project(p));
+        // the cells are assigned and mapped here, on the control thread; the audio thread only reads the map
+        let cells = self.shared.plugin_meters.assign_project(&p);
+        {
+            let mut song = self.song.lock();
+            song.project = p.clone();
+            song.meter_cells = cells.clone();
+        }
+        self.send(EngineMsg::Project(p, cells));
+    }
+
+    /// The live meters of insert `plugin_id` (input and output peaks, gain reduction), read without locks.
+    pub fn plugin_meter(&self, plugin_id: Id) -> Option<PluginMeter> {
+        self.shared.plugin_meter(plugin_id)
     }
 
     /// The project snapshot most recently handed to the audio thread.
@@ -435,7 +456,7 @@ impl Drop for Engine {
 /// it has stored the values of a block rendered with them.
 fn handle_msg(r: &mut Renderer, m: EngineMsg, applied: &mut Applied) {
     match m {
-        EngineMsg::Project(p) => r.set_project(p),
+        EngineMsg::Project(p, cells) => r.set_project_with_meters(p, cells),
         EngineMsg::Pool(p) => r.set_pool(p),
         EngineMsg::Play { count_in_beats, generation } => {
             r.count_in_beats = count_in_beats;
@@ -509,6 +530,8 @@ fn publish(r: &mut Renderer, shared: &Shared, applied: &Applied) {
 struct Song {
     project: Arc<Project>,
     pool: Arc<AudioPool>,
+    /// Meter cells of the project's inserts, so a renderer started on a new device gets the map of this project.
+    meter_cells: Arc<MeterCells>,
 }
 
 /// What the output device thread works with.
@@ -585,10 +608,10 @@ where
         }
     }
     let song = ctx.song.lock().clone();
-    null_device(&ctx.rx, &ctx.shared, song.project, song.pool, ctx.shared.beat(), &ctx.stop);
+    null_device(&ctx.rx, &ctx.shared, song, ctx.shared.beat(), &ctx.stop);
 }
 
-fn open_output(name: Option<&str>, rx: &Receiver<EngineMsg>, shared: &Arc<Shared>, project: &Arc<Project>, pool: &Arc<AudioPool>, beat: f64, lost: Sender<String>) -> Result<cpal::Stream, String> {
+fn open_output(name: Option<&str>, rx: &Receiver<EngineMsg>, shared: &Arc<Shared>, song: &Song, beat: f64, lost: Sender<String>) -> Result<cpal::Stream, String> {
     let host = cpal::default_host();
     let device = match name {
         Some(n) => host.output_devices().map_err(|e| e.to_string())?.find(|d| d.name().map(|x| x.contains(n)).unwrap_or(false)).ok_or_else(|| format!("output device '{n}' not found"))?,
@@ -598,8 +621,9 @@ fn open_output(name: Option<&str>, rx: &Receiver<EngineMsg>, shared: &Arc<Shared
     let sr = config.sample_rate().0;
     shared.sample_rate.store(sr, Ordering::Relaxed);
     *shared.device_name.lock() = device.name().unwrap_or_default();
-    let mut renderer = Renderer::new(sr as f32, project.clone(), pool.clone());
+    let mut renderer = Renderer::new(sr as f32, song.project.clone(), song.pool.clone());
     renderer.beat = beat;
+    renderer.set_plugin_meters(Some(shared.plugin_meters.clone()), song.meter_cells.clone());
     let stream_config: cpal::StreamConfig = config.clone().into();
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => build_stream::<f32>(&device, &stream_config, renderer, rx.clone(), shared.clone(), lost),
@@ -664,13 +688,14 @@ where
         .map_err(|e| e.to_string())
 }
 
-fn null_device(rx: &Receiver<EngineMsg>, shared: &Arc<Shared>, project: Arc<Project>, pool: Arc<AudioPool>, beat: f64, stop: &Receiver<()>) {
+fn null_device(rx: &Receiver<EngineMsg>, shared: &Arc<Shared>, song: Song, beat: f64, stop: &Receiver<()>) {
     let _ftz = FlushToZero::enable();
     let sr = 48000u32;
     shared.sample_rate.store(sr, Ordering::Relaxed);
     *shared.device_name.lock() = "Null device (no audio output)".into();
-    let mut r = Renderer::new(sr as f32, project, pool);
+    let mut r = Renderer::new(sr as f32, song.project, song.pool);
     r.beat = beat;
+    r.set_plugin_meters(Some(shared.plugin_meters.clone()), song.meter_cells);
     let mut applied = Applied::from_shared(shared);
     let frames = 480;
     let mut l = vec![0.0; frames];
@@ -807,7 +832,7 @@ mod tests {
             let (streams_tx, streams) = unbounded();
             let shared = Arc::new(Shared::default());
             let asked = Arc::new(Mutex::new(Vec::new()));
-            let song = Arc::new(Mutex::new(Song { project: Arc::new(Project::new("t")), pool: Arc::new(AudioPool::new()) }));
+            let song = Arc::new(Mutex::new(Song { project: Arc::new(Project::new("t")), pool: Arc::new(AudioPool::new()), meter_cells: Arc::default() }));
             let projects = Arc::new(Mutex::new(Vec::new()));
             let ctx = DeviceCtx { rx, tx: tx.clone(), shared: shared.clone(), song: song.clone(), stop: stop_rx };
             let log = asked.clone();
@@ -939,6 +964,50 @@ mod tests {
         let p = e.position();
         assert!((16.0..17.0).contains(&p), "{p}");
         e.stop();
+    }
+
+    #[test]
+    fn the_null_device_publishes_plug_in_meters() {
+        use ondina_core::command::Command;
+        use ondina_core::model::TrackKind;
+        use ondina_core::ops::{self, Outcome};
+        let mut p = Project::new("t");
+        let done = |o| match o {
+            Ok(Outcome::Done(v)) => v,
+            _ => panic!("command failed"),
+        };
+        let t = done(ops::apply(&mut p, &Command::AddTrack { kind: TrackKind::Audio, name: None, patch: None, instrument: None, preset: None, index: None }))["track_id"].as_u64().unwrap();
+        let bare = p.clone();
+        let comp = done(ops::apply(&mut p, &Command::AddEffect { track_id: t, kind: "compressor".into(), preset: None, index: None }))["plugin_id"].as_u64().unwrap();
+        let mut e = Engine::new(Arc::new(p), Arc::new(AudioPool::new()), false);
+        let t0 = Instant::now();
+        while e.plugin_meter(comp).is_none() && t0.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(e.plugin_meter(comp).is_some(), "no meter for the compressor within 2 s");
+        e.set_project(Arc::new(bare));
+        assert_eq!(e.plugin_meter(comp), None, "a removed insert keeps its meter");
+    }
+
+    #[test]
+    fn the_null_device_meters_an_insert_added_later() {
+        use ondina_core::command::Command;
+        use ondina_core::model::TrackKind;
+        use ondina_core::ops::{self, Outcome};
+        let mut p = Project::new("t");
+        let done = |o| match o {
+            Ok(Outcome::Done(v)) => v,
+            _ => panic!("command failed"),
+        };
+        let t = done(ops::apply(&mut p, &Command::AddTrack { kind: TrackKind::Audio, name: None, patch: None, instrument: None, preset: None, index: None }))["track_id"].as_u64().unwrap();
+        let mut e = Engine::new(Arc::new(p.clone()), Arc::new(AudioPool::new()), false);
+        let comp = done(ops::apply(&mut p, &Command::AddEffect { track_id: t, kind: "compressor".into(), preset: None, index: None }))["plugin_id"].as_u64().unwrap();
+        e.set_project(Arc::new(p));
+        let t0 = Instant::now();
+        while e.plugin_meter(comp).is_none() && t0.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(e.plugin_meter(comp).is_some(), "no meter for the compressor added later within 2 s");
     }
 }
 

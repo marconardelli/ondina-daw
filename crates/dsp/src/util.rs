@@ -298,6 +298,9 @@ impl Svf {
     }
 }
 
+/// Floor of `Biquad::magnitude_db`: a filter's deep stop band reads as this instead of minus infinity.
+pub const MIN_RESPONSE_DB: f32 = -120.0;
+
 /// RBJ biquad.
 #[derive(Clone, Copy, Default)]
 pub struct Biquad {
@@ -366,6 +369,28 @@ impl Biquad {
     pub fn reset(&mut self) {
         self.z1 = 0.0;
         self.z2 = 0.0;
+    }
+
+    /// Gain in dB of the filter at `freq` Hz for sample rate `sr`: the magnitude of its transfer function on the unit
+    /// circle, never below `MIN_RESPONSE_DB`. For drawing a response; not meant for the audio thread.
+    pub fn magnitude_db(&self, freq: f32, sr: f32) -> f32 {
+        if sr <= 0.0 || !sr.is_finite() {
+            return 0.0;
+        }
+        let sr = sr as f64;
+        let f = (freq as f64).clamp(0.0, sr / 2.0);
+        let w = 2.0 * std::f64::consts::PI * f / sr;
+        let (b0, b1, b2, a1, a2) = (self.b0 as f64, self.b1 as f64, self.b2 as f64, self.a1 as f64, self.a2 as f64);
+        let (s1, c1) = w.sin_cos();
+        let (s2, c2) = (2.0 * w).sin_cos();
+        let nr = b0 + b1 * c1 + b2 * c2;
+        let ni = -(b1 * s1 + b2 * s2);
+        let dr = 1.0 + a1 * c1 + a2 * c2;
+        let di = -(a1 * s1 + a2 * s2);
+        let num = nr * nr + ni * ni;
+        let den = (dr * dr + di * di).max(1e-300);
+        let db = 10.0 * (num / den).max(1e-30).log10();
+        (db as f32).max(MIN_RESPONSE_DB)
     }
 }
 
@@ -450,9 +475,140 @@ impl DcBlock {
     }
 }
 
+/// True-peak meter in the manner of ITU-R BS.1770: 4x oversampling with a 48-tap windowed-sinc interpolator, 12 taps
+/// per phase. Fixed state and no allocation after `new`, so the limiter can run it on the audio thread.
+#[derive(Clone, Copy, Debug)]
+pub struct TruePeak {
+    /// Phases 1, 2 and 3 (a quarter, half and three quarters of a sample); phase 0 is the sample itself.
+    coef: [[f32; TruePeak::TAPS]; 3],
+    /// The last TAPS input samples, newest first.
+    hist: [f32; TruePeak::TAPS],
+    /// No interpolated point can exceed this times the largest sample in `hist` (largest sum of |coef| of a phase,
+    /// with a hair of room for f32 rounding).
+    bound: f32,
+}
+
+impl TruePeak {
+    const TAPS: usize = 12;
+    /// How many samples ago the segment that `push` measures starts: the detector runs this late.
+    pub const DELAY: usize = 6;
+
+    pub fn new() -> Self {
+        let half = Self::DELAY as f64;
+        let mut coef = [[0.0f32; Self::TAPS]; 3];
+        let mut bound = 1.0f32;
+        for (p, row) in coef.iter_mut().enumerate() {
+            let frac = (p + 1) as f64 / 4.0;
+            let mut c = [0.0f64; Self::TAPS];
+            for (k, ck) in c.iter_mut().enumerate() {
+                // distance in samples between hist[k] and the point interpolated DELAY - frac samples ago
+                let d = k as f64 - half + frac;
+                let x = std::f64::consts::PI * d;
+                let sinc = if d.abs() < 1e-12 { 1.0 } else { x.sin() / x };
+                let window = if d.abs() < half { 0.5 * (1.0 + (x / half).cos()) } else { 0.0 };
+                *ck = sinc * window;
+            }
+            let sum: f64 = c.iter().sum();
+            for (dst, src) in row.iter_mut().zip(c) {
+                *dst = (src / sum) as f32;
+            }
+            bound = bound.max(row.iter().map(|x| x.abs()).sum::<f32>() * 1.001);
+        }
+        TruePeak { coef, hist: [0.0; Self::TAPS], bound }
+    }
+
+    /// Feeds one sample. Returns the largest absolute value of the segment that starts DELAY samples ago: that sample
+    /// and the three points interpolated after it.
+    #[inline]
+    pub fn push(&mut self, x: f32) -> f32 {
+        self.hist.copy_within(0..Self::TAPS - 1, 1);
+        self.hist[0] = x;
+        self.segment_peak()
+    }
+
+    /// `push` for a running maximum: when no point of the segment can go above `floor` it skips the interpolation and
+    /// returns the sample alone. The running maximum comes out the same as with `push`.
+    #[inline]
+    pub fn push_above(&mut self, x: f32, floor: f32) -> f32 {
+        self.hist.copy_within(0..Self::TAPS - 1, 1);
+        self.hist[0] = x;
+        let largest = self.hist.iter().fold(0.0f32, |m, h| m.max(h.abs()));
+        if largest * self.bound <= floor {
+            self.hist[Self::DELAY].abs()
+        } else {
+            self.segment_peak()
+        }
+    }
+
+    fn segment_peak(&self) -> f32 {
+        let mut m = self.hist[Self::DELAY].abs();
+        for row in &self.coef {
+            let y: f32 = row.iter().zip(&self.hist).map(|(c, h)| c * h).sum();
+            m = m.max(y.abs());
+        }
+        m
+    }
+
+    pub fn reset(&mut self) {
+        self.hist = [0.0; Self::TAPS];
+    }
+}
+
+impl Default for TruePeak {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// True peak of a buffer (linear): the largest of its samples and of the points TruePeak interpolates between them.
+/// The last DELAY samples count with their own value, as the analyzer counts them.
+pub fn true_peak(samples: &[f32]) -> f32 {
+    let mut tp = TruePeak::new();
+    let mut m = 0.0f32;
+    for &x in samples {
+        m = m.max(tp.push_above(x, m)).max(x.abs());
+    }
+    m
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn biquad_magnitude_matches_known_points() {
+        let sr = 48000.0;
+        let peak = Biquad::new(BiquadKind::Peak, 1000.0, 1.0, 6.0, sr);
+        assert!((peak.magnitude_db(1000.0, sr) - 6.0).abs() <= 0.05, "{}", peak.magnitude_db(1000.0, sr));
+        assert!(peak.magnitude_db(20.0, sr).abs() <= 0.1);
+        assert!(peak.magnitude_db(20000.0, sr).abs() <= 0.1);
+        let lp = Biquad::new(BiquadKind::LowPass, 1000.0, 0.707, 0.0, sr);
+        assert!((lp.magnitude_db(1000.0, sr) + 3.01).abs() <= 0.05, "{}", lp.magnitude_db(1000.0, sr));
+        assert!(lp.magnitude_db(100.0, sr).abs() <= 0.05);
+        assert!(lp.magnitude_db(10000.0, sr) < -35.0);
+        let hs = Biquad::new(BiquadKind::HighShelf, 2000.0, 0.707, 6.0, sr);
+        assert!((hs.magnitude_db(18000.0, sr) - 6.0).abs() <= 0.2, "{}", hs.magnitude_db(18000.0, sr));
+        assert!(hs.magnitude_db(50.0, sr).abs() <= 0.1);
+        let hp = Biquad::new(BiquadKind::HighPass, 1000.0, 0.707, 0.0, sr);
+        let low = hp.magnitude_db(5.0, sr);
+        assert!((MIN_RESPONSE_DB..-60.0).contains(&low), "{low}");
+    }
+
+    #[test]
+    fn biquad_magnitude_is_finite_everywhere() {
+        let kinds = [BiquadKind::LowPass, BiquadKind::HighPass, BiquadKind::BandPass, BiquadKind::Peak, BiquadKind::LowShelf, BiquadKind::HighShelf];
+        for kind in kinds {
+            for sr in [44100.0, 48000.0, 96000.0] {
+                let b = Biquad::new(kind, 1000.0, 0.707, 6.0, sr);
+                for f in [0.0, 1.0, 20.0, 1000.0, 23999.0, 24000.0, 30000.0, -5.0] {
+                    let db = b.magnitude_db(f, sr);
+                    assert!(db.is_finite() && db >= MIN_RESPONSE_DB, "{f} Hz at {sr}: {db}");
+                }
+            }
+        }
+        let b = Biquad::new(BiquadKind::Peak, 1000.0, 1.0, 6.0, 48000.0);
+        assert_eq!(b.magnitude_db(1000.0, 0.0), 0.0);
+    }
 
     #[test]
     fn adsr_cycle() {
@@ -483,5 +639,63 @@ mod tests {
             }
         }
         assert!(peak < 0.05);
+    }
+
+    #[test]
+    fn true_peak_finds_the_peak_between_samples() {
+        use std::f32::consts::PI;
+        // fs/4 shifted by 45 degrees: every sample sits at 0.707 of the real peak
+        let x: Vec<f32> = (0..4000).map(|n| (PI * n as f32 / 2.0 + PI / 4.0).sin()).collect();
+        let mut tp = TruePeak::new();
+        let mut m = 0.0f32;
+        for (n, &s) in x.iter().enumerate() {
+            let p = tp.push(s);
+            if n >= 100 {
+                m = m.max(p);
+            }
+        }
+        assert!(m >= db_to_gain(-0.2) && m <= db_to_gain(0.1), "push read {m}");
+        let whole = true_peak(&x);
+        assert!(whole >= db_to_gain(-0.2), "true_peak read {whole}");
+    }
+
+    #[test]
+    fn true_peak_does_not_overread_a_low_sine() {
+        use std::f32::consts::PI;
+        let x: Vec<f32> = (0..44100).map(|n| 0.5 * (2.0 * PI * 997.0 * n as f32 / 44100.0).sin()).collect();
+        let sample_peak = x.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        let tp = true_peak(&x);
+        assert!(tp <= 0.5 * db_to_gain(0.1), "true peak {tp}");
+        assert!(tp >= sample_peak, "true peak {tp} under the sample peak {sample_peak}");
+    }
+
+    #[test]
+    fn true_peak_phase_zero_is_the_sample() {
+        let mut tp = TruePeak::new();
+        let mut last = tp.push(0.5);
+        for _ in 0..TruePeak::DELAY {
+            last = tp.push(0.0);
+        }
+        assert_eq!(last, 0.5);
+        assert_eq!(true_peak(&[0.0, -0.8, 0.0]), 0.8);
+    }
+
+    #[test]
+    fn push_above_keeps_the_running_maximum_of_push() {
+        let mut noise = Noise::new(5);
+        let n = 20000;
+        let x: Vec<f32> = (0..n)
+            .map(|i| {
+                let ramp = if i < n / 2 { i as f32 / (n / 2) as f32 } else { 1.0 - 0.9 * (i - n / 2) as f32 / (n / 2) as f32 };
+                noise.next() * ramp
+            })
+            .collect();
+        let (mut full, mut skip) = (TruePeak::new(), TruePeak::new());
+        let (mut a, mut b) = (0.0f32, 0.0f32);
+        for &s in &x {
+            a = a.max(full.push(s));
+            b = b.max(skip.push_above(s, b));
+        }
+        assert_eq!(a, b);
     }
 }

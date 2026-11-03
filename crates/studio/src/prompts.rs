@@ -96,6 +96,24 @@ pub fn quick_action_request(action: (&str, &str), plugin_id: Id, name: &str) -> 
     }
 }
 
+/// Ready-made requests for a plug-in of `kind` on the master channel (`on_master`) or on a track or bus. Most
+/// plug-ins ask the same in both places; the limiter masters the song on the master and tames one part on a track.
+pub fn plugin_quick_actions_at(kind: &str, on_master: bool) -> &'static [(&'static str, &'static str)] {
+    match kind {
+        "limiter" if !on_master => LIMITER_TRACK_ACTIONS,
+        _ => plugin_quick_actions(kind),
+    }
+}
+
+/// The ready-made requests the AI bar of plug-in `plugin_id` offers, following where it sits.
+pub fn plugin_bar_actions(project: &Project, plugin_id: Id) -> &'static [(&'static str, &'static str)] {
+    let Some(inst) = project.find_plugin(plugin_id) else {
+        return GENERIC_ACTIONS;
+    };
+    let on_master = matches!(project.plugin_slot(plugin_id), Some((None, _)));
+    plugin_quick_actions_at(&inst.kind, on_master)
+}
+
 const SYNTH_ACTIONS: &[(&str, &str)] = &[
     (DESIGN_A_SOUND, ""),
     ("A bass for this song", "Turn this synth into a bass sound that fits this song: solid low end, controlled resonance, short release."),
@@ -122,8 +140,12 @@ const COMPRESSOR_ACTIONS: &[(&str, &str)] = &[
     ("Gentle glue", "Gentle glue compression: low ratio, soft knee, about 2-3 dB of gain reduction on the loudest parts."),
 ];
 const LIMITER_ACTIONS: &[(&str, &str)] = &[
-    ("Bring the master to -14 LUFS", "Bring the master to -14 LUFS integrated with the true peak at or under -1 dB: measure it with analyze_mix, set this limiter's gain and ceiling with set_plugin_params, then measure again and report the numbers."),
-    ("Just catch the peaks", "Set this limiter to catch only the highest peaks: ceiling at -1 dB and the least input gain, so the sound does not change."),
+    ("Bring the master to -14 LUFS", "Bring the master to -14 LUFS integrated with the true peak at or under -1 dBTP: measure it with analyze_mix, set this limiter's gain and ceiling with set_plugin_params and turn true_peak On, then measure again and report the numbers."),
+    ("Just catch the peaks", "Set this limiter to catch only the highest peaks of the master: ceiling at -1 dB, true_peak On and the least input gain, so the sound does not change."),
+];
+const LIMITER_TRACK_ACTIONS: &[(&str, &str)] = &[
+    ("Catch this track's peaks", "Set this limiter to catch only the highest peaks of this track: measure the track with analyze_mix, then set a ceiling just under its loudest hits and little input gain, so its sound does not change."),
+    ("Even out the loudest hits", "Even out the loudest hits of this track with this limiter: raise the input gain by a few dB, keep the ceiling where the track sits now and set a release that brings the loud notes down without pumping. Measure the track with analyze_mix before and after."),
 ];
 const DE_ESSER_ACTIONS: &[(&str, &str)] = &[
     ("Tame the sibilance", "Tame the harsh S and T sounds of this track: find the frequency of the sibilance and set the threshold so only the S sounds are turned down."),
@@ -261,14 +283,48 @@ pub fn plugin_context(project: &Project, plugin_id: Id) -> Option<String> {
 /// What every request from the AI bar of plug-in `plugin_id` (called `label`) asks besides the request itself.
 pub fn plugin_bar_rules(plugin_id: Id, label: &str) -> String {
     format!(
-        "This request comes from the AI bar of plug-in {plugin_id} ({label}) and is about that plug-in; its settings are listed below, so you do not need get_plugin to read them. If you change parameters, change them only with set_plugin_params (plugin_id {plugin_id}), all in one call when you can. When the request is about how the track or the mix sounds, measure it first with analyze_mix. Then answer in a few lines: which parameters you changed, from what value to what value, and why."
+        "This request comes from the AI bar of plug-in {plugin_id} ({label}) and is about that plug-in; its settings are listed below, so you do not need get_plugin to read them. If you change parameters, change them only with set_plugin_params (plugin_id {plugin_id}), all in one call when you can. When the request is about how the track or the mix sounds, measure it first with analyze_mix. While the song plays, get_plugin also returns meters: the live input and output peaks and, for a compressor, limiter, gate, de-esser or dynamic EQ, the gain reduction it applies; read them when you need to know how hard the plug-in is working (with the transport stopped they show silence). Then answer in a few lines: which parameters you changed, from what value to what value, and why."
     )
 }
 
 /// The context a request from the plug-in's AI bar adds: the rules above and plugin_context. None when the plug-in is gone.
 pub fn plugin_bar_context(project: &Project, plugin_id: Id) -> Option<String> {
-    let label = plugins::plugin_label(project.find_plugin(plugin_id)?);
-    Some(format!("{}\n{}", plugin_bar_rules(plugin_id, &label), plugin_context(project, plugin_id)?))
+    let inst = project.find_plugin(plugin_id)?;
+    let label = plugins::plugin_label(inst);
+    Some(format!("{}{}\n{}", plugin_bar_rules(plugin_id, &label), eq_bar_note(&inst.kind), plugin_context(project, plugin_id)?))
+}
+
+/// plugin_bar_context plus the insert's live meters when there are any (instruments and MIDI effects have none), so
+/// the assistant knows how hard the plug-in is working without asking.
+pub fn plugin_bar_context_live(project: &Project, plugin_id: Id, meter: Option<&ondina_engine::PluginMeter>) -> Option<String> {
+    let mut text = plugin_bar_context(project, plugin_id)?;
+    if let Some(m) = meter {
+        text.push('\n');
+        text.push_str(&meter_note(m));
+    }
+    Some(text)
+}
+
+/// The live meters of an insert as one sentence: peaks in dBFS rounded to 0.1 dB (-120 is silence) and, for plug-ins
+/// that reduce gain, the reduction.
+pub fn meter_note(m: &ondina_engine::PluginMeter) -> String {
+    let db = |x: f32| num((x * 10.0).round() / 10.0);
+    let peak = |g: f32| db(ondina_dsp::util::gain_to_db(g));
+    let mut text = format!(" Live meters now (peak dBFS; with the transport stopped they fall to silence): input {}, output {}", peak(m.input_peak), peak(m.output_peak));
+    if let Some(g) = m.gain_reduction_db {
+        let _ = write!(text, ", gain reduction {} dB", db(g));
+    }
+    text.push('.');
+    text
+}
+
+/// What an equalizer's AI bar adds to the rules: its window draws the bands as points, so the answer names them.
+pub fn eq_bar_note(kind: &str) -> &'static str {
+    match kind {
+        "channel_eq" => " This equalizer's window draws each band as a point on its response curve: in your answer name each band you changed (High Pass, Low Shelf, Mid 1, Mid 2, High Shelf, Low Pass) with its frequency, gain and Q before and after, and say why.",
+        "dynamic_eq" => " This dynamic equalizer's window draws each band as a point on its response curve, with the reach of its Range shaded: in your answer name each band you changed (Band 1 to Band 4) with its type, frequency, gain, Q, threshold and range before and after, and say why.",
+        _ => "",
+    }
 }
 
 #[cfg(test)]
@@ -293,15 +349,17 @@ mod tests {
     fn quick_actions_cover_every_builtin_plugin() {
         let kinds: Vec<&str> = plugins::registry().iter().map(|i| i.kind).chain(["vst3", "unknown_kind"]).collect();
         for kind in kinds {
-            let actions = plugin_quick_actions(kind);
-            assert!((2..=3).contains(&actions.len()), "{kind}: {} actions", actions.len());
-            for (i, (label, request)) in actions.iter().enumerate() {
-                assert!(!label.is_empty(), "{kind}");
-                assert!(actions[..i].iter().all(|a| a.0 != *label), "{kind}: '{label}' twice");
-                assert_eq!(request.is_empty(), *label == DESIGN_A_SOUND, "{kind}: '{label}'");
-            }
-            if plugins::find(kind).is_some_and(|i| i.category == PluginCategory::Instrument) {
-                assert!(actions.iter().any(|a| a.0 == DESIGN_A_SOUND), "{kind}");
+            // the same rules for the plain list and for the lists on the master and on a track
+            for (place, actions) in [("any", plugin_quick_actions(kind)), ("master", plugin_quick_actions_at(kind, true)), ("track", plugin_quick_actions_at(kind, false))] {
+                assert!((2..=3).contains(&actions.len()), "{kind} ({place}): {} actions", actions.len());
+                for (i, (label, request)) in actions.iter().enumerate() {
+                    assert!(!label.is_empty(), "{kind} ({place})");
+                    assert!(actions[..i].iter().all(|a| a.0 != *label), "{kind} ({place}): '{label}' twice");
+                    assert_eq!(request.is_empty(), *label == DESIGN_A_SOUND, "{kind} ({place}): '{label}'");
+                }
+                if plugins::find(kind).is_some_and(|i| i.category == PluginCategory::Instrument) {
+                    assert!(actions.iter().any(|a| a.0 == DESIGN_A_SOUND), "{kind} ({place})");
+                }
             }
         }
         assert!(plugin_quick_actions("channel_eq").iter().any(|a| a.0 == "Clean up the muddy frequencies"));
@@ -414,10 +472,122 @@ mod tests {
     }
 
     #[test]
+    fn eq_bar_context_asks_to_name_the_bands() {
+        let mut s = Session::new(false);
+        let t = id(&run(&mut s, "add_track", json!({"kind": "audio", "name": "Vocals"})), "track_id");
+        let ceq = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "channel_eq"})), "plugin_id");
+        let deq = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "dynamic_eq"})), "plugin_id");
+        let comp = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "compressor"})), "plugin_id");
+        for (pid, kind, label) in [(ceq, "channel_eq", "Channel EQ"), (deq, "dynamic_eq", "Dynamic EQ")] {
+            let text = plugin_bar_context(&s.project, pid).unwrap();
+            assert!(text.starts_with(&plugin_bar_rules(pid, label)), "{text}");
+            assert!(text.contains(eq_bar_note(kind)), "{text}");
+            assert!(text.contains(&plugin_context(&s.project, pid).unwrap()));
+        }
+        let c = plugin_bar_context(&s.project, ceq).unwrap();
+        for want in ["Mid 1", "frequency, gain and Q", "say why"] {
+            assert!(c.contains(want), "missing {want:?}");
+        }
+        let d = plugin_bar_context(&s.project, deq).unwrap();
+        for want in ["Band 1 to Band 4", "range"] {
+            assert!(d.contains(want), "missing {want:?}");
+        }
+        assert_eq!(eq_bar_note("compressor"), "");
+        let rules = plugin_bar_rules(comp, &plugins::plugin_label(s.project.find_plugin(comp).unwrap()));
+        assert_eq!(plugin_bar_context(&s.project, comp).unwrap(), format!("{rules}\n{}", plugin_context(&s.project, comp).unwrap()));
+        let tools: Vec<String> = ondina_core::command::tool_specs().into_iter().map(|t| t.name).collect();
+        for kind in ["channel_eq", "dynamic_eq"] {
+            for word in eq_bar_note(kind).split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                assert!(!tools.iter().any(|t| t == word), "{word} names a tool");
+            }
+        }
+    }
+
+    #[test]
+    fn plugin_bar_rules_mention_the_live_meters() {
+        let text = plugin_bar_rules(7, "Compressor");
+        for want in ["get_plugin also returns meters", "gain reduction", "transport stopped"] {
+            assert!(text.contains(want), "missing {want:?}: {text}");
+        }
+    }
+
+    #[test]
+    fn limiter_quick_actions_follow_the_slot() {
+        let mut s = Session::new(false);
+        let l = id(&run(&mut s, "add_effect", json!({"track_id": MASTER_ID, "kind": "limiter"})), "plugin_id");
+        let t = id(&run(&mut s, "add_track", json!({"kind": "audio", "name": "Drums"})), "track_id");
+        let t_lim = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "limiter"})), "plugin_id");
+        let comp = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "compressor"})), "plugin_id");
+        let b = id(&run(&mut s, "add_track", json!({"kind": "bus"})), "track_id");
+        let b_lim = id(&run(&mut s, "add_effect", json!({"track_id": b, "kind": "limiter"})), "plugin_id");
+
+        let labels = |pid: Id| -> Vec<&'static str> { plugin_bar_actions(&s.project, pid).iter().map(|a| a.0).collect() };
+        let master = labels(l);
+        assert!(master.contains(&"Bring the master to -14 LUFS") && master.contains(&"Just catch the peaks"), "{master:?}");
+        for pid in [t_lim, b_lim] {
+            let track = labels(pid);
+            assert!(track.contains(&"Catch this track's peaks") && track.contains(&"Even out the loudest hits"), "{track:?}");
+            assert!(!track.contains(&"Bring the master to -14 LUFS"), "{track:?}");
+        }
+        assert_eq!(plugin_bar_actions(&s.project, comp), plugin_quick_actions("compressor"));
+        assert_eq!(plugin_quick_actions_at("limiter", true), plugin_quick_actions("limiter"));
+        assert_eq!(plugin_bar_actions(&s.project, 9999), GENERIC_ACTIONS);
+    }
+
+    #[test]
+    fn limiter_context_lists_every_parameter_and_the_rules() {
+        let mut s = Session::new(false);
+        let l = id(&run(&mut s, "add_effect", json!({"track_id": MASTER_ID, "kind": "limiter"})), "plugin_id");
+        let text = plugin_bar_context(&s.project, l).unwrap();
+        for want in [
+            "on the master channel",
+            "- gain \"Input Gain\" = 0 [0..24 dB]",
+            "- ceiling \"Output Ceiling\" = -1 [-12..0 dB]",
+            "- release \"Release\" = 60 [1..1000 ms]",
+            "- true_peak \"True Peak\" = 0 (Off) [choices: 0 Off, 1 On]",
+            "About it: Look-ahead brickwall limiter",
+            "set_plugin_params",
+            "which parameters you changed",
+            "from what value to what value",
+            "and why",
+        ] {
+            assert!(text.contains(want), "missing {want:?} in:
+{text}");
+        }
+    }
+
+    #[test]
     fn numbers_read_short() {
         assert_eq!(num(80.0), "80");
         assert_eq!(num(0.005), "0.005");
         assert_eq!(num(-0.0001), "0");
         assert_eq!(num(1.23456), "1.235");
+    }
+
+    #[test]
+    fn bar_context_carries_the_live_meters() {
+        use ondina_engine::PluginMeter;
+        let mut s = Session::new(false);
+        let t = id(&run(&mut s, "add_track", json!({"kind": "audio", "name": "Drums"})), "track_id");
+        let comp = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "compressor"})), "plugin_id");
+        let m = PluginMeter { input_peak: 0.5, output_peak: 0.25, gain_reduction_db: Some(-3.04) };
+        let base = plugin_bar_context(&s.project, comp).unwrap();
+        let live = plugin_bar_context_live(&s.project, comp, Some(&m)).unwrap();
+        assert!(live.starts_with(&base), "{live}");
+        for want in ["Live meters now", "input -6", "output -12", "gain reduction -3 dB"] {
+            assert!(live.contains(want), "missing {want:?} in {live}");
+        }
+        assert_eq!(plugin_bar_context_live(&s.project, comp, None).as_ref(), Some(&base));
+        let eq = PluginMeter { input_peak: 0.5, output_peak: 0.5, gain_reduction_db: None };
+        let no_gr = plugin_bar_context_live(&s.project, comp, Some(&eq)).unwrap();
+        assert!(no_gr.starts_with(&base) && no_gr.contains("input -6, output -6."), "{no_gr}");
+        assert!(!meter_note(&eq).contains("gain reduction"));
+        let silent = PluginMeter { input_peak: 0.0, output_peak: 0.0, gain_reduction_db: Some(0.0) };
+        assert!(meter_note(&silent).contains("input -120, output -120, gain reduction 0 dB"), "{}", meter_note(&silent));
+        assert_eq!(plugin_bar_context_live(&s.project, 9999, Some(&m)), None);
+        let tools: Vec<String> = ondina_core::command::tool_specs().into_iter().map(|t| t.name).collect();
+        for word in meter_note(&m).split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            assert!(!tools.iter().any(|t| t == word), "{word} names a tool");
+        }
     }
 }

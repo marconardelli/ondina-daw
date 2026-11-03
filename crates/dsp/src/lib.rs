@@ -86,6 +86,11 @@ pub trait Effect: Send {
     /// Process in place.
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext);
     fn reset(&mut self);
+    /// Deepest gain reduction of the last processed block in dB (<= 0), for plug-ins that turn the level down
+    /// (compressor, limiter, gate, de-esser, dynamic EQ). None for every other effect. Real-time safe: a field read.
+    fn gain_reduction_db(&self) -> Option<f32> {
+        None
+    }
     /// Restore a complete plug-in state blob (third-party plug-ins).
     fn load_state(&mut self, _data: &[u8]) {}
 }
@@ -216,6 +221,29 @@ mod tests {
                     let mut ev = vec![MidiEvent { offset: 0, kind: MidiKind::NoteOn { pitch: 60, velocity: 100 } }];
                     m.process(&mut ev, 512, &ctx, ondina_core::theory::Key { root: 0, scale: ondina_core::theory::ScaleKind::Major });
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn only_dynamics_effects_report_gain_reduction() {
+        let sr = 48000.0;
+        let ctx = ProcessContext::idle(sr);
+        let dynamics = ["compressor", "limiter", "noise_gate", "de_esser", "dynamic_eq"];
+        for info in REGISTRY.iter().filter(|i| i.category == PluginCategory::Effect) {
+            let mut e = create_effect(info.kind, sr).unwrap_or_else(|| panic!("no effect {}", info.kind));
+            configure(info.kind, &Default::default(), |k, v| e.set_param(k, v));
+            let mut l: Vec<f32> = (0..512).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+            let mut r = l.clone();
+            for _ in 0..20 {
+                e.process(&mut l, &mut r, &ctx);
+            }
+            match e.gain_reduction_db() {
+                Some(g) => {
+                    assert!(dynamics.contains(&info.kind), "{} reports a gain reduction", info.kind);
+                    assert!(g.is_finite() && g <= 0.0, "{} reported {g} dB", info.kind);
+                }
+                None => assert!(!dynamics.contains(&info.kind), "{} reports no gain reduction", info.kind),
             }
         }
     }

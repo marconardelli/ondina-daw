@@ -563,7 +563,7 @@ impl Session {
                     }
                     let ceiling = true_peak_ceiling_db.unwrap_or(DEFAULT_TRUE_PEAK_CEILING_DB);
                     let before = master.as_ref().map_or(-120.0, |m| m.integrated_lufs);
-                    let peak = ondina_engine::offline::sample_peak(&res.left, &res.right);
+                    let peak = ondina_engine::offline::true_peak(&res.left, &res.right);
                     let g = ondina_engine::offline::loudness_gain(before, peak, target, ceiling);
                     match g {
                         Some(g) => ondina_engine::offline::apply_gain(&mut res.left, &mut res.right, g.gain),
@@ -653,6 +653,18 @@ impl Session {
                     let name = if id == MASTER_ID { "master".to_string() } else { self.project.track(id).map(|t| t.name.clone()).unwrap_or_default() };
                     out.insert(id.to_string(), json!({"name": name, "peak_db_l": db(p[0]), "peak_db_r": db(p[1])}));
                 }
+                // every insert that has a live meter: tracks in order, then the master
+                let mut plugins = serde_json::Map::new();
+                let inserts = self.project.tracks.iter().flat_map(|t| t.channel.inserts.iter().map(move |p| (t.id, p)));
+                for (track_id, p) in inserts.chain(self.project.master.inserts.iter().map(|p| (MASTER_ID, p))) {
+                    if let Some(m) = self.engine.plugin_meter(p.id) {
+                        let mut v = crate::session_ext::plugin_meter_json(&m);
+                        v["name"] = json!(ondina_core::plugins::plugin_label(p));
+                        v["track_id"] = json!(track_id);
+                        plugins.insert(p.id.to_string(), v);
+                    }
+                }
+                out.insert("plugins".into(), Value::Object(plugins));
                 Ok(Value::Object(out))
             }
             ListAudioDevices {} => Ok(serde_json::to_value(self.engine.list_devices()).unwrap()),
@@ -1013,7 +1025,7 @@ impl Session {
                 advice.push("The mix is silent: check mutes, regions and instruments.".into());
             } else {
                 if m.true_peak_dbtp > -0.5 {
-                    advice.push(format!("True peak {:.1} dBTP is too hot; add a limiter on the master with ceiling -1 dB or lower the master fader.", m.true_peak_dbtp));
+                    advice.push(format!("True peak {:.1} dBTP is too hot; add a limiter on the master with ceiling -1 dB and True Peak On, or lower the master fader.", m.true_peak_dbtp));
                 }
                 if m.integrated_lufs < -20.0 {
                     advice.push(format!("Integrated loudness {:.1} LUFS is quiet for streaming (-14 typical); consider auto_master.", m.integrated_lufs));
@@ -1072,6 +1084,7 @@ impl Session {
         let mut lim = ops::new_plugin(&mut self.project, "limiter", None)?;
         lim.params.insert("ceiling".into(), -1.0);
         lim.params.insert("gain".into(), 0.0);
+        lim.params.insert("true_peak".into(), 1.0);
         lim.preset = Some("Auto Limiter".into());
         let lim_id = lim.id;
         self.project.master.inserts.push(eq);
@@ -1079,10 +1092,12 @@ impl Session {
         self.project.master.inserts.push(lim);
         // two refinement passes on limiter gain
         let mut measured = 0.0;
+        let mut true_peak = 0.0;
         for _ in 0..3 {
             let a = self.analyze(None, None)?;
             let r: ondina_engine::AnalysisReport = serde_json::from_value(a["master"].clone()).map_err(|_| "analysis failed")?;
             measured = r.integrated_lufs;
+            true_peak = r.true_peak_dbtp;
             let delta = target - r.integrated_lufs;
             if delta.abs() < 0.5 {
                 break;
@@ -1092,7 +1107,7 @@ impl Session {
             p.params.insert("gain".into(), g);
         }
         let gain = self.project.find_plugin(lim_id).map(|p| p.param("gain")).unwrap_or(0.0);
-        Ok(json!({"target_lufs": target, "measured_lufs": measured, "limiter_gain_db": gain, "chain": ["channel_eq (Auto EQ)", "compressor (Auto Glue)", "limiter (Auto Limiter)"], "before": m}))
+        Ok(json!({"target_lufs": target, "measured_lufs": measured, "true_peak_dbtp": true_peak, "limiter_gain_db": gain, "chain": ["channel_eq (Auto EQ)", "compressor (Auto Glue)", "limiter (Auto Limiter)"], "before": m}))
     }
 
     fn connect_midi(&mut self, name: Option<String>) -> Result<Value, String> {

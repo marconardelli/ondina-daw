@@ -66,16 +66,16 @@ Every row is available both in the GUI and as MCP tools (full list in [`MCP_TOOL
 | Time and pitch | WSOLA time-stretch, pitch shift, varispeed, key-aware pitch correction, audio→MIDI (YIN) | `time_stretch_region` `pitch_shift_region` `varispeed_region` `pitch_correct_region` `audio_to_midi` |
 | Tempo and key detection | BPM estimation from audio; key of the MIDI parts (major/minor, with confidence and close alternatives), set as the project key from **Detect from MIDI** in the key menu | `detect_tempo` `detect_key` |
 | Stem splitter | neural network (Spleeter, ONNX Runtime) for vocals/accompaniment plus spectral drums/bass/other; DSP-only fallback | `split_stems` |
-| Mixer, sends, automation | channel strips with meters, routing, volume/pan/send/parameter automation | `set_volume` `add_send` `set_automation` |
+| Mixer, sends, automation | channel strips with meters, live input, output and gain-reduction meters of every insert, routing, volume/pan/send/parameter automation | `set_volume` `add_send` `set_automation` `get_meters` |
 | Clip Grid | cell × scene grid, quantized launching, record the performance to the timeline | `create_live_cell` `launch_cell` `launch_scene` `commit_live_performance` |
 | Score | notation view (staff, values, ties, lyrics), MusicXML export | `get_score` `set_lyrics` `export_music_xml` |
 | Surround and spatial audio | 5.1, 7.1, 7.1.4, 3D VBAP panner, automated trajectories, binaural monitoring and bounce | `set_surround_format` `set_surround_pan` `bounce_surround` `bounce_binaural` |
 | Object-based mixing | tracks as audio objects, ADM BWF export (ITU-R BS.2076 + BS.2088): 7.1.2 bed + objects | `set_surround_pan` `export_adm` |
 | Video | linked movie (local file) with offset, movie audio, SMPTE timecode, video window, export with soundtrack (.mp4, .mov, .mkv, .m4v) | `load_movie` `set_frame_rate` `extract_movie_frame` `export_movie` |
 | Built-in instruments | Analog Synth, FM Synth, Drum Synth, Sampler, Tonewheel Organ, Plucked String | `set_instrument` `set_plugin_params` |
-| Built-in effects | 19 audio effects (EQ and a four-band dynamic EQ, dynamics with a de-esser, delay, reverb, modulation, distortion, filters, utility with a three-band stereo imager) + 4 MIDI effects | `add_effect` `add_midi_effect` |
+| Built-in effects | 19 audio effects (EQ and a four-band dynamic EQ, dynamics with a true-peak limiter and a de-esser, delay, reverb, modulation, distortion, filters, utility with a three-band stereo imager) + 4 MIDI effects | `add_effect` `add_midi_effect` |
 | VST3 plug-ins | scan and host third-party VST3 instruments and effects (`.vst3` bundles on local drives only; MCP clients and the assistant load them, also from projects they open, only from the standard VST3 folders and the folders added in the library), native editor windows, parameters set with `set_plugin_param` (not automatable yet), state saved in the project; a click on the slot opens the plug-in's native editor window or Ondina's generic window | `scan_vst3` `add_vst3` `open_plugin_editor` `set_plugin_param` |
-| Mastering and loudness | integrated LUFS, true peak, LRA, spectrum, correlation, advice; automatic mastering | `analyze_mix` `auto_master` |
+| Mastering and loudness | integrated LUFS, true peak (4x oversampled), LRA, spectrum, correlation, advice; automatic mastering | `analyze_mix` `auto_master` |
 | Bounce and export | WAV 16/24/32-float with dither, peak or loudness normalization (-14/-16/-23 LUFS or any target from -30 to -6, with a true-peak ceiling), reverb and delay tails rendered until they fade (or an exact length with tail_sec), MIDI, bounce in place, multichannel surround | `bounce` `export_midi` `bounce_in_place` |
 
 ## Quick start
@@ -158,7 +158,10 @@ extension: Ondina opens both.
   itself when the plug-in is removed. The header shows the plug-in and its track, Bypass, the factory presets, **Default**
   (every parameter back to its default in one undo step) and the AI bar with its ready-made requests; below, every
   parameter is a knob (log scale for frequencies and long times, value with its unit, Shift for fine steps,
-  double-click for the default, right-click to type a value) or a selector. A loaded VST3 opens its own editor and,
+  double-click for the default, right-click to type a value) or a selector. Channel EQ and Dynamic EQ windows draw
+  the response curve with a point per band: drag for frequency and gain (Shift for fine steps), the wheel for Q,
+  double-click for the default, right-click to switch a band on or off; the Dynamic EQ shades how far each band can
+  move with its Range. A loaded VST3 opens its own editor and,
   beside it, a compact Ondina window with the same header and AI bar plus **Generic controls** (it closes with the
   editor; Settings → Display → *Show the AI bar beside a plug-in's own window* turns it off); one without an
   editor, or not loaded, opens Ondina's generic window with a knob per parameter (labelled with the unit the
@@ -250,8 +253,8 @@ actions, and can "listen" to the mix through `analyze_mix`. MCP clients read the
 `get_selection`. With `get_activity` they see what happened since they last looked: the edits made in the window, the
 assistant's and other clients' tool calls, and whether the project was replaced or Ondina restarted. Contextual AI
 buttons live in the piano roll, step sequencer and region menus, and every plug-in (built-in or VST3) ends with an AI
-bar: a request box plus two or three ready-made requests for that plug-in, sent with its track and all its parameter
-values as context. The local model edits just the selected notes by passing their indices:
+bar: a request box plus two or three ready-made requests for that plug-in, sent with its track, all its parameter
+values and, for an insert, its live meters as context. The local model edits just the selected notes by passing their indices:
 it can quantize, humanize, transpose them, snap them to the project key or add a harmony voice. The line under the
 panel title shows which engine answers and how many tools it gets.
 

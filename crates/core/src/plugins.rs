@@ -198,7 +198,7 @@ pub static REGISTRY: &[PluginInfo] = &[
         name: "Channel EQ",
         category: Effect,
         group: "EQ",
-        description: "Six-band parametric equalizer: high-pass, low shelf, two peaking bands, high shelf, low-pass.",
+        description: "Six-band parametric equalizer: high-pass, low shelf, two peaking bands, high shelf, low-pass. High Pass and Low Pass (12 dB per octave, turned on by their switches) cut below or above their frequency. Low Shelf and High Shelf raise or lower everything below or above their Freq by their Gain. Mid 1 and Mid 2 are bells at Freq that add Gain dB, as narrow as their Q (a higher Q is narrower). A shelf or mid band at 0 dB does nothing. Output Gain is applied last.",
         params: &[
             c("hp_on", "High Pass", 0.0, ONOFF),
             p("hp_freq", "HP Freq", 20.0, 1000.0, 80.0, "Hz"),
@@ -278,11 +278,12 @@ pub static REGISTRY: &[PluginInfo] = &[
         name: "Limiter",
         category: Effect,
         group: "Dynamics",
-        description: "Look-ahead brickwall peak limiter with input gain and output ceiling. Use last on the master for loudness.",
+        description: "Look-ahead brickwall limiter with input gain and output ceiling. True Peak On also measures the peaks between samples (4x oversampling) and keeps them under the ceiling, as streaming services measure them; Off limits the sample peaks only. Use it last on the master, with True Peak On, to reach a loudness target.",
         params: &[
             p("gain", "Input Gain", 0.0, 24.0, 0.0, "dB"),
             p("ceiling", "Output Ceiling", -12.0, 0.0, -1.0, "dB"),
             p("release", "Release", 1.0, 1000.0, 60.0, "ms"),
+            c("true_peak", "True Peak", 0.0, ONOFF),
         ],
     },
     PluginInfo {
@@ -644,7 +645,7 @@ pub static PRESETS: &[Preset] = &[
     Preset { name: "Fuzz Box", kind: "overdrive", params: &[("mode", 2.0), ("drive", 0.85), ("tone", 0.6), ("output", -9.0)] },
     Preset { name: "Lo-Fi", kind: "bitcrusher", params: &[("bits", 10.0), ("downsample", 3.0), ("mix", 0.6)] },
     Preset { name: "Filter Sweep", kind: "auto_filter", params: &[("cutoff", 800.0), ("resonance", 0.6), ("lfo_rate", 8.0), ("lfo_depth", 0.8)] },
-    Preset { name: "Master Limiter", kind: "limiter", params: &[("gain", 3.0), ("ceiling", -1.0), ("release", 80.0)] },
+    Preset { name: "Master Limiter", kind: "limiter", params: &[("gain", 3.0), ("ceiling", -1.0), ("release", 80.0), ("true_peak", 1.0)] },
 ];
 
 pub fn find_preset(kind: &str, name: &str) -> Option<&'static Preset> {
@@ -706,6 +707,15 @@ pub fn find_patch(name: &str) -> Option<&'static Patch> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn channel_eq_description_explains_its_bands() {
+        let d = find("channel_eq").unwrap().description;
+        assert!(d.starts_with("Six-band parametric equalizer"), "{d}");
+        for word in ["Mid 1", "Q", "High Pass", "0 dB does nothing", "Output Gain"] {
+            assert!(d.contains(word), "missing {word:?} in {d}");
+        }
+    }
 
     fn inst(kind: &str, preset: Option<&str>, path: Option<&str>) -> crate::model::PluginInstance {
         crate::model::PluginInstance {
@@ -863,5 +873,22 @@ mod tests {
         let d = default_params(&v);
         assert_eq!(d.into_iter().collect::<Vec<_>>(), [("p1".to_string(), 0.3), ("p2".to_string(), 1.0)]);
         assert!(default_params(&inst("from_the_future", None, None)).is_empty());
+    }
+
+    #[test]
+    fn limiter_has_a_true_peak_switch_off_by_default() {
+        let info = find("limiter").expect("limiter in the registry");
+        let ids: Vec<&str> = info.params.iter().map(|p| p.id).collect();
+        assert_eq!(ids, ["gain", "ceiling", "release", "true_peak"]);
+        let tp = info.params.iter().find(|p| p.id == "true_peak").unwrap();
+        assert_eq!(tp.choices, ["Off", "On"]);
+        assert_eq!(tp.default, 0.0, "a limiter saved before True Peak must stay as it was");
+        assert!(info.description.contains("True Peak") && info.description.contains("between samples"), "the description explains True Peak");
+        let preset = find_preset("limiter", "Master Limiter").expect("Master Limiter preset");
+        assert!(preset.params.contains(&("true_peak", 1.0)), "Master Limiter turns True Peak On");
+        for (id, v) in preset.params {
+            let p = info.params.iter().find(|p| p.id == *id).unwrap_or_else(|| panic!("no parameter {id}"));
+            assert!((p.min..=p.max).contains(v), "{id} = {v} out of range");
+        }
     }
 }
