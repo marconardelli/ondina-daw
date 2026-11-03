@@ -3878,3 +3878,60 @@ fn get_plugin_explains_every_synth_parameter() {
     s.execute(Command::Undo {}, Source::Gui).unwrap();
     assert_eq!(plugin_value(&mut s, analog, "cutoff"), 2500.0);
 }
+
+#[test]
+fn fm_synth_view_follows_the_assistant_in_one_undo_step() {
+    let mut s = Session::new(false);
+    let (_, fx) = synth_track(&mut s, "Keys", "fm_synth");
+    let before = plugin_values(&mut s, fx);
+    let level_at_03 = amp_level(&s, fx, 0.3);
+    s.begin_undo_group("assistant: A short pluck");
+    run(&mut s, "set_plugin_params", json!({"plugin_id": fx, "params": {"attack": 0.6, "decay": 0.2, "sustain": 0.0, "index_decay": 0.1}}), Source::Ai);
+    s.end_undo_group();
+    // the window reads the project the session publishes every frame: this is what it draws at once
+    let half = amp_level(&s, fx, 0.3);
+    assert!((half - 0.5).abs() <= 1e-3, "the linear attack is half way: {half}");
+    assert!((plugin_value(&mut s, fx, "index_decay") - 0.1).abs() <= 1e-6, "the index envelope follows too");
+    assert_eq!(s.can_undo(), Some("assistant: A short pluck"));
+    assert!(s.last_undo_is_ai());
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(plugin_values(&mut s, fx), before, "one undo restores every parameter");
+    assert_eq!(amp_level(&s, fx, 0.3), level_at_03);
+}
+
+#[test]
+fn every_window_family_reads_and_sets_its_parameters_over_mcp() {
+    let mut s = Session::new(false);
+    let vox = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
+    let mut plugins = Vec::new();
+    for kind in ["channel_eq", "dynamic_eq", "compressor"] {
+        let fx = ok(&mut s, "add_effect", json!({"track_id": vox, "kind": kind}))["plugin_id"].as_u64().unwrap();
+        plugins.push((fx, kind, "Vox"));
+    }
+    plugins.push((synth_track(&mut s, "Lead", "analog_synth").1, "analog_synth", "Lead"));
+    plugins.push((synth_track(&mut s, "Keys", "fm_synth").1, "fm_synth", "Keys"));
+    for (fx, kind, track) in plugins {
+        let info = ok(&mut s, "get_plugin", json!({"plugin_id": fx}));
+        assert!(info["description"].as_str().is_some_and(|d| !d.is_empty()), "{kind}: {info}");
+        assert_eq!(info["track"]["name"], json!(track), "{kind}");
+        let params = info["params"].as_array().unwrap();
+        assert_eq!(params.len(), ondina_core::plugins::find(kind).unwrap().params.len(), "{kind}");
+        for p in params {
+            let (min, max, default) = (p["min"].as_f64().unwrap(), p["max"].as_f64().unwrap(), p["default"].as_f64().unwrap());
+            assert!(p["name"].as_str().is_some_and(|n| !n.is_empty()), "{kind}: {p}");
+            assert!(min < max && (min..=max).contains(&default), "{kind}: {p}");
+        }
+        if kind.ends_with("_synth") {
+            // instruments have no meters in the engine
+            assert!(info.get("meters").is_none(), "{kind}: {info}");
+        }
+        let p = params.iter().find(|p| p["choices"].as_array().is_none_or(|c| c.is_empty())).unwrap();
+        let id = p["id"].as_str().unwrap().to_string();
+        let (old, min, max) = (p["value"].as_f64().unwrap(), p["min"].as_f64().unwrap(), p["max"].as_f64().unwrap());
+        let target = min + (max - min) / 4.0;
+        ok(&mut s, "set_plugin_params", json!({"plugin_id": fx, "params": {id.clone(): target}}));
+        assert!((plugin_value(&mut s, fx, &id) - target).abs() <= 1e-4, "{kind}: {id}");
+        s.execute(Command::Undo {}, Source::Gui).unwrap();
+        assert_eq!(plugin_value(&mut s, fx, &id), old, "{kind}: {id}");
+    }
+}
