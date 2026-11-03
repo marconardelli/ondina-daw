@@ -479,7 +479,7 @@ impl OndinaApp {
         };
         let own_keys = ui.ctx().viewport_id() != egui::ViewportId::ROOT;
         // the Sampler's keyboard marks the key that plays the sample at its own speed
-        let mark = p.find_plugin(pid).filter(|i| i.kind == "sampler").map(|i| i.param("root_note").round().clamp(0.0, 127.0) as u8);
+        let mark = p.find_plugin(pid).filter(|i| crate::sampler_view::has_sampler_view(&i.kind)).map(|i| i.param("root_note").round().clamp(0.0, 127.0) as u8);
         let entry = self.plugin_windows.keyboards.entry(pid).or_insert(InstrumentKeys { track, keys: KeyboardState::default() });
         // a NoteOff always goes where its NoteOn went
         if entry.keys.held.is_none() {
