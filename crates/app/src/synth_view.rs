@@ -11,6 +11,7 @@ use ondina_core::model::{Id, PluginInstance, Project, MASTER_ID};
 use ondina_core::plugins;
 use ondina_dsp::synth::{analog_filter_db, analog_resonance_db, analog_resonance_from_db, FILTER_ENV_OCTAVES, FM_INDEX_ATTACK};
 use ondina_dsp::util::{wave_shape, Wave};
+use ondina_dsp::MidiKind;
 
 use crate::app::OndinaApp;
 use crate::theme;
@@ -477,18 +478,28 @@ impl OndinaApp {
             return;
         };
         let own_keys = ui.ctx().viewport_id() != egui::ViewportId::ROOT;
-        let focused = ui.ctx().input(|i| i.viewport().focused) != Some(false);
         let entry = self.plugin_windows.keyboards.entry(pid).or_insert(InstrumentKeys { track, keys: KeyboardState::default() });
         // a NoteOff always goes where its NoteOn went
         if entry.keys.held.is_none() {
             entry.track = track;
         }
-        let events = if focused { crate::widgets::keyboard(ui, &mut entry.keys, own_keys) } else { entry.keys.release_all() };
+        let events = instrument_keys_frame(ui, &mut entry.keys, own_keys);
         let to = entry.track;
         for kind in events {
             self.live_note(to, kind);
         }
     }
+}
+
+/// One frame of an instrument keyboard: always drawn and registered, so the first click after the window gets its
+/// focus back already lands on the keys; a window without focus releases the held key.
+fn instrument_keys_frame(ui: &mut egui::Ui, keys: &mut KeyboardState, own_keys: bool) -> Vec<MidiKind> {
+    let focused = ui.ctx().input(|i| i.viewport().focused) != Some(false);
+    let mut events = crate::widgets::keyboard(ui, keys, own_keys);
+    if !focused {
+        events.extend(keys.release_all());
+    }
+    events
 }
 
 #[cfg(test)]
@@ -784,5 +795,48 @@ mod tests {
         let src = include_str!("synth_view.rs");
         assert!(!src.contains(concat!("plugin_ai_bar", "(")));
         assert!(!src.contains(concat!("plugin_header", "(")));
+    }
+
+    /// Frames of the instrument keyboard in a headless 800x600 context; `focused` is the window's focus in each
+    /// frame. Returns where the keyboard started, the bottom of what the panel reserved, and every event sent.
+    fn keys_frames(keys: &mut KeyboardState, frames: &[(bool, Vec<Event>)]) -> (Pos2, f32, Vec<MidiKind>) {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let (mut start, mut after, mut all) = (Pos2::ZERO, 0.0, Vec::new());
+        for (k, (focused, events)) in frames.iter().enumerate() {
+            let mut raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+                time: Some(k as f64 / 60.0),
+                events: events.clone(),
+                ..Default::default()
+            };
+            raw.viewports.entry(egui::ViewportId::ROOT).or_default().focused = Some(*focused);
+            let _ = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    start = ui.available_rect_before_wrap().min;
+                    all.extend(instrument_keys_frame(ui, keys, true));
+                    after = ui.min_rect().bottom();
+                });
+            });
+        }
+        (start, after, all)
+    }
+
+    #[test]
+    fn keyboard_stays_drawn_without_focus_and_releases_the_held_key() {
+        use crate::widgets::{keyboard_keys_rect, KEYBOARD_H, KEYBOARD_ROW_H};
+        let mut keys = KeyboardState { octave: 3, held: Some((60, 100)) };
+        let (start, after, events) = keys_frames(&mut keys, &[(false, vec![])]);
+        assert_eq!(events, [MidiKind::NoteOff { pitch: 60 }]);
+        assert_eq!(keys.held, None);
+        assert!(after - start.y >= KEYBOARD_ROW_H + KEYBOARD_H, "the keyboard keeps its place without focus");
+
+        // the first click after the window gets its focus back plays
+        let key = keyboard_keys_rect(start, 800.0 - 2.0 * start.x).left_bottom() + vec2(10.0, -5.0);
+        let mut keys = KeyboardState { octave: 3, held: None };
+        let frames = [(false, vec![]), (false, vec![Event::PointerMoved(key)]), (true, vec![press(key, PointerButton::Primary, true)]), (true, vec![press(key, PointerButton::Primary, false)])];
+        let (_, _, events) = keys_frames(&mut keys, &frames);
+        assert!(matches!(events.first(), Some(MidiKind::NoteOn { pitch: 48, .. })), "{events:?}");
+        assert_eq!(events.last(), Some(&MidiKind::NoteOff { pitch: 48 }));
     }
 }
