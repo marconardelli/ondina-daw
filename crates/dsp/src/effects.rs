@@ -3290,6 +3290,18 @@ mod gain_reduction_tests {
     }
 
     #[test]
+    fn limiter_true_peak_reports_its_reduction() {
+        let params = [("gain", 0.0), ("ceiling", -6.0), ("true_peak", 1.0)];
+        let mut l = effect("limiter", &params);
+        let g = reduction(run(l.as_mut(), 1.0, 0.5));
+        assert!((-6.5..=-5.5).contains(&g), "reduction {g} dB");
+        l.reset();
+        assert_eq!(l.gain_reduction_db(), Some(0.0), "after reset");
+        let mut l = effect("limiter", &params);
+        assert_eq!(run(l.as_mut(), 0.1, 0.5), Some(0.0));
+    }
+
+    #[test]
     fn gate_reduction_reaches_its_floor_below_threshold() {
         let params = [("threshold", -40.0), ("reduction", -60.0)];
         let mut g = effect("noise_gate", &params);
