@@ -716,7 +716,7 @@ Ogni plug-in (strumenti, effetti ed effetti MIDI di Ondina, plug-in VST3) si reg
 - **Curva della saturazione**: Overdrive, Bitcrusher ed Exciter mostrano sopra le manopole la curva di
   trasferimento: in orizzontale il livello che entra, in verticale quello che esce, in dB (da -48 a +12 dB; per il
   Bitcrusher da -90 a +6 dB, così si vedono i gradini dei pochi bit). La diagonale è "nessun effetto"; la zona
-  arancio chiaro sopra la diagonale è quanto il plug-in alza il livello, quella azzurra sotto quanto lo schiaccia, e
+  ambra sopra la diagonale è quanto il plug-in alza il livello, quella azzurra sotto quanto lo schiaccia, e
   una linea tratteggiata verticale segna 0 dBFS in ingresso. L'Overdrive disegna in evidenza la curva del modo
   scelto e tenui le altre tre, per confrontare i caratteri; con Fuzz e Tube la metà negativa dell'onda è
   tratteggiata, perché la trattano in modo diverso. Il Bitcrusher è una scala a gradini (Downsampling non cambia la

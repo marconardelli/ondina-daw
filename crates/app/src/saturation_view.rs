@@ -16,6 +16,11 @@ use crate::eq_view::{self, EqEdit};
 use crate::theme;
 use crate::widgets::{format_param_value, hold_marker_shown, meter_fill, paint_meter_fill, PeakHold};
 
+/// Fill of the zone where the curve is above the diagonal (the plug-in raises the level): amber.
+const RAISE_ZONE: egui::Color32 = theme::SOLO;
+/// Fill of the zone under the diagonal (the plug-in squashes the level): light blue, far from the amber above.
+const SQUASH_ZONE: egui::Color32 = theme::ACCENT;
+
 /// The three saturation kinds and what the mouse moves on their curve.
 #[derive(Debug)]
 pub struct SatSpec {
@@ -368,8 +373,8 @@ pub fn saturation_graph(ui: &mut egui::Ui, inst: &PluginInstance, meter: Option<
         // above the diagonal: how much the plug-in raises the level; under it: how much it squashes
         let above: Vec<f32> = ys.iter().zip(&diag).map(|(y, d)| y.min(*d)).collect();
         let under: Vec<f32> = ys.iter().zip(&diag).map(|(y, d)| y.max(*d)).collect();
-        eq_view::fill_between(&painter, &xs, &above, &diag, eq_view::faded(theme::SOLO, 40));
-        eq_view::fill_between(&painter, &xs, &diag, &under, eq_view::faded(theme::MONITOR, 40));
+        eq_view::fill_between(&painter, &xs, &above, &diag, eq_view::faded(RAISE_ZONE, 40));
+        eq_view::fill_between(&painter, &xs, &diag, &under, eq_view::faded(SQUASH_ZONE, 40));
     }
     let curve_color = if inst.bypass { theme::TEXT_DISABLED } else { theme::TEXT };
     painter.add(egui::Shape::line(screen_line(&pts, span, plot), Stroke::new(2.0_f32, curve_color)));
@@ -807,6 +812,28 @@ mod tests {
         let src = include_str!("saturation_view.rs");
         assert!(!src.contains(concat!("plugin_ai_bar", "(")));
         assert!(!src.contains(concat!("plugin_header", "(")));
+    }
+
+    fn hue(c: egui::Color32) -> f32 {
+        let (r, g, b) = (c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0);
+        let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+        let d = max - min;
+        if d <= 0.0 {
+            return 0.0;
+        }
+        let h = if max == r { ((g - b) / d).rem_euclid(6.0) } else if max == g { (b - r) / d + 2.0 } else { (r - g) / d + 4.0 };
+        h * 60.0
+    }
+
+    #[test]
+    fn the_raise_and_squash_zones_have_clearly_different_hues() {
+        let diff = (hue(RAISE_ZONE) - hue(SQUASH_ZONE)).abs();
+        let diff = diff.min(360.0 - diff);
+        assert!(diff >= 90.0, "raise {:.0} vs squash {:.0}", hue(RAISE_ZONE), hue(SQUASH_ZONE));
+        // the guide calls the squash zone light blue
+        assert!((170.0..=210.0).contains(&hue(SQUASH_ZONE)), "{:.0}", hue(SQUASH_ZONE));
+        let guide = include_str!("../../../docs/GUIDA.md");
+        assert!(guide.contains("quella azzurra sotto quanto lo schiaccia"));
     }
 
     #[test]
