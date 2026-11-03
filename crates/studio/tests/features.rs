@@ -4109,3 +4109,161 @@ fn dynamics_bar_context_carries_the_curve_note_and_meters() {
     }
     assert_eq!(prompts::plugin_bar_actions(&s.project, fx), prompts::plugin_quick_actions("noise_gate"));
 }
+
+/// The output of the transfer curve the saturation window draws for `fx`, for the input sample `x`.
+fn sat_curve(s: &Session, fx: u64, x: f32) -> f32 {
+    let inst = s.project.find_plugin(fx).unwrap();
+    ondina_dsp::effects::saturation_curve(&inst.kind, |id| inst.param(id), x).expect("a saturation curve")
+}
+
+#[test]
+fn saturation_curve_follows_the_assistant_and_undo() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Gtr"}))["track_id"].as_u64().unwrap();
+    // -10 dB: at -12 dB both 8 and 4 bits round to the same step (0.25)
+    let x = ondina_dsp::util::db_to_gain(-10.0);
+    let cases: [(&str, &[(&str, f32)]); 3] = [
+        ("overdrive", &[("mode", 2.0), ("drive", 0.8), ("output", -9.0)]),
+        ("bitcrusher", &[("bits", 4.0), ("downsample", 8.0)]),
+        ("exciter", &[("amount", 0.9), ("mix", 0.5)]),
+    ];
+    for (kind, values) in cases {
+        let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": kind}))["plugin_id"].as_u64().unwrap();
+        let defaults = ondina_core::plugins::find(kind).unwrap();
+        let default_of = |id: &str| defaults.params.iter().find(|p| p.id == id).map_or(0.0, |p| p.default);
+        let default_curve = ondina_dsp::effects::saturation_curve(kind, default_of, x).unwrap();
+        let before = plugin_values(&mut s, fx);
+        let curve_before = sat_curve(&s, fx, x);
+        assert_eq!(curve_before, default_curve, "{kind}");
+        let params = values.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        s.execute(Command::SetPluginParams { plugin_id: fx, params }, Source::Ai).unwrap();
+        assert!(s.last_undo_is_ai(), "{kind}");
+        for (k, v) in values {
+            assert_eq!(plugin_value(&mut s, fx, k), *v as f64, "{kind}: {k}");
+        }
+        // the window reads the project the session publishes every frame: this is the curve it draws at once
+        let new_of = |id: &str| values.iter().find(|(k, _)| *k == id).map_or_else(|| default_of(id), |(_, v)| *v);
+        let want = ondina_dsp::effects::saturation_curve(kind, new_of, x).unwrap();
+        let at = sat_curve(&s, fx, x);
+        assert!((at - want).abs() <= 1e-6, "{kind}: {at} vs {want}");
+        assert_ne!(at, curve_before, "{kind}: the curve moved");
+        s.execute(Command::Undo {}, Source::Gui).unwrap();
+        assert_eq!(plugin_values(&mut s, fx), before, "{kind}: one undo takes back the whole step");
+        assert_eq!(sat_curve(&s, fx, x), curve_before, "{kind}");
+    }
+}
+
+#[test]
+fn saturation_drag_is_one_undo_step() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Gtr"}))["track_id"].as_u64().unwrap();
+    let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "overdrive"}))["plugin_id"].as_u64().unwrap();
+    let bc = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "bitcrusher"}))["plugin_id"].as_u64().unwrap();
+    // the merge keys have the format of the saturation graph's drag_key ("pw{plugin}:sat#{gesture}") and wheel_key
+    // ("pw{plugin}:sat:wheel")
+    let set = |s: &mut Session, pid: u64, id: &str, v: f32, key: &str| {
+        let params = [(id.to_string(), v)].into_iter().collect();
+        s.execute_coalesced(Command::SetPluginParams { plugin_id: pid, params }, key).unwrap();
+    };
+    let (first, second) = (format!("pw{fx}:sat#1"), format!("pw{fx}:sat#2"));
+    for v in [0.5, 0.6, 0.7] {
+        set(&mut s, fx, "drive", v, &first);
+    }
+    for v in [0.2, 0.1] {
+        set(&mut s, fx, "drive", v, &second);
+    }
+    assert!((plugin_value(&mut s, fx, "drive") - 0.1).abs() <= 1e-6);
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert!((plugin_value(&mut s, fx, "drive") - 0.7).abs() <= 1e-6, "the second drag is its own step");
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert!((plugin_value(&mut s, fx, "drive") - 0.4).abs() <= 1e-6, "the first drag is one step");
+    let wheel = format!("pw{fx}:sat:wheel");
+    for v in [-2.0, -1.0, 0.0] {
+        set(&mut s, fx, "output", v, &wheel);
+    }
+    assert_eq!(plugin_value(&mut s, fx, "output"), 0.0);
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(plugin_value(&mut s, fx, "output"), -3.0, "close wheel turns are one step");
+    let bits = format!("pw{bc}:sat#3");
+    for v in [6.0, 5.0, 4.0] {
+        set(&mut s, bc, "bits", v, &bits);
+    }
+    assert_eq!(plugin_value(&mut s, bc, "bits"), 4.0);
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(plugin_value(&mut s, bc, "bits"), 8.0, "a resolution drag is one step");
+}
+
+#[test]
+fn every_saturation_plugin_reads_and_sets_its_parameters_over_mcp() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Gtr"}))["track_id"].as_u64().unwrap();
+    for kind in ["overdrive", "bitcrusher", "exciter"] {
+        let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": kind}))["plugin_id"].as_u64().unwrap();
+        let info = ok(&mut s, "get_plugin", json!({"plugin_id": fx}));
+        assert!(info["description"].as_str().is_some_and(|d| !d.is_empty()), "{kind}: {info}");
+        assert_eq!(info["track"]["name"], json!("Gtr"), "{kind}");
+        let params = info["params"].as_array().unwrap().clone();
+        assert_eq!(params.len(), ondina_core::plugins::find(kind).unwrap().params.len(), "{kind}");
+        for p in &params {
+            let id = p["id"].as_str().unwrap().to_string();
+            assert!(p["name"].as_str().is_some_and(|n| !n.is_empty()), "{kind}: {p}");
+            assert!(p["unit"].is_string(), "{kind}: {id} has no unit field");
+            let (min, max, default) = (p["min"].as_f64().unwrap(), p["max"].as_f64().unwrap(), p["default"].as_f64().unwrap());
+            assert!(min < max && (min..=max).contains(&default), "{kind}: {p}");
+            if p["choices"].as_array().is_some_and(|c| !c.is_empty()) {
+                continue;
+            }
+            let old = p["value"].as_f64().unwrap();
+            let target = min + (max - min) / 4.0;
+            ok(&mut s, "set_plugin_params", json!({"plugin_id": fx, "params": {id.clone(): target}}));
+            assert!((plugin_value(&mut s, fx, &id) - target).abs() <= 1e-3, "{kind}: {id}");
+            s.execute(Command::Undo {}, Source::Gui).unwrap();
+            assert_eq!(plugin_value(&mut s, fx, &id), old, "{kind}: {id}");
+        }
+        if kind == "overdrive" {
+            ok(&mut s, "set_plugin_param", json!({"plugin_id": fx, "param": "mode", "value": 3}));
+            assert_eq!(plugin_value(&mut s, fx, "mode"), 3.0);
+        }
+    }
+}
+
+#[test]
+fn live_meters_show_what_every_saturation_plugin_does() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "name": "Keys", "instrument": "analog_synth"}))["track_id"].as_u64().unwrap();
+    let chord: Vec<Value> = [48, 55, 60, 64].iter().map(|p| json!({"pitch": p, "velocity": 127, "start": 0, "length": 16})).collect();
+    ok(&mut s, "create_midi_region", json!({"track_id": t, "start": 0, "length": 16, "notes": chord}));
+    let chain = [("overdrive", json!({"drive": 0.8, "output": 0})), ("bitcrusher", json!({})), ("exciter", json!({}))];
+    let mut ids = Vec::new();
+    for (kind, params) in chain {
+        let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": kind}))["plugin_id"].as_u64().unwrap();
+        ok(&mut s, "set_plugin_params", json!({"plugin_id": fx, "params": params}));
+        ids.push((kind, fx));
+    }
+    ok(&mut s, "play", json!({"from_beat": 0}));
+    for (kind, fx) in &ids {
+        assert!(wait_for_meter(&s, *fx, |m| m.input_peak > 0.01), "the {kind} never got a signal");
+    }
+    // over MCP: the input and output levels the window's meters show, and no gain reduction
+    for (kind, fx) in &ids {
+        let v = ok(&mut s, "get_plugin", json!({"plugin_id": fx}));
+        let m = &v["meters"];
+        assert!(m["input_db"].is_number() && m["output_db"].is_number(), "{kind}: {m}");
+        assert!(m["gain_reduction_db"].is_null(), "{kind}: {m}");
+    }
+    ok(&mut s, "stop", json!({}));
+}
+
+#[test]
+fn saturation_bar_context_carries_the_curve_note_and_meters() {
+    use ondina_studio::prompts;
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Drum Room"}))["track_id"].as_u64().unwrap();
+    let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "overdrive"}))["plugin_id"].as_u64().unwrap();
+    let meter = ondina_engine::PluginMeter { input_peak: 0.5, output_peak: 0.7, gain_reduction_db: None };
+    let text = prompts::plugin_bar_context_live(&s.project, fx, Some(&meter)).expect("the overdrive has a bar context");
+    for want in [prompts::saturation_bar_note("overdrive"), "- drive", "- output", "Live meters now", "At the live input peak", "Drum Room"] {
+        assert!(text.contains(want), "missing {want:?} in {text}");
+    }
+    assert_eq!(prompts::plugin_bar_actions(&s.project, fx), prompts::plugin_quick_actions("overdrive"));
+}
