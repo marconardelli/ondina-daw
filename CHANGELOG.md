@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-11-03
+
+### Added
+
+- Saturation windows: Overdrive, Bitcrusher and Exciter draw the transfer curve (input against output level, with
+  the area where the level rises or is squashed). The Overdrive shows its other modes faintly, the Bitcrusher draws
+  its steps and the Exciter the band above its frequency.
+- A dot follows the input level while the song plays, with input and output meters and the level change. Drag up
+  and down on the curve for Drive, Harmonics or fewer bits (Shift for fine steps), use the wheel for Output,
+  Downsampling or Mix, and double-click for the default. Every gesture is one undo step.
+- New ready-made AI requests: *Warm it up* and *Add grit without getting louder* (Overdrive), *Lo-fi but still
+  clear* (Bitcrusher) and *More air* (Exciter). The answer gives the values before and after and the level change
+  in dB.
+
 ## [0.27.0] - 2026-11-03
 
 ### Added
@@ -826,7 +840,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/marconardelli/ondina-daw/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/marconardelli/ondina-daw/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/marconardelli/ondina-daw/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/marconardelli/ondina-daw/compare/v0.24.0...v0.25.0
