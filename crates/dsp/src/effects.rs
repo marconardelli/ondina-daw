@@ -562,6 +562,119 @@ pub fn de_esser_band_db(freq: f32, reduction_db: f32, wideband: bool, f: f32, sr
     }
 }
 
+// ============================================================================ Static curves of the saturation
+
+/// The waveshaper of the Overdrive for `mode` (0 Soft, 1 Hard, 2 Fuzz, 3 Tube; any other value is Soft, as the
+/// processor reads it).
+#[inline]
+pub fn overdrive_shape(mode: u8, x: f32) -> f32 {
+    match mode {
+        1 => x.clamp(-1.0, 1.0),
+        2 => {
+            let y = x.signum() * (1.0 - (-x.abs() * 2.0).exp());
+            (y + 0.2 * y * y).clamp(-1.0, 1.0)
+        }
+        3 => {
+            if x >= 0.0 { x.tanh() } else { (x * 0.7).tanh() * 1.1 }
+        }
+        _ => x.tanh(),
+    }
+}
+
+/// Gain into the Overdrive's shaper: 1 at Drive 0, 61 (about +36 dB) at Drive 1.
+#[inline]
+pub fn overdrive_pre_gain(drive: f32) -> f32 {
+    1.0 + drive * drive * 60.0
+}
+
+/// Level after the Overdrive's shaper, before Output: it backs off as Drive rises (1.5 at 0, 1 at 0.5).
+#[inline]
+pub fn overdrive_makeup(drive: f32) -> f32 {
+    0.5 + 1.0 / (1.0 + drive * 2.0)
+}
+
+/// Cutoff of the Overdrive's Tone low-pass: 800 Hz at 0, 12.8 kHz at 1.
+pub fn overdrive_tone_hz(tone: f32) -> f32 {
+    800.0 * 2f32.powf(tone * 4.0)
+}
+
+/// Steps per unit of the Bitcrusher at `bits` (8 bits: 128 per unit, 256 levels from -1 to 1).
+pub fn bitcrusher_steps(bits: f32) -> f32 {
+    2f32.powf(bits - 1.0)
+}
+
+/// Gain into the Exciter's shaper: 1 at Harmonics 0, 11 at 1.
+pub fn exciter_drive(amount: f32) -> f32 {
+    1.0 + amount * 10.0
+}
+
+/// The static input/output curve of a saturation effect for a slow signal: the instantaneous output for an input
+/// sample. The filters (the Overdrive's Tone and DC blocker, the Exciter's high-passes) and the Bitcrusher's sample
+/// hold are left out; the Exciter's curve is that of the band above its Frequency.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SaturationCurve {
+    /// `pre` into the shaper, `post` (makeup times Output) after it, `mix` of it against the dry signal.
+    Overdrive { mode: u8, pre: f32, post: f32, mix: f32 },
+    Bitcrusher { steps: f32, mix: f32 },
+    /// The band above Frequency: the dry band plus half of `mix` of the shaped band.
+    Exciter { drive: f32, mix: f32 },
+}
+
+impl SaturationCurve {
+    /// The curve of plug-in `kind` with its parameters read by `get`, read as the processor's set_param reads them
+    /// (Mode rounded, Output in dB). None for a kind without one.
+    pub fn of(kind: &str, get: impl Fn(&str) -> f32) -> Option<SaturationCurve> {
+        Some(match kind {
+            "overdrive" => {
+                let drive = get("drive");
+                SaturationCurve::Overdrive { mode: get("mode").round() as u8, pre: overdrive_pre_gain(drive), post: overdrive_makeup(drive) * db_to_gain(get("output")), mix: get("mix") }
+            }
+            "bitcrusher" => SaturationCurve::Bitcrusher { steps: bitcrusher_steps(get("bits")), mix: get("mix") },
+            "exciter" => SaturationCurve::Exciter { drive: exciter_drive(get("amount")), mix: get("mix") },
+            _ => return None,
+        })
+    }
+
+    /// Output for the input sample `x` (linear, either sign).
+    pub fn out(&self, x: f32) -> f32 {
+        match *self {
+            SaturationCurve::Overdrive { mode, pre, post, mix } => x * (1.0 - mix) + overdrive_shape(mode, x * pre) * mix * post,
+            SaturationCurve::Bitcrusher { steps, mix } => x * (1.0 - mix) + (x * steps).round() / steps * mix,
+            SaturationCurve::Exciter { drive, mix } => x + (x * drive).tanh() * mix * 0.5,
+        }
+    }
+
+    /// Output level (dB, -120 for silence) for a steady input at `in_db`, on the positive half-wave.
+    pub fn out_db(&self, in_db: f32) -> f32 {
+        gain_to_db(self.out(db_to_gain(in_db)).abs())
+    }
+
+    /// The same on the negative half-wave (Fuzz and Tube treat it differently).
+    pub fn out_db_negative(&self, in_db: f32) -> f32 {
+        gain_to_db(self.out(-db_to_gain(in_db)).abs())
+    }
+
+    /// Whether both half-waves follow the same curve: all but the Overdrive's Fuzz and Tube.
+    pub fn symmetric(&self) -> bool {
+        !matches!(self, SaturationCurve::Overdrive { mode: 2 | 3, .. })
+    }
+
+    /// The input levels (linear, > 0) where the Bitcrusher's output jumps to the next step, smallest first, at most
+    /// `max`, below 2 (6 dB over full scale); empty for the other kinds. The view draws its risers vertical with
+    /// them. It allocates: for drawing, never for the audio thread.
+    pub fn step_edges(&self, max: usize) -> Vec<f32> {
+        let SaturationCurve::Bitcrusher { steps, .. } = *self else {
+            return Vec::new();
+        };
+        (1..=max).map(|k| (k as f32 - 0.5) / steps).take_while(|&e| e < 2.0).collect()
+    }
+}
+
+/// `SaturationCurve::of(kind, get)` at the input sample `x`; None for a kind without a curve.
+pub fn saturation_curve(kind: &str, get: impl Fn(&str) -> f32, x: f32) -> Option<f32> {
+    SaturationCurve::of(kind, get).map(|c| c.out(x))
+}
+
 // ============================================================================ Stereo Delay
 
 pub struct StereoDelay {
@@ -1094,17 +1207,7 @@ impl Overdrive {
     }
     #[inline]
     fn shape(&self, x: f32) -> f32 {
-        match self.mode {
-            1 => x.clamp(-1.0, 1.0),
-            2 => {
-                let y = x.signum() * (1.0 - (-x.abs() * 2.0).exp());
-                (y + 0.2 * y * y).clamp(-1.0, 1.0)
-            }
-            3 => {
-                if x >= 0.0 { x.tanh() } else { (x * 0.7).tanh() * 1.1 }
-            }
-            _ => x.tanh(),
-        }
+        overdrive_shape(self.mode, x)
     }
 }
 
@@ -1120,16 +1223,16 @@ impl Effect for Overdrive {
         }
     }
     fn process(&mut self, l: &mut [f32], r: &mut [f32], _ctx: &ProcessContext) {
-        let pre = 1.0 + self.drive * self.drive * 60.0;
-        let cut = 800.0 * 2f32.powf(self.tone * 4.0);
+        let pre = overdrive_pre_gain(self.drive);
+        let cut = overdrive_tone_hz(self.tone);
         self.lp_l.set_freq(cut, self.sr);
         self.lp_r.set_freq(cut, self.sr);
-        let comp = 1.0 / (1.0 + self.drive * 2.0);
+        let makeup = overdrive_makeup(self.drive);
         for i in 0..l.len() {
             let a = self.dc_l.process(self.lp_l.process(self.shape(l[i] * pre)));
             let b = self.dc_r.process(self.lp_r.process(self.shape(r[i] * pre)));
-            l[i] = l[i] * (1.0 - self.mix) + a * self.mix * self.output * (0.5 + comp);
-            r[i] = r[i] * (1.0 - self.mix) + b * self.mix * self.output * (0.5 + comp);
+            l[i] = l[i] * (1.0 - self.mix) + a * self.mix * self.output * makeup;
+            r[i] = r[i] * (1.0 - self.mix) + b * self.mix * self.output * makeup;
         }
     }
     fn reset(&mut self) {}
@@ -1162,7 +1265,7 @@ impl Effect for Bitcrusher {
         }
     }
     fn process(&mut self, l: &mut [f32], r: &mut [f32], _ctx: &ProcessContext) {
-        let q = 2f32.powf(self.bits - 1.0);
+        let q = bitcrusher_steps(self.bits);
         for i in 0..l.len() {
             self.count += 1.0;
             if self.count >= self.down {
@@ -1314,7 +1417,7 @@ impl Effect for Exciter {
         }
     }
     fn process(&mut self, l: &mut [f32], r: &mut [f32], _ctx: &ProcessContext) {
-        let d = 1.0 + self.amount * 10.0;
+        let d = exciter_drive(self.amount);
         for i in 0..l.len() {
             let hl = self.hp2[0].process((self.hp1[0].process(l[i]) * d).tanh());
             let hr = self.hp2[1].process((self.hp1[1].process(r[i]) * d).tanh());
@@ -3680,6 +3783,160 @@ mod saturation_tests {
         for (freq, amount, mix) in [(3000.0, 0.7, 0.4), (1000.0, 0.2, 1.0)] {
             let mut fx = effect("exciter", &[("freq", freq), ("amount", amount), ("mix", mix)]);
             assert_eq!(render(fx.as_mut(), &input), exciter_reference(freq, amount, mix, &input), "exciter {freq} Hz");
+        }
+    }
+
+    /// Parameter reader: the value in `params`, otherwise the registry default.
+    fn get<'a>(kind: &'a str, params: &'a [(&'a str, f32)]) -> impl Fn(&str) -> f32 + 'a {
+        move |id: &str| {
+            params.iter().find(|(k, _)| *k == id).map(|(_, v)| *v).unwrap_or_else(|| {
+                ondina_core::plugins::find(kind).and_then(|i| i.params.iter().find(|p| p.id == id)).map_or(0.0, |p| p.default)
+            })
+        }
+    }
+
+    #[test]
+    fn overdrive_curve_matches_the_processor_in_every_mode() {
+        // The DC blocker cancels a literally slow signal, so the curve goes through the processor's linear filters
+        // (Tone and DC blocker) and is compared sample by sample.
+        for mode in 0..=3u8 {
+            for (drive, output, mix) in [(0.0, 0.0, 1.0), (0.4, -3.0, 1.0), (0.9, 6.0, 1.0), (0.6, -6.0, 0.5)] {
+                for amp in [0.5, 0.05] {
+                    let params = [("mode", mode as f32), ("drive", drive), ("tone", 0.7), ("output", output), ("mix", mix)];
+                    let x = sine(440.0, amp, 4800);
+                    let processed = render(effect("overdrive", &params).as_mut(), &x);
+                    let wet = [("mode", mode as f32), ("drive", drive), ("tone", 0.7), ("output", output), ("mix", 1.0)];
+                    let c1 = SaturationCurve::of("overdrive", get("overdrive", &wet)).expect("an overdrive curve");
+                    let mut lp = OnePole::default();
+                    lp.set_freq(overdrive_tone_hz(0.7), SR);
+                    let mut dc = DcBlock::default();
+                    for (i, (&v, &p)) in x.iter().zip(&processed).enumerate() {
+                        let expected = v * (1.0 - mix) + mix * dc.process(lp.process(c1.out(v)));
+                        assert!((p - expected).abs() <= 1e-4, "mode {mode} drive {drive} amp {amp} sample {i}: {p} vs {expected}");
+                    }
+                    let c = SaturationCurve::of("overdrive", get("overdrive", &params)).unwrap();
+                    assert_eq!(saturation_curve("overdrive", get("overdrive", &params), 0.3), Some(c.out(0.3)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bitcrusher_curve_matches_the_processor_on_a_slow_signal() {
+        let x = sine(2.0, 0.8, 48000);
+        let params = [("bits", 6.0), ("downsample", 1.0), ("mix", 0.7)];
+        let c = SaturationCurve::of("bitcrusher", get("bitcrusher", &params)).expect("a bitcrusher curve");
+        let processed = render(effect("bitcrusher", &params).as_mut(), &x);
+        for (i, (&v, &p)) in x.iter().zip(&processed).enumerate() {
+            assert!((p - c.out(v)).abs() <= 1e-6, "sample {i}: {p} vs {}", c.out(v));
+        }
+        // With sample hold the output repeats a value of the curve from one of the last `downsample` samples.
+        let params = [("bits", 6.0), ("downsample", 4.0), ("mix", 1.0)];
+        let c = SaturationCurve::of("bitcrusher", get("bitcrusher", &params)).unwrap();
+        let processed = render(effect("bitcrusher", &params).as_mut(), &x);
+        for i in 3..x.len() {
+            assert!((i - 3..=i).any(|j| (processed[i] - c.out(x[j])).abs() <= 1e-6), "sample {i}: {} is no held curve value", processed[i]);
+        }
+    }
+
+    #[test]
+    fn exciter_curve_matches_the_processor() {
+        // The high-passes cancel a slow signal: the curve is that of the band above Frequency, so it is compared
+        // through the same two filters.
+        let x = sine(6000.0, 0.3, 4800);
+        for mix in [1.0, 0.3] {
+            let params = [("freq", 1000.0), ("amount", 0.5), ("mix", mix)];
+            let c = SaturationCurve::of("exciter", get("exciter", &params)).expect("an exciter curve");
+            let processed = render(effect("exciter", &params).as_mut(), &x);
+            let mut hp1 = Biquad::new(BiquadKind::HighPass, 1000.0, 0.707, 0.0, SR);
+            let mut hp2 = Biquad::new(BiquadKind::HighPass, 1000.0, 0.707, 0.0, SR);
+            for (i, (&v, &p)) in x.iter().zip(&processed).enumerate() {
+                let h1 = hp1.process(v);
+                let expected = v + hp2.process(c.out(h1) - h1);
+                assert!((p - expected).abs() <= 1e-4, "mix {mix} sample {i}: {p} vs {expected}");
+            }
+        }
+    }
+
+    #[test]
+    fn saturation_curve_knows_only_the_three_kinds() {
+        for kind in ["compressor", "reverb", "vst3"] {
+            assert!(saturation_curve(kind, get(kind, &[]), 0.5).is_none(), "{kind}");
+            assert!(SaturationCurve::of(kind, get(kind, &[])).is_none(), "{kind}");
+        }
+        for kind in ["overdrive", "bitcrusher", "exciter"] {
+            assert!(saturation_curve(kind, get(kind, &[]), 0.5).is_some(), "{kind}");
+        }
+    }
+
+    #[test]
+    fn saturation_curves_read_params_like_the_processors() {
+        assert!(matches!(SaturationCurve::of("overdrive", get("overdrive", &[("mode", 2.6)])), Some(SaturationCurve::Overdrive { mode: 3, .. })));
+        let soft = SaturationCurve::of("overdrive", get("overdrive", &[("mode", 0.0)])).unwrap();
+        let seven = SaturationCurve::of("overdrive", get("overdrive", &[("mode", 7.0)])).unwrap();
+        for k in 0..20 {
+            let x = -1.0 + k as f32 * 0.1;
+            assert_eq!(seven.out(x), soft.out(x), "x {x}");
+        }
+        let Some(SaturationCurve::Overdrive { post, .. }) = SaturationCurve::of("overdrive", get("overdrive", &[("drive", 0.7), ("output", -6.0)])) else {
+            panic!("an overdrive curve");
+        };
+        assert_eq!(post, overdrive_makeup(0.7) * db_to_gain(-6.0));
+    }
+
+    #[test]
+    fn overdrive_modes_differ_and_fuzz_and_tube_are_asymmetric() {
+        let curve = |mode: f32| SaturationCurve::of("overdrive", get("overdrive", &[("mode", mode), ("drive", 0.5)])).unwrap();
+        let (soft, hard, fuzz, tube) = (curve(0.0), curve(1.0), curve(2.0), curve(3.0));
+        assert_ne!(soft.out_db(-6.0), hard.out_db(-6.0));
+        assert_ne!(fuzz.out_db(-6.0), tube.out_db(-6.0));
+        assert!(soft.symmetric() && hard.symmetric() && !fuzz.symmetric() && !tube.symmetric());
+        assert_ne!(tube.out_db_negative(-6.0), tube.out_db(-6.0));
+        assert!(SaturationCurve::of("bitcrusher", get("bitcrusher", &[])).unwrap().symmetric());
+        assert!(SaturationCurve::of("exciter", get("exciter", &[])).unwrap().symmetric());
+    }
+
+    #[test]
+    fn bitcrusher_steps_and_edges() {
+        let c = SaturationCurve::of("bitcrusher", get("bitcrusher", &[("bits", 3.0), ("mix", 1.0)])).unwrap();
+        assert_eq!(c.step_edges(10), vec![0.125, 0.375, 0.625, 0.875, 1.125, 1.375, 1.625, 1.875]);
+        assert_eq!(c.out(0.124), 0.0);
+        assert_eq!(c.out(0.125), 0.25);
+        assert_eq!(c.step_edges(3).len(), 3);
+        assert!(SaturationCurve::of("overdrive", get("overdrive", &[])).unwrap().step_edges(10).is_empty());
+        assert!(SaturationCurve::of("exciter", get("exciter", &[])).unwrap().step_edges(10).is_empty());
+    }
+
+    #[test]
+    fn saturation_curves_stay_finite() {
+        let mut cases: Vec<(&str, Vec<(&str, f32)>)> = Vec::new();
+        for mode in 0..=3 {
+            for drive in [0.0, 1.0] {
+                for output in [-24.0, 12.0] {
+                    for mix in [0.0, 1.0] {
+                        cases.push(("overdrive", vec![("mode", mode as f32), ("drive", drive), ("output", output), ("mix", mix)]));
+                    }
+                }
+            }
+        }
+        for bits in [1.0, 24.0] {
+            for mix in [0.0, 1.0] {
+                cases.push(("bitcrusher", vec![("bits", bits), ("mix", mix)]));
+            }
+        }
+        for amount in [0.0, 1.0] {
+            for mix in [0.0, 1.0] {
+                cases.push(("exciter", vec![("amount", amount), ("mix", mix)]));
+            }
+        }
+        for (kind, params) in &cases {
+            let c = SaturationCurve::of(kind, get(kind, params)).unwrap();
+            for k in 0..=132 {
+                let in_db = -120.0 + k as f32;
+                for out in [c.out_db(in_db), c.out_db_negative(in_db)] {
+                    assert!(out.is_finite() && out >= -120.0, "{kind} {params:?} at {in_db} dB: {out}");
+                }
+            }
         }
     }
 }
