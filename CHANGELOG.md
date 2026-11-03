@@ -7,6 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-11-03
+
+### Added
+
+- Drum Synth window: a pad for every sound of the kit, with its General MIDI note and colored by group. Click a pad
+  to play it (lower is louder) and select it, right-click to select it silently. Under the pads only the selected
+  sound's knobs show, plus Drive and Level for the whole kit, and the pads light up on what the track plays.
+- Sampler window: the sample's waveform with its name, length and loop, the root note on a strip of keys (click,
+  drag or wheel; double-click for C4), the amp envelope, and the root marked on the keyboard. Without a sample it
+  offers **Load sample…**.
+- New ready-made AI requests: *Shape the selected sound* (the request carries the selected pad and its
+  parameters) and *Tune the sample to the song's key* (it carries the sample and its estimated pitch).
+
 ## [0.28.0] - 2026-11-03
 
 ### Added
@@ -840,7 +853,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.29.0...HEAD
+[0.29.0]: https://github.com/marconardelli/ondina-daw/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/marconardelli/ondina-daw/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/marconardelli/ondina-daw/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/marconardelli/ondina-daw/compare/v0.25.0...v0.26.0
