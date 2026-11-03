@@ -1303,34 +1303,103 @@ mod tests {
                 ..Default::default()
             };
             let _ = ctx.run(raw, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let view = plugin_view(&inst.kind);
-                    let top = ui.cursor().top();
-                    match view {
-                        PluginView::Eq(_) => {
-                            let h = crate::eq_view::graph_height(ui.available_height());
-                            edits += crate::eq_view::eq_graph(ui, inst, crate::eq_view::curve_sample_rate(48000), h, gesture).edits.len();
-                        }
-                        PluginView::Synth(_) => {
-                            edits += crate::synth_view::synth_graph(ui, inst, crate::synth_view::curve_sample_rate(48000), gesture).edits.len();
-                        }
-                        PluginView::Dynamics(_) => {
-                            let h = crate::eq_view::graph_height(ui.available_height());
-                            edits += crate::dynamics_view::dynamics_graph(ui, inst, None, crate::eq_view::curve_sample_rate(48000), h, gesture).edits.len();
-                        }
-                        _ => {}
-                    }
-                    graph_h = ui.cursor().top() - top;
-                    if let PluginView::Generic(info) | PluginView::Eq(info) | PluginView::Synth(info) | PluginView::Dynamics(info) = view {
-                        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| edits += builtin_controls(ui, inst.id, info, inst, gesture).len());
-                        if info.category == PluginCategory::Instrument {
-                            notes.extend(crate::widgets::keyboard(ui, &mut crate::widgets::KeyboardState::default(), false, true));
-                        }
-                    }
-                });
+                egui::CentralPanel::default().show(ctx, |ui| graph_h = draw_view(ui, inst, gesture, &mut edits, &mut notes));
             });
         }
         (edits, notes, graph_h)
+    }
+
+    /// The view plugin_window_body draws under the header for `inst`, with the same functions: it adds the edits asked
+    /// for to `edits` and the notes sent to `notes`, and returns the height of the drawing above the knobs.
+    fn draw_view(ui: &mut egui::Ui, inst: &PluginInstance, gesture: &mut u64, edits: &mut usize, notes: &mut Vec<MidiKind>) -> f32 {
+        let view = plugin_view(&inst.kind);
+        let top = ui.cursor().top();
+        match view {
+            PluginView::Eq(_) => {
+                let h = crate::eq_view::graph_height(ui.available_height());
+                *edits += crate::eq_view::eq_graph(ui, inst, crate::eq_view::curve_sample_rate(48000), h, gesture).edits.len();
+            }
+            PluginView::Synth(_) => {
+                *edits += crate::synth_view::synth_graph(ui, inst, crate::synth_view::curve_sample_rate(48000), gesture).edits.len();
+            }
+            PluginView::Dynamics(_) => {
+                let h = crate::eq_view::graph_height(ui.available_height());
+                *edits += crate::dynamics_view::dynamics_graph(ui, inst, None, crate::eq_view::curve_sample_rate(48000), h, gesture).edits.len();
+            }
+            _ => {}
+        }
+        let graph_h = ui.cursor().top() - top;
+        if let PluginView::Generic(info) | PluginView::Eq(info) | PluginView::Synth(info) | PluginView::Dynamics(info) = view {
+            egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| *edits += builtin_controls(ui, inst.id, info, inst, gesture).len());
+            if info.category == PluginCategory::Instrument {
+                notes.extend(crate::widgets::keyboard(ui, &mut crate::widgets::KeyboardState::default(), false, true));
+            }
+        }
+        graph_h
+    }
+
+    /// What draw_bar_and_view measured.
+    struct BarAndView {
+        bar: egui::Rect,
+        view_top: f32,
+        graph_h: f32,
+        edits: usize,
+        asked: crate::plugin_ai::BarOut,
+    }
+
+    /// What a plug-in window of `project` draws for `inst` in a headless 900x900 context, two frames without input:
+    /// the AI bar of the header with no model connected, then the view under it.
+    fn draw_bar_and_view(project: &Project, inst: &PluginInstance) -> BarAndView {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut w = BarAndView { bar: egui::Rect::NOTHING, view_top: 0.0, graph_h: 0.0, edits: 0, asked: Default::default() };
+        let (mut gesture, mut notes) = (0, Vec::new());
+        for k in 0..2 {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(900.0, 900.0))),
+                time: Some(k as f64 / 60.0),
+                ..Default::default()
+            };
+            let _ = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let top = ui.cursor().top();
+                    w.asked = crate::plugin_ai::ai_bar_widgets(ui, project, inst.id, crate::assistant::AiEngine::Offline, false);
+                    w.bar = egui::Rect::from_min_max(egui::pos2(ui.max_rect().left(), top), egui::pos2(ui.max_rect().right(), ui.cursor().top()));
+                    w.view_top = ui.cursor().top();
+                    w.graph_h = draw_view(ui, inst, &mut gesture, &mut w.edits, &mut notes);
+                });
+            });
+        }
+        assert!(notes.is_empty() && gesture == 0, "{}", inst.kind);
+        w
+    }
+
+    #[test]
+    fn every_window_family_draws_its_view_under_the_ai_bar() {
+        let mut s = Session::new(false);
+        let vox = id_of(&run(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"})), "track_id");
+        let mut cases = Vec::new();
+        for kind in ["channel_eq", "dynamic_eq", "compressor", "limiter", "noise_gate", "de_esser", "reverb"] {
+            cases.push((id_of(&run(&mut s, "add_effect", json!({"track_id": vox, "kind": kind})), "plugin_id"), kind));
+        }
+        for kind in ["analog_synth", "fm_synth"] {
+            let t = id_of(&run(&mut s, "add_track", json!({"kind": "instrument", "name": kind, "instrument": kind})), "track_id");
+            cases.push((s.project.track(t).unwrap().instrument.as_ref().unwrap().id, kind));
+        }
+        for (pid, kind) in cases {
+            let inst = s.project.find_plugin(pid).unwrap().clone();
+            let w = draw_bar_and_view(&s.project, &inst);
+            assert!(!ondina_studio::prompts::plugin_bar_actions(&s.project, pid).is_empty(), "{kind}");
+            assert!(w.bar.height() > 60.0, "{kind}: the bar takes {}", w.bar.height());
+            assert!(w.view_top >= w.bar.bottom(), "{kind}: the view starts above the bar");
+            assert_eq!(w.asked, Default::default(), "{kind}: without a model the bar asks nothing");
+            assert_eq!(w.edits, 0, "{kind}");
+            match plugin_view(kind) {
+                PluginView::Eq(_) | PluginView::Synth(_) | PluginView::Dynamics(_) => assert!(w.graph_h > 100.0, "{kind}: drawing {}", w.graph_h),
+                PluginView::Generic(_) => assert_eq!(w.graph_h, 0.0, "{kind}"),
+                _ => panic!("{kind} has no window of its own"),
+            }
+        }
     }
 
     #[test]
