@@ -19,6 +19,9 @@ pub const F_HI: f32 = 20000.0;
 /// The graph shows gains from -DB_SPAN to +DB_SPAN.
 pub const DB_SPAN: f32 = 24.0;
 pub const POINT_R: f32 = 6.0;
+/// Margin between the graph's frame and the plot of the points: the point (POINT_R) and its hover ring (POINT_R + 2
+/// with a 1.5 stroke) stay inside the frame at ±DB_SPAN, F_LO and F_HI.
+pub const PLOT_INSET: f32 = POINT_R + 3.0;
 /// Half the side of the square around a point that takes the mouse.
 pub const HIT_R: f32 = 10.0;
 /// Wheel points (egui: 40 per notch) that double the Q; with Shift ten times as many.
@@ -123,6 +126,11 @@ pub fn freq_to_x(f: f32, plot: Rect) -> f32 {
 pub fn x_to_freq(x: f32, plot: Rect) -> f32 {
     let u = if plot.width() > 0.0 { (x - plot.left()) / plot.width() } else { 0.0 };
     unit_to_value_log(u, F_LO, F_HI)
+}
+
+/// The plot of the points inside the graph's frame `rect`.
+pub fn plot_rect(rect: Rect) -> Rect {
+    rect.shrink(PLOT_INSET)
 }
 
 /// +DB_SPAN at the top, -DB_SPAN at the bottom, clamped to the plot.
@@ -384,7 +392,7 @@ fn grid_freqs() -> impl Iterator<Item = f32> {
 pub fn eq_graph(ui: &mut egui::Ui, inst: &PluginInstance, sr: f32, height: f32, gesture: &mut u64) -> EqGraphOut {
     // the background first, hover only: the points registered after it take the clicks
     let (rect, bg) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), Sense::hover());
-    let plot = rect;
+    let plot = plot_rect(rect);
     let bands = eq_bands(inst);
     let drag_id = egui::Id::new(("eq-drag", inst.id));
     let mut drag: Option<EqDrag> = ui.data(|d| d.get_temp(drag_id));
@@ -818,7 +826,7 @@ mod tests {
                 let (plot, edits) = run_frames(&inst, &mut g, &[vec![], vec![]]);
                 assert!(edits.is_empty(), "{kind}: {edits:?}");
                 assert_eq!(g, 0);
-                assert!(plot.width() > 0.0 && plot.height() == 240.0);
+                assert!(plot.width() > 0.0 && plot.height() == 240.0 - 2.0 * PLOT_INSET);
             }
         }
     }
@@ -870,6 +878,50 @@ mod tests {
         let frames = [vec![], vec![Event::PointerMoved(hp)], vec![press(hp, PointerButton::Secondary, true)], vec![press(hp, PointerButton::Secondary, false)]];
         let (_, edits) = run_frames(&inst, &mut g, &frames);
         assert_eq!(edits, [EqEdit::Set { params: map(&[("hp_on", 1.0)]) }]);
+    }
+
+    #[test]
+    fn plot_inset_keeps_edge_points_inside() {
+        let r = plot();
+        let p = plot_rect(r);
+        assert!(PLOT_INSET >= POINT_R);
+        // the point, its hover ring (POINT_R + 2) and half of the ring's stroke stay in the frame
+        let whole = r.shrink(POINT_R + 2.75).expand(1e-3);
+        for f in [F_LO, F_HI] {
+            for db in [-DB_SPAN, DB_SPAN] {
+                let pos = point_pos(f, db, p);
+                assert!(whole.contains(pos), "{f} Hz {db} dB at {pos:?}");
+            }
+        }
+        assert!(near(freq_to_x(F_LO, p), r.left() + PLOT_INSET, 1e-3));
+        assert!(near(db_to_y(DB_SPAN, p), r.top() + PLOT_INSET, 1e-3));
+    }
+
+    #[test]
+    fn a_corner_point_is_drawn_and_dragged_whole() {
+        let inst = with(instance("dynamic_eq"), &[("b3_freq", 20000.0), ("b3_gain", 24.0)]);
+        let plot = harness_plot(&inst);
+        let pt = point_pos(20000.0, 24.0, plot);
+        // the frame is the area the graph allocated (240 points tall): the whole disc and its hover ring are in it
+        let graph = plot.expand(PLOT_INSET);
+        assert_eq!(graph.height(), 240.0);
+        assert!(graph.shrink(POINT_R + 2.75).expand(1e-3).contains(pt), "{pt:?} in {graph:?}");
+        // grab the outer edge of the disc, towards the corner of the graph
+        let grab = pt + vec2(POINT_R - 1.0, -(POINT_R - 1.0));
+        assert!(graph.contains(grab));
+        let mut frames = vec![vec![], vec![Event::PointerMoved(grab)], vec![press(grab, PointerButton::Primary, true)]];
+        for k in 1..=3 {
+            frames.push(vec![Event::PointerMoved(grab + vec2(-10.0, 12.0) * k as f32)]);
+        }
+        frames.push(vec![press(grab + vec2(-30.0, 36.0), PointerButton::Primary, false)]);
+        let mut g = 0;
+        let (_, edits) = run_frames(&inst, &mut g, &frames);
+        let drags: Vec<&BTreeMap<String, f32>> = edits.iter().filter_map(|e| match e {
+            EqEdit::Drag { params, key } if key == "pw3:eq2#1" => Some(params),
+            _ => None,
+        }).collect();
+        assert!(!drags.is_empty(), "{edits:?}");
+        assert!(drags.last().unwrap()["b3_gain"] < 24.0, "{drags:?}");
     }
 
     #[test]
