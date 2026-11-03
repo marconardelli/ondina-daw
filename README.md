@@ -173,6 +173,14 @@ extension: Ondina opens both.
   plug-in reports) and a filter by name (right-click → **Generic controls** opens it anyway). Space, Ctrl+Z and
   Ctrl+Shift+Z work in the window too; Settings → Display → *Open plug-ins in separate windows* off keeps them
   inside the main window.
+- **Saturation windows**: the Overdrive, Bitcrusher and Exciter windows draw the transfer curve (input against
+  output level, with the area where the level rises or is squashed), the Overdrive with its other three modes faint
+  and the negative half dashed for Fuzz and Tube, the Bitcrusher as steps, the Exciter for the band above its
+  frequency; a dot follows the input level while the song plays, with input and output meters and the level change.
+  Drag up and down on the curve for Drive, Harmonics or fewer bits (Shift for fine steps), the wheel for Output,
+  Downsampling or Mix, double-click for the default; every gesture is one undo step. The AI bar offers *Warm it up*
+  and *Add grit without getting louder* (Overdrive), *Lo-fi but still clear* (Bitcrusher) and *More air* (Exciter),
+  and the answer gives the values before and after and the level change in dB.
 - **Synth windows**: the Analog Synth window draws the shapes of both oscillators (click or wheel to change them,
   the square shows its pulse width), the filter curve (drag its point: left and right for the cutoff, up and down
   for the resonance; the wheel for the resonance) and the amp and filter envelopes with points to drag (Shift for

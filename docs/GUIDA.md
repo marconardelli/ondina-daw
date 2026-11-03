@@ -713,6 +713,26 @@ Ogni plug-in (strumenti, effetti ed effetti MIDI di Ondina, plug-in VST3) si reg
   picco che resta un attimo) e uscita (OUT). Il De-Esser mostra anche la banda che abbassa: la zona chiara è il
   massimo (Range), la linea quanto sta abbassando adesso; trascina il marcatore per cambiare la frequenza. In
   Bypass la curva diventa grigia e la GR torna a 0.
+- **Curva della saturazione**: Overdrive, Bitcrusher ed Exciter mostrano sopra le manopole la curva di
+  trasferimento: in orizzontale il livello che entra, in verticale quello che esce, in dB (da -48 a +12 dB; per il
+  Bitcrusher da -90 a +6 dB, così si vedono i gradini dei pochi bit). La diagonale è "nessun effetto"; la zona
+  ambra sopra la diagonale è quanto il plug-in alza il livello, quella azzurra sotto quanto lo schiaccia, e
+  una linea tratteggiata verticale segna 0 dBFS in ingresso. L'Overdrive disegna in evidenza la curva del modo
+  scelto e tenui le altre tre, per confrontare i caratteri; con Fuzz e Tube la metà negativa dell'onda è
+  tratteggiata, perché la trattano in modo diverso. Il Bitcrusher è una scala a gradini (Downsampling non cambia la
+  curva); l'Exciter mostra la curva della banda sopra Frequency. Tone dell'Overdrive e Frequency dell'Exciter sono
+  filtri e restano manopole. Trascina in su e in giù sulla curva: in su più effetto (Drive, Harmonics; per il
+  Bitcrusher meno bit), con Shift dieci volte più fine, e ogni trascinamento è un passo di annulla. La rotella
+  cambia Output (1 dB a scatto), Downsampling o il Mix dell'Exciter; il doppio clic riporta quei due parametri al
+  default. Passando sopra la curva leggi "in → out" per il livello sotto il mouse; mentre trascini, i parametri
+  della curva. Durante la riproduzione un pallino verde segue sulla curva il picco d'ingresso, a destra i misuratori
+  IN e OUT salgono con il picco che resta un attimo e sotto compare quanti dB in più o in meno escono. In Bypass la
+  curva diventa grigia, senza pallino e senza zone colorate.
+- **Richieste pronte della saturazione**: la barra AI dell'Overdrive offre *Warm it up*, *Add grit without getting
+  louder* e *Parallel crunch*; quella del Bitcrusher *Lo-fi but still clear* e *Retro 8-bit crunch*; quella
+  dell'Exciter *More air* e *Presence without harshness*. Nella risposta l'assistente dice i valori prima e dopo
+  (per l'Overdrive Mode, Drive e Output) e quanti dB in più o in meno si aspetta in uscita; la richiesta porta i
+  misuratori e il livello che la curva dà al picco d'ingresso del momento.
 - **Synth: oscillatori e filtro**: la finestra dell'Analog Synth mostra sopra le manopole due riquadri con la forma
   d'onda di Osc 1 e Osc 2: un clic passa alla forma successiva, il clic destro alla precedente, la rotella le scorre
   (una rotazione è un passo di annulla); sul quadrato la forma segue la pulse width, scritta anche come *PW*.
@@ -792,7 +812,8 @@ apre accanto alla loro finestra.
 - L'assistente riceve con la richiesta il plug-in, la traccia su cui sta, il resto della catena e tutti i
   parametri con valori e intervalli (per un VST3 i primi 64). Quando serve misura il mix con `analyze_mix`.
 - Per gli effetti sul canale e sul master la richiesta porta anche i misuratori del momento: picco d'ingresso e
-  d'uscita e, per compressore, limiter, gate, de-esser e Dynamic EQ, quanti dB di guadagno stanno togliendo. Con il
+  d'uscita e, per compressore, limiter, gate, de-esser e Dynamic EQ, quanti dB di guadagno stanno togliendo; per
+  Overdrive, Bitcrusher ed Exciter anche il livello che la curva dà al picco d'ingresso del momento. Con il
   trasporto fermo scendono al silenzio.
 - Cambia i parametri solo con i comandi della sessione: le manopole della finestra si muovono subito e tutto quello
   che ha fatto per una richiesta si annulla con un solo Ctrl+Z (o **Undo AI edit**).

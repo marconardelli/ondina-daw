@@ -267,6 +267,9 @@ pub fn default_size(inst: &PluginInstance) -> Vec2 {
     if crate::delay_view::has_delay_view(&inst.kind) {
         return egui::vec2(640.0, 600.0);
     }
+    if crate::saturation_view::has_saturation_view(&inst.kind) {
+        return egui::vec2(600.0, 560.0);
+    }
     match plugins::find(&inst.kind).map(|i| i.category) {
         Some(PluginCategory::Instrument) => egui::vec2(680.0, 600.0),
         Some(_) => egui::vec2(560.0, 440.0),
@@ -491,26 +494,29 @@ pub fn show_window(ctx: &egui::Context, separate: bool, id: Id, spec: WindowSpec
 
 /// The view a plug-in window shows under the header: the EQ graph above the knobs for the equalizers, the synth
 /// drawings for the Analog and FM Synth, the dynamics graph and meters for Compressor, Limiter, Noise Gate and
-/// De-Esser, the repeats on the tempo grid for the Stereo and Tape Delay.
+/// De-Esser, the repeats on the tempo grid for the Stereo and Tape Delay, the transfer curve and meters for
+/// Overdrive, Bitcrusher and Exciter.
 enum PluginView {
     Generic(&'static PluginInfo),
     Eq(&'static PluginInfo),
     Synth(&'static PluginInfo),
     Dynamics(&'static PluginInfo),
     Delay(&'static PluginInfo),
+    Saturation(&'static PluginInfo),
     Vst3,
     Unknown,
 }
 
-/// The view a plug-in window shows for `kind`: the EQ graph, the synth drawings, the dynamics graph or the delay
-/// repeats above the knobs when the plug-in has them, the knobs alone for the other built-ins, Ondina's generic
-/// window for a VST3.
+/// The view a plug-in window shows for `kind`: the EQ graph, the synth drawings, the dynamics graph, the delay
+/// repeats or the saturation curve above the knobs when the plug-in has them, the knobs alone for the other
+/// built-ins, Ondina's generic window for a VST3.
 fn plugin_view(kind: &str) -> PluginView {
     match plugins::find(kind) {
         Some(info) if crate::eq_view::has_eq_view(info.kind) => PluginView::Eq(info),
         Some(info) if crate::synth_view::has_synth_view(info.kind) => PluginView::Synth(info),
         Some(info) if crate::dynamics_view::has_dynamics_view(info.kind) => PluginView::Dynamics(info),
         Some(info) if crate::delay_view::has_delay_view(info.kind) => PluginView::Delay(info),
+        Some(info) if crate::saturation_view::has_saturation_view(info.kind) => PluginView::Saturation(info),
         Some(info) => PluginView::Generic(info),
         None if kind == "vst3" => PluginView::Vst3,
         None => PluginView::Unknown,
@@ -722,13 +728,25 @@ impl OndinaApp {
                 }
                 ui.add_space(theme::SP_3);
             }
+            if let PluginView::Saturation(_) = view {
+                // an atomic read of the meter table, without the session lock; the curve stays above the scrolling knobs
+                let meter = self.shared.plugin_meter(id);
+                let height = crate::eq_view::graph_height(ui.available_height());
+                let out = crate::saturation_view::saturation_graph(ui, &inst, meter, height, &mut self.plugin_windows.gesture);
+                self.apply_eq_edits(id, out.edits);
+                let visible = ui.ctx().input(|i| i.viewport().minimized) != Some(true);
+                if let Some(after) = crate::dynamics_view::meter_repaint(visible, self.playing(), out.levels) {
+                    ui.ctx().request_repaint_after(after);
+                }
+                ui.add_space(theme::SP_3);
+            }
             let instrument = plugins::find(&inst.kind).is_some_and(|i| i.category == PluginCategory::Instrument);
             let reserve = if instrument { crate::widgets::KEYBOARD_BLOCK_H + theme::SP_3 } else { 0.0 };
             let edits = egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .max_height((ui.available_height() - reserve).max(60.0))
                 .show(ui, |ui| match view {
-                    PluginView::Generic(info) | PluginView::Eq(info) | PluginView::Synth(info) | PluginView::Dynamics(info) | PluginView::Delay(info) => builtin_controls(ui, id, info, &inst, &mut self.plugin_windows.gesture),
+                    PluginView::Generic(info) | PluginView::Eq(info) | PluginView::Synth(info) | PluginView::Dynamics(info) | PluginView::Delay(info) | PluginView::Saturation(info) => builtin_controls(ui, id, info, &inst, &mut self.plugin_windows.gesture),
                     PluginView::Vst3 => {
                         let mut filter = self.plugin_windows.filters.get(&id).cloned().unwrap_or_default();
                         let edits = vst3_controls(ui, id, &inst, &mut filter, &mut self.plugin_windows.gesture);
@@ -1303,17 +1321,19 @@ mod tests {
         let synth = |k: &str| matches!(plugin_view(k), PluginView::Synth(i) if i.kind == k);
         let dynamics = |k: &str| matches!(plugin_view(k), PluginView::Dynamics(i) if i.kind == k);
         let delay = |k: &str| matches!(plugin_view(k), PluginView::Delay(i) if i.kind == k);
+        let saturation = |k: &str| matches!(plugin_view(k), PluginView::Saturation(i) if i.kind == k);
         let generic = |k: &str| matches!(plugin_view(k), PluginView::Generic(i) if i.kind == k);
         assert!(eq("channel_eq") && eq("dynamic_eq"));
         assert!(synth("analog_synth") && synth("fm_synth"));
         assert!(dynamics("compressor") && dynamics("limiter") && dynamics("noise_gate") && dynamics("de_esser"));
         assert!(delay("stereo_delay") && delay("tape_delay"));
+        assert!(saturation("overdrive") && saturation("bitcrusher") && saturation("exciter"));
         assert!(generic("reverb") && generic("organ") && generic("arpeggiator"));
         assert!(matches!(plugin_view("vst3"), PluginView::Vst3));
         assert!(matches!(plugin_view("from_the_future"), PluginView::Unknown));
         // every built-in opens a window of its own: none falls to the VST3 or unknown view
         for info in plugins::registry() {
-            assert!(eq(info.kind) || synth(info.kind) || dynamics(info.kind) || delay(info.kind) || generic(info.kind), "{}", info.kind);
+            assert!(eq(info.kind) || synth(info.kind) || dynamics(info.kind) || delay(info.kind) || saturation(info.kind) || generic(info.kind), "{}", info.kind);
         }
     }
 
@@ -1358,10 +1378,14 @@ mod tests {
                 let tempo = crate::delay_view::DelayTempo { bpm: 120.0, sig: ondina_core::model::TimeSignature { numerator: 4, denominator: 4 }, varies: false };
                 *edits += crate::delay_view::delay_graph(ui, inst, tempo, gesture).edits.len();
             }
+            PluginView::Saturation(_) => {
+                let h = crate::eq_view::graph_height(ui.available_height());
+                *edits += crate::saturation_view::saturation_graph(ui, inst, None, h, gesture).edits.len();
+            }
             _ => {}
         }
         let graph_h = ui.cursor().top() - top;
-        if let PluginView::Generic(info) | PluginView::Eq(info) | PluginView::Synth(info) | PluginView::Dynamics(info) | PluginView::Delay(info) = view {
+        if let PluginView::Generic(info) | PluginView::Eq(info) | PluginView::Synth(info) | PluginView::Dynamics(info) | PluginView::Delay(info) | PluginView::Saturation(info) = view {
             egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| *edits += builtin_controls(ui, inst.id, info, inst, gesture).len());
             if info.category == PluginCategory::Instrument {
                 notes.extend(crate::widgets::keyboard(ui, &mut crate::widgets::KeyboardState::default(), false, true));
@@ -1379,7 +1403,7 @@ mod tests {
         let body = &body[..body.find(concat!("let instrument = ", "plugins::find")).unwrap()];
         let helper = &src[src.find(concat!("fn draw_", "view(ui")).unwrap()..];
         let helper = &helper[..helper.find(concat!("let graph_h = ", "ui.cursor()")).unwrap()];
-        let families = ["Eq", "Synth", "Dynamics", "Delay"];
+        let families = ["Eq", "Synth", "Dynamics", "Delay", "Saturation"];
         for family in families {
             assert!(body.contains(&format!("if let PluginView::{family}(_) = view {{")), "{family}: not drawn by plugin_window_body");
             assert!(helper.contains(&format!("PluginView::{family}(_) => {{")), "{family}: not drawn by draw_view");
@@ -1429,7 +1453,7 @@ mod tests {
         let mut s = Session::new(false);
         let vox = id_of(&run(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"})), "track_id");
         let mut cases = Vec::new();
-        for kind in ["channel_eq", "dynamic_eq", "compressor", "limiter", "noise_gate", "de_esser", "stereo_delay", "tape_delay", "reverb"] {
+        for kind in ["channel_eq", "dynamic_eq", "compressor", "limiter", "noise_gate", "de_esser", "stereo_delay", "tape_delay", "overdrive", "bitcrusher", "exciter", "reverb"] {
             cases.push((id_of(&run(&mut s, "add_effect", json!({"track_id": vox, "kind": kind})), "plugin_id"), kind));
         }
         for kind in ["analog_synth", "fm_synth"] {
@@ -1445,7 +1469,7 @@ mod tests {
             assert_eq!(w.asked, Default::default(), "{kind}: without a model the bar asks nothing");
             assert_eq!(w.edits, 0, "{kind}");
             match plugin_view(kind) {
-                PluginView::Eq(_) | PluginView::Synth(_) | PluginView::Dynamics(_) | PluginView::Delay(_) => assert!(w.graph_h > 100.0, "{kind}: drawing {}", w.graph_h),
+                PluginView::Eq(_) | PluginView::Synth(_) | PluginView::Dynamics(_) | PluginView::Delay(_) | PluginView::Saturation(_) => assert!(w.graph_h > 100.0, "{kind}: drawing {}", w.graph_h),
                 PluginView::Generic(_) => assert_eq!(w.graph_h, 0.0, "{kind}"),
                 _ => panic!("{kind} has no window of its own"),
             }
@@ -1462,7 +1486,7 @@ mod tests {
             assert!(notes.is_empty(), "{}: {notes:?}", info.kind);
             assert_eq!(g, 0, "{}", info.kind);
             match plugin_view(info.kind) {
-                PluginView::Eq(_) | PluginView::Synth(_) | PluginView::Dynamics(_) | PluginView::Delay(_) => assert!(graph_h > 100.0, "{}: drawing {graph_h}", info.kind),
+                PluginView::Eq(_) | PluginView::Synth(_) | PluginView::Dynamics(_) | PluginView::Delay(_) | PluginView::Saturation(_) => assert!(graph_h > 100.0, "{}: drawing {graph_h}", info.kind),
                 _ => assert_eq!(graph_h, 0.0, "{}", info.kind),
             }
         }
@@ -1478,5 +1502,23 @@ mod tests {
         assert!(header < companion && companion < view, "the header with the AI bar comes first, for every window");
         let in_header = &src[src.find(concat!("fn plugin_", "header(")).unwrap()..];
         assert!(in_header.contains(concat!("self.plugin_ai_", "bar(ui, p, pid)")));
+    }
+
+    #[test]
+    fn saturation_kinds_get_the_saturation_view() {
+        for kind in ["overdrive", "bitcrusher", "exciter"] {
+            assert!(matches!(plugin_view(kind), PluginView::Saturation(i) if i.kind == kind), "{kind}");
+            assert!(default_size(&instance(kind, None)).y >= 520.0, "{kind}: room for the curve and the knobs");
+        }
+        assert!(matches!(plugin_view("reverb"), PluginView::Generic(_)));
+    }
+
+    #[test]
+    fn the_plugin_window_uses_the_saturation_view() {
+        let src = include_str!("plugin_window.rs");
+        for want in [concat!("has_saturation_view", "("), concat!("saturation_graph", "("), concat!("PluginView::Saturation", "(info)")] {
+            assert!(src.contains(want), "plugin_window.rs does not use {want}");
+        }
+        assert_eq!(src.matches(concat!("self.plugin_ai_bar", "(")).count(), 1, "one AI bar per window");
     }
 }

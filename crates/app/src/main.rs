@@ -42,6 +42,7 @@ mod plugin_params;
 mod plugin_window;
 mod region_edit;
 mod region_clipboard;
+mod saturation_view;
 mod session_players;
 mod settings_ui;
 mod status_bar;
