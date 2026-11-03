@@ -3572,3 +3572,114 @@ mod transfer_tests {
         assert_eq!(thr("de_esser", &[("threshold", -33.0)]), -33.0);
     }
 }
+
+#[cfg(test)]
+mod saturation_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    const SR: f32 = 48000.0;
+    const BLOCK: usize = 480;
+
+    /// An effect set up the way the engine does it: registry defaults, then `params`.
+    fn effect(kind: &str, params: &[(&str, f32)]) -> Box<dyn Effect> {
+        let mut fx = crate::create_effect(kind, SR).expect("effect in the registry");
+        let map: BTreeMap<String, f32> = params.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        crate::configure(kind, &map, |k, v| fx.set_param(k, v));
+        fx
+    }
+
+    /// The left channel of `input` through `fx`, in blocks of BLOCK.
+    fn render(fx: &mut dyn Effect, input: &[f32]) -> Vec<f32> {
+        let mut l = input.to_vec();
+        let mut r = input.to_vec();
+        let ctx = ProcessContext::idle(SR);
+        for (a, b) in l.chunks_mut(BLOCK).zip(r.chunks_mut(BLOCK)) {
+            fx.process(a, b, &ctx);
+        }
+        l
+    }
+
+    fn sine(freq: f32, amp: f32, len: usize) -> Vec<f32> {
+        (0..len).map(|n| amp * (std::f32::consts::TAU * freq * n as f32 / SR).sin()).collect()
+    }
+
+    #[test]
+    fn saturation_processors_sound_as_before() {
+        // The processors as they computed before the shared shapes, copied here so a change of their sound shows up.
+        fn shape(mode: u8, x: f32) -> f32 {
+            match mode {
+                1 => x.clamp(-1.0, 1.0),
+                2 => {
+                    let y = x.signum() * (1.0 - (-x.abs() * 2.0).exp());
+                    (y + 0.2 * y * y).clamp(-1.0, 1.0)
+                }
+                3 => {
+                    if x >= 0.0 { x.tanh() } else { (x * 0.7).tanh() * 1.1 }
+                }
+                _ => x.tanh(),
+            }
+        }
+        fn overdrive_reference(mode: u8, drive: f32, tone: f32, output_db: f32, mix: f32, input: &[f32]) -> Vec<f32> {
+            let output = db_to_gain(output_db);
+            let mut lp = OnePole::default();
+            let mut dc = DcBlock::default();
+            let mut out = Vec::with_capacity(input.len());
+            for block in input.chunks(BLOCK) {
+                let pre = 1.0 + drive * drive * 60.0;
+                let cut = 800.0 * 2f32.powf(tone * 4.0);
+                lp.set_freq(cut, SR);
+                let comp = 1.0 / (1.0 + drive * 2.0);
+                for &v in block {
+                    let a = dc.process(lp.process(shape(mode, v * pre)));
+                    out.push(v * (1.0 - mix) + a * mix * output * (0.5 + comp));
+                }
+            }
+            out
+        }
+        fn bitcrusher_reference(bits: f32, down: f32, mix: f32, input: &[f32]) -> Vec<f32> {
+            let down = down.max(1.0);
+            let (mut count, mut hold) = (0.0f32, 0.0f32);
+            let q = 2f32.powf(bits - 1.0);
+            input
+                .iter()
+                .map(|&v| {
+                    count += 1.0;
+                    if count >= down {
+                        count -= down;
+                        hold = (v * q).round() / q;
+                    }
+                    v * (1.0 - mix) + hold * mix
+                })
+                .collect()
+        }
+        fn exciter_reference(freq: f32, amount: f32, mix: f32, input: &[f32]) -> Vec<f32> {
+            let mut hp1 = Biquad::new(BiquadKind::HighPass, freq, 0.707, 0.0, SR);
+            let mut hp2 = Biquad::new(BiquadKind::HighPass, freq, 0.707, 0.0, SR);
+            let d = 1.0 + amount * 10.0;
+            input
+                .iter()
+                .map(|&v| {
+                    let h = hp2.process((hp1.process(v) * d).tanh());
+                    v + h * mix * 0.5
+                })
+                .collect()
+        }
+
+        let input: Vec<f32> = sine(440.0, 0.9, 1500).iter().zip(sine(3000.0, 0.2, 1500)).map(|(a, b)| a + b).collect();
+        for mode in 0..=3u8 {
+            for (drive, tone, output, mix) in [(0.4, 0.5, -3.0, 1.0), (0.9, 0.8, 6.0, 0.6)] {
+                let mut fx = effect("overdrive", &[("mode", mode as f32), ("drive", drive), ("tone", tone), ("output", output), ("mix", mix)]);
+                assert_eq!(render(fx.as_mut(), &input), overdrive_reference(mode, drive, tone, output, mix, &input), "overdrive mode {mode} drive {drive}");
+            }
+        }
+        for (bits, down, mix) in [(5.0, 3.0, 0.8), (8.0, 1.0, 1.0)] {
+            let mut fx = effect("bitcrusher", &[("bits", bits), ("downsample", down), ("mix", mix)]);
+            assert_eq!(render(fx.as_mut(), &input), bitcrusher_reference(bits, down, mix, &input), "bitcrusher {bits} bits");
+        }
+        for (freq, amount, mix) in [(3000.0, 0.7, 0.4), (1000.0, 0.2, 1.0)] {
+            let mut fx = effect("exciter", &[("freq", freq), ("amount", amount), ("mix", mix)]);
+            assert_eq!(render(fx.as_mut(), &input), exciter_reference(freq, amount, mix, &input), "exciter {freq} Hz");
+        }
+    }
+}
