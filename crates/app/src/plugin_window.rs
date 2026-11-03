@@ -71,6 +71,8 @@ pub struct PluginWindows {
     pub filters: HashMap<Id, String>,
     /// The keyboard of each instrument window.
     pub keyboards: HashMap<Id, crate::synth_view::InstrumentKeys>,
+    /// The pad selected in each Drum Synth window (General MIDI note); it stays while the app runs.
+    pub drum_pads: HashMap<Id, u8>,
     /// Keys still held when their window closed: the app sends their NoteOff at the end of the frame.
     note_offs: Vec<(Id, u8)>,
 }
@@ -200,8 +202,14 @@ impl PluginWindows {
             self.open.clear();
             self.rects.clear();
             self.filters.clear();
+            self.drum_pads.clear();
             self.focus.clear();
         }
+    }
+
+    /// The pad selected in Drum Synth `id`'s window: the Kick until another is chosen.
+    pub fn drum_pad(&self, id: Id) -> u8 {
+        self.drum_pads.get(&id).copied().unwrap_or(ondina_core::drum_kit::DEFAULT_PAD)
     }
 
     pub fn remember(&mut self, id: Id, r: WindowRect) {

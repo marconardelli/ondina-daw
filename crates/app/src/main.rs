@@ -19,6 +19,7 @@ mod control_bar;
 mod delay_view;
 mod doc_guard;
 mod drag_cancel;
+mod drum_view;
 mod dynamics_view;
 mod editor_header;
 mod editors;
