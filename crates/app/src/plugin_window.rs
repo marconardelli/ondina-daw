@@ -460,10 +460,12 @@ pub fn show_window(ctx: &egui::Context, separate: bool, id: Id, spec: WindowSpec
     })
 }
 
-/// The view a plug-in window shows under the header: the EQ graph above the knobs for the equalizers. The next slices add dynamics and synth.
+/// The view a plug-in window shows under the header: the EQ graph above the knobs for the equalizers, the dynamics
+/// graph and meters for Compressor, Limiter, Noise Gate and De-Esser.
 enum PluginView {
     Generic(&'static PluginInfo),
     Eq(&'static PluginInfo),
+    Dynamics(&'static PluginInfo),
     Vst3,
     Unknown,
 }
@@ -632,6 +634,7 @@ impl OndinaApp {
             ui.add_space(theme::SP_3);
             let view = match plugins::find(&inst.kind) {
                 Some(info) if crate::eq_view::has_eq_view(info.kind) => PluginView::Eq(info),
+                Some(info) if crate::dynamics_view::has_dynamics_view(info.kind) => PluginView::Dynamics(info),
                 Some(info) => PluginView::Generic(info),
                 None if inst.kind == "vst3" => PluginView::Vst3,
                 None => PluginView::Unknown,
@@ -644,10 +647,23 @@ impl OndinaApp {
                 self.apply_eq_edits(id, out.edits);
                 ui.add_space(theme::SP_3);
             }
+            if let PluginView::Dynamics(_) = view {
+                // an atomic read of the meter table, without the session lock; the graph stays above the scrolling knobs
+                let meter = self.shared.plugin_meter(id);
+                let sr = crate::eq_view::curve_sample_rate(self.view.sample_rate);
+                let height = crate::eq_view::graph_height(ui.available_height());
+                let out = crate::dynamics_view::dynamics_graph(ui, &inst, meter, sr, height, &mut self.plugin_windows.gesture);
+                self.apply_eq_edits(id, out.edits);
+                let visible = ui.ctx().input(|i| i.viewport().minimized) != Some(true);
+                if let Some(after) = crate::dynamics_view::meter_repaint(visible, self.playing(), out.levels) {
+                    ui.ctx().request_repaint_after(after);
+                }
+                ui.add_space(theme::SP_3);
+            }
             let edits = egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| match view {
-                    PluginView::Generic(info) | PluginView::Eq(info) => builtin_controls(ui, id, info, &inst, &mut self.plugin_windows.gesture),
+                    PluginView::Generic(info) | PluginView::Eq(info) | PluginView::Dynamics(info) => builtin_controls(ui, id, info, &inst, &mut self.plugin_windows.gesture),
                     PluginView::Vst3 => {
                         let mut filter = self.plugin_windows.filters.get(&id).cloned().unwrap_or_default();
                         let edits = vst3_controls(ui, id, &inst, &mut filter, &mut self.plugin_windows.gesture);

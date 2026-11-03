@@ -94,6 +94,8 @@ pub fn db_to_y(db: f32, span: (f32, f32), plot: Rect) -> f32 {
     (plot.bottom() - u * plot.height()).clamp(plot.top(), plot.bottom())
 }
 
+/// The inverse of db_to_y, unclamped (the graph itself only reads input levels off the pointer).
+#[cfg(test)]
 pub fn y_to_db(y: f32, span: (f32, f32), plot: Rect) -> f32 {
     if plot.height() <= 0.0 {
         return span.0;
@@ -1047,6 +1049,15 @@ mod tests {
         let src = include_str!("dynamics_view.rs");
         assert!(!src.contains(concat!("plugin_ai_bar", "(")));
         assert!(!src.contains(concat!("plugin_header", "(")));
+    }
+
+    #[test]
+    fn the_plugin_window_uses_the_dynamics_view() {
+        let src = include_str!("plugin_window.rs");
+        for want in [concat!("has_dynamics_view", "("), concat!("dynamics_graph", "("), concat!("meter_repaint", "("), concat!("PluginView::Dynamics", "(info)")] {
+            assert!(src.contains(want), "plugin_window.rs does not use {want}");
+        }
+        assert_eq!(src.matches(concat!("self.plugin_ai_bar", "(")).count(), 1, "one AI bar per window");
     }
 
     #[test]
