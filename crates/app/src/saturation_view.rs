@@ -4,16 +4,17 @@
 
 use std::collections::BTreeMap;
 
-use eframe::egui::{self, Rect, Vec2};
+use eframe::egui::{self, CursorIcon, PointerButton, Pos2, Rect, Sense, Stroke, Vec2};
 use ondina_core::model::{Id, PluginInstance};
 use ondina_core::plugins;
 use ondina_dsp::effects::SaturationCurve;
 use ondina_dsp::util::gain_to_db;
+use ondina_engine::PluginMeter;
 
-use crate::dynamics_view::{MeterLevels, SILENCE_DB, WHEEL_NOTCH};
-use crate::eq_view;
+use crate::dynamics_view::{db_text, db_to_x, db_to_y, hold_line, meter_levels, x_to_db, MeterLevels, METER_BAR_W, SILENCE_DB, WHEEL_NOTCH};
+use crate::eq_view::{self, EqEdit};
 use crate::theme;
-use crate::widgets::format_param_value;
+use crate::widgets::{format_param_value, hold_marker_shown, meter_fill, paint_meter_fill, PeakHold};
 
 /// The three saturation kinds and what the mouse moves on their curve.
 #[derive(Debug)]
@@ -225,10 +226,217 @@ pub fn graph_layout(rect: Rect) -> (Rect, Rect) {
     (frame, meters)
 }
 
+
+// ---------------------------------------------------------------------------- drawing and mouse
+
+/// What a frame of the saturation graph asks for and showed.
+pub struct SatGraphOut {
+    /// The plot of the curve (tests start their gestures in it).
+    #[cfg(test)]
+    pub plot: Rect,
+    pub edits: Vec<EqEdit>,
+    /// What the meters showed: the window asks for a repaint while they move.
+    pub levels: MeterLevels,
+}
+
+/// The drag on the curve going on, kept in egui's memory between frames.
+#[derive(Clone, Copy)]
+struct SatDrag {
+    start: f32,
+    moved: f32,
+}
+
+/// The peak markers of the two meters.
+#[derive(Clone, Copy, Default)]
+struct MeterHolds {
+    input: PeakHold,
+    output: PeakHold,
+}
+
+/// Whether `params` would change any value of `inst`.
+fn changes(inst: &PluginInstance, params: &BTreeMap<String, f32>) -> bool {
+    params.iter().any(|(k, v)| inst.param(k) != *v)
+}
+
+/// The points of a curve in (input, output) dB on the plot.
+fn screen_line(pts: &[(f32, f32)], span: (f32, f32), plot: Rect) -> Vec<Pos2> {
+    pts.iter().map(|(i, o)| egui::pos2(db_to_x(*i, span, plot), db_to_y(*o, span, plot))).collect()
+}
+
+/// Draws the saturation graph of `inst` across the available width, `height` points tall, reading the insert's live
+/// `meter`, and turns what the mouse does into edits. `gesture` is the window's drag counter
+/// (`PluginWindows::gesture`).
+pub fn saturation_graph(ui: &mut egui::Ui, inst: &PluginInstance, meter: Option<PluginMeter>, height: f32, gesture: &mut u64) -> SatGraphOut {
+    let levels = meter_levels(meter, inst.bypass);
+    let (Some(spec), Some(curve)) = (spec(&inst.kind), curve_of(inst)) else {
+        return SatGraphOut {
+            #[cfg(test)]
+            plot: Rect::NOTHING,
+            edits: Vec::new(),
+            levels,
+        };
+    };
+    let span = spec.span;
+    // the background first, hover only: the gesture surface registered after it takes the clicks
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), Sense::hover());
+    let (frame, meters) = graph_layout(rect);
+    let plot = frame.shrink(eq_view::PLOT_INSET);
+    ui.interact(meters, ui.id().with("sat-meters"), Sense::hover()).on_hover_text("Input peak \u{00B7} Output peak");
+
+    // the whole curve square is the surface of the gesture
+    let fine = ui.input(|i| i.modifiers.shift);
+    let mut edits = Vec::new();
+    let drag_id = egui::Id::new(("sat-drag", inst.id));
+    let mut drag: Option<SatDrag> = ui.data(|d| d.get_temp(drag_id));
+    let r = ui.interact(frame, ui.id().with("sat-curve"), Sense::click_and_drag());
+    if r.drag_started_by(PointerButton::Primary) {
+        *gesture += 1;
+        drag = Some(SatDrag { start: inst.param(spec.drag_param), moved: 0.0 });
+    }
+    let mut dragging = false;
+    if r.dragged_by(PointerButton::Primary) {
+        if let Some(d) = drag.as_mut() {
+            d.moved = eq_view::accumulate(Vec2::new(0.0, d.moved), r.drag_delta(), fine).y;
+            let params = drag_value(inst, d.start, d.moved);
+            if changes(inst, &params) {
+                edits.push(EqEdit::Drag { params, key: drag_key(inst.id, *gesture) });
+            }
+            dragging = true;
+        }
+    }
+    if r.drag_stopped() {
+        drag = None;
+    }
+    if r.double_clicked() {
+        edits.push(EqEdit::Set { params: point_reset(inst) });
+    }
+    if r.hovered() || dragging {
+        ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
+    }
+    if r.hovered() {
+        let s = ui.input(|i| i.raw_scroll_delta);
+        if s != Vec2::ZERO {
+            if let Some(params) = wheel_values(inst, s, fine) {
+                edits.push(EqEdit::Drag { params, key: wheel_key(inst.id) });
+            }
+            // the wheel was for this curve: the knobs under the graph do not scroll with it
+            ui.input_mut(|i| {
+                i.raw_scroll_delta = Vec2::ZERO;
+                i.smooth_scroll_delta = Vec2::ZERO;
+            });
+        }
+    }
+    ui.data_mut(|m| match drag {
+        Some(d) => m.insert_temp(drag_id, d),
+        None => m.remove::<SatDrag>(drag_id),
+    });
+
+    let painter = ui.painter_at(rect);
+    // grid, 0 dBFS in, diagonal, the other modes, what the plug-in adds and takes away, the curve, the live level
+    painter.rect(frame, theme::R_LG, theme::INSET, Stroke::new(1.0_f32, theme::BORDER));
+    let label_every = if span.1 - span.0 > 60.0 { 30 } else { 12 };
+    let steps = ((span.1 - span.0) / 6.0).round() as i32;
+    for k in 0..=steps {
+        let db = span.1 - 6.0 * k as f32;
+        let color = if k % 2 == 0 { theme::GRID_BAR_LINE } else { theme::GRID_BEAT_LINE };
+        let (x, y) = (db_to_x(db, span, plot), db_to_y(db, span, plot));
+        painter.vline(x, plot.y_range(), Stroke::new(1.0_f32, color));
+        painter.hline(plot.x_range(), y, Stroke::new(1.0_f32, color));
+        if (k * 6) % label_every == 0 && k < steps {
+            let text = format!("{db:.0}");
+            painter.text(egui::pos2(plot.left() + theme::SP_1, y + theme::SP_1), egui::Align2::LEFT_TOP, &text, theme::label_font(), theme::TEXT_3);
+            if k > 0 {
+                painter.text(egui::pos2(x - theme::SP_1, plot.bottom() - theme::SP_1), egui::Align2::RIGHT_BOTTOM, text, theme::label_font(), theme::TEXT_3);
+            }
+        }
+    }
+    if span.0 < 0.0 && span.1 > 0.0 {
+        let zx = db_to_x(0.0, span, plot);
+        painter.extend(egui::Shape::dashed_line(&[egui::pos2(zx, plot.top()), egui::pos2(zx, plot.bottom())], Stroke::new(1.0_f32, theme::GRID_BAR_LINE), 4.0, 3.0));
+    }
+    painter.line_segment([egui::pos2(plot.left(), plot.bottom()), egui::pos2(plot.right(), plot.top())], Stroke::new(1.0_f32, theme::CENTER_LINE));
+    let n = (plot.width() / 2.0).clamp(48.0, 300.0) as usize;
+    for ghost in ghost_curves(inst, span, n) {
+        painter.add(egui::Shape::line(screen_line(&ghost, span, plot), Stroke::new(1.0_f32, eq_view::faded(theme::TEXT_3, 70))));
+    }
+    let pts = curve_points(&curve, span, n);
+    if !inst.bypass {
+        let xs: Vec<f32> = pts.iter().map(|(i, _)| db_to_x(*i, span, plot)).collect();
+        let diag: Vec<f32> = pts.iter().map(|(i, _)| db_to_y(*i, span, plot)).collect();
+        let ys: Vec<f32> = pts.iter().map(|(_, o)| db_to_y(*o, span, plot)).collect();
+        // above the diagonal: how much the plug-in raises the level; under it: how much it squashes
+        let above: Vec<f32> = ys.iter().zip(&diag).map(|(y, d)| y.min(*d)).collect();
+        let under: Vec<f32> = ys.iter().zip(&diag).map(|(y, d)| y.max(*d)).collect();
+        eq_view::fill_between(&painter, &xs, &above, &diag, eq_view::faded(theme::SOLO, 40));
+        eq_view::fill_between(&painter, &xs, &diag, &under, eq_view::faded(theme::MONITOR, 40));
+    }
+    let curve_color = if inst.bypass { theme::TEXT_DISABLED } else { theme::TEXT };
+    painter.add(egui::Shape::line(screen_line(&pts, span, plot), Stroke::new(2.0_f32, curve_color)));
+    if let Some(neg) = negative_points(&curve, span, n) {
+        painter.extend(egui::Shape::dashed_line(&screen_line(&neg, span, plot), Stroke::new(1.5_f32, curve_color), 6.0, 4.0));
+    }
+    if let Some((i, o)) = live_point(&curve, levels, inst.bypass) {
+        painter.circle_filled(egui::pos2(db_to_x(i, span, plot), db_to_y(o, span, plot)), 4.0, theme::PLAY);
+    }
+    if let Some(p) = r.hover_pos().or_else(|| dragging.then(|| r.interact_pointer_pos()).flatten()) {
+        let in_db = x_to_db(p.x, span, plot);
+        let on_curve = (db_to_y(curve.out_db(in_db), span, plot) - p.y).abs() <= eq_view::HIT_R;
+        if dragging || on_curve {
+            // the curve's parameters beside the pointer; they may run over the meters, wider than a small curve
+            let galley = painter.layout_no_wrap(readout(inst), theme::number_font(), theme::TEXT);
+            let size = galley.size() + Vec2::splat(2.0 * theme::SP_3);
+            let room = Rect::from_min_max(plot.min, egui::pos2(rect.right(), plot.bottom()));
+            let b = eq_view::readout_rect(p, size, room);
+            painter.rect(b, theme::R_LG, theme::RAISED, Stroke::new(1.0_f32, theme::BORDER));
+            painter.galley(b.min + Vec2::splat(theme::SP_3), galley, theme::TEXT);
+        } else {
+            let text = hover_readout(&curve, in_db);
+            painter.text(egui::pos2(plot.left() + theme::SP_3, plot.top() + theme::SP_3), egui::Align2::LEFT_TOP, text, theme::number_font(), theme::TEXT_3);
+        }
+    }
+
+    // the meters: input and output rise from the bottom; under them, how much the output differs from the input
+    let holds_id = egui::Id::new(("sat-holds", inst.id));
+    let mut holds: MeterHolds = ui.data(|d| d.get_temp(holds_id)).unwrap_or_default();
+    let dt = ui.input(|i| i.stable_dt).min(0.1);
+    holds.input.update(levels.input_db, dt);
+    holds.output.update(levels.output_db, dt);
+    ui.data_mut(|d| d.insert_temp(holds_id, holds));
+    let col_w = SAT_METER_COL_W / 2.0;
+    let text_h = 14.0;
+    for (k, (label, db, hold)) in [("IN", levels.input_db, holds.input), ("OUT", levels.output_db, holds.output)].into_iter().enumerate() {
+        let cx = meters.left() + col_w * (k as f32 + 0.5);
+        painter.text(egui::pos2(cx, meters.top()), egui::Align2::CENTER_TOP, label, theme::label_font(), theme::TEXT_3);
+        let bar = Rect::from_min_max(egui::pos2(cx - METER_BAR_W / 2.0, meters.top() + text_h), egui::pos2(cx + METER_BAR_W / 2.0, meters.bottom() - 2.0 * text_h));
+        painter.rect_filled(bar, theme::R_SM, theme::LCD);
+        paint_meter_fill(&painter, bar, meter_fill(db));
+        if hold_marker_shown(hold.db) {
+            hold_line(&painter, bar, bar.bottom() - meter_fill(hold.db) * bar.height(), if hold.db > 0.0 { theme::REC } else { theme::SOLO });
+        }
+        painter.text(egui::pos2(cx, meters.bottom() - text_h), egui::Align2::CENTER_BOTTOM, db_text(db), theme::number_font(), theme::TEXT_2);
+    }
+    if levels.input_db > SILENCE_DB {
+        let change = format_param_value(levels.output_db - levels.input_db, "dB");
+        painter.text(egui::pos2(meters.center().x, meters.bottom()), egui::Align2::CENTER_BOTTOM, change, theme::number_font(), theme::TEXT_2);
+    }
+
+    let mut help = hint(spec.kind).to_string();
+    if !curve.symmetric() {
+        help.push_str(" \u{00B7} Dashed: the negative half");
+    }
+    ui.label(egui::RichText::new(help).small().color(theme::TEXT_3));
+    SatGraphOut {
+        #[cfg(test)]
+        plot,
+        edits,
+        levels,
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eframe::egui::{pos2, vec2};
+    use eframe::egui::{pos2, vec2, Event, Modifiers, MouseWheelUnit};
 
     fn instance(kind: &str) -> PluginInstance {
         PluginInstance { id: 3, kind: kind.into(), params: Default::default(), bypass: false, preset: None, sample: None, vst3_path: None, vst3_params: vec![], vst3_state: None }
@@ -422,5 +630,189 @@ mod tests {
         assert_eq!(meters.height(), 200.0);
         // never smaller than 60 points
         assert_eq!(graph_layout(Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 150.0))).0.width(), 60.0);
+    }
+
+    /// What the harness saw over all its frames.
+    struct Run {
+        plot: Rect,
+        edits: Vec<EqEdit>,
+        levels: Option<MeterLevels>,
+    }
+
+    /// Frames of the saturation graph in a headless 700x500 context, one per entry of `frames` (the events of that
+    /// frame), with `modifiers` held throughout.
+    fn run_frames(inst: &PluginInstance, meter: Option<PluginMeter>, gesture: &mut u64, frames: &[Vec<Event>], modifiers: Modifiers) -> Run {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut run = Run { plot: Rect::NOTHING, edits: Vec::new(), levels: None };
+        for (k, events) in frames.iter().enumerate() {
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(700.0, 500.0))),
+                time: Some(k as f64 / 60.0),
+                events: events.clone(),
+                modifiers,
+                ..Default::default()
+            };
+            let _ = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let out = saturation_graph(ui, inst, meter, 240.0, gesture);
+                    run.plot = out.plot;
+                    run.edits.extend(out.edits);
+                    run.levels = Some(out.levels);
+                });
+            });
+        }
+        run
+    }
+
+    /// The middle of the plot of `inst` in the harness: where the gestures start.
+    fn center(inst: &PluginInstance) -> Pos2 {
+        run_frames(inst, None, &mut 0, &[vec![]], Modifiers::NONE).plot.center()
+    }
+
+    fn press(pos: Pos2, pressed: bool, modifiers: Modifiers) -> Event {
+        Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers }
+    }
+
+    /// A drag from `from` in three steps of `step`, then the release.
+    fn drag(from: Pos2, step: Vec2, modifiers: Modifiers) -> Vec<Vec<Event>> {
+        let mut frames = vec![vec![], vec![Event::PointerMoved(from)], vec![press(from, true, modifiers)]];
+        for k in 1..=3 {
+            frames.push(vec![Event::PointerMoved(from + step * k as f32)]);
+        }
+        frames.push(vec![press(from + step * 3.0, false, modifiers)]);
+        frames
+    }
+
+    /// The parameters of every drag edit with undo key `want`.
+    fn drags(edits: &[EqEdit], want: &str) -> Vec<BTreeMap<String, f32>> {
+        edits.iter().filter_map(|e| match e {
+            EqEdit::Drag { params, key } if key == want => Some(params.clone()),
+            _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn saturation_graph_draws_every_kind_without_edits() {
+        let extremes: [(&str, &[(&str, f32)]); 3] = [
+            ("overdrive", &[("mode", 2.0), ("drive", 1.0), ("output", 12.0)]),
+            ("bitcrusher", &[("bits", 1.0), ("downsample", 64.0)]),
+            ("exciter", &[("amount", 1.0), ("mix", 1.0)]),
+        ];
+        let loud = PluginMeter { input_peak: 0.9, output_peak: 0.5, gain_reduction_db: None };
+        for (kind, extreme) in extremes {
+            let base = instance(kind);
+            let bypassed = PluginInstance { bypass: true, ..base.clone() };
+            for inst in [base.clone(), with(base.clone(), extreme), bypassed] {
+                for meter in [None, Some(loud)] {
+                    let mut g = 0;
+                    let run = run_frames(&inst, meter, &mut g, &[vec![], vec![]], Modifiers::NONE);
+                    assert!(run.edits.is_empty(), "{kind}: {:?}", run.edits);
+                    assert_eq!(g, 0);
+                    assert!(run.plot.width() > 0.0 && run.plot.height() == 240.0 - 2.0 * eq_view::PLOT_INSET, "{kind}: {:?}", run.plot);
+                    let input = run.levels.unwrap().input_db;
+                    let want = if meter.is_some() { gain_to_db(0.9) } else { -120.0 };
+                    assert!(near(input, want, 1e-3), "{kind} meter {meter:?}: {input}");
+                }
+            }
+        }
+        let run = run_frames(&instance("reverb"), None, &mut 0, &[vec![], vec![]], Modifiers::NONE);
+        assert!(run.edits.is_empty());
+        assert_eq!(run.plot, Rect::NOTHING);
+    }
+
+    #[test]
+    fn dragging_on_the_curve_is_one_gesture_on_drive() {
+        let inst = instance("overdrive");
+        let mut g = 0;
+        let run = run_frames(&inst, None, &mut g, &drag(center(&inst), vec2(0.0, -8.0), Modifiers::NONE), Modifiers::NONE);
+        assert!(!run.edits.is_empty());
+        assert_eq!(g, 1);
+        for e in &run.edits {
+            assert!(matches!(e, EqEdit::Drag { key, .. } if key == "pw3:sat#1"), "{e:?}");
+        }
+        let EqEdit::Drag { params, .. } = run.edits.last().unwrap() else { unreachable!() };
+        assert_eq!(params.keys().collect::<Vec<_>>(), ["drive"]);
+        assert!(params["drive"] > 0.4, "{params:?}");
+    }
+
+    #[test]
+    fn two_drags_are_two_gestures() {
+        let inst = instance("overdrive");
+        let p = center(&inst);
+        let mut frames = drag(p, vec2(0.0, -8.0), Modifiers::NONE);
+        frames.extend(drag(p, vec2(0.0, 8.0), Modifiers::NONE));
+        let mut g = 0;
+        let run = run_frames(&inst, None, &mut g, &frames, Modifiers::NONE);
+        assert_eq!(g, 2);
+        assert!(!drags(&run.edits, "pw3:sat#1").is_empty() && !drags(&run.edits, "pw3:sat#2").is_empty(), "{:?}", run.edits);
+    }
+
+    #[test]
+    fn shift_drag_moves_ten_times_less() {
+        let inst = instance("overdrive");
+        let p = center(&inst);
+        let moved = |m: Modifiers| -> f32 {
+            let run = run_frames(&inst, None, &mut 0, &drag(p, vec2(0.0, -10.0), m), m);
+            drags(&run.edits, "pw3:sat#1").last().expect("a drag")["drive"] - 0.4
+        };
+        let (coarse, fine) = (moved(Modifiers::NONE), moved(Modifiers::SHIFT));
+        assert!(coarse > 0.05, "{coarse}");
+        assert!(near(fine, coarse * 0.1, 1e-3), "{fine} vs {coarse}");
+    }
+
+    #[test]
+    fn the_bitcrusher_drag_lowers_the_bits() {
+        let inst = instance("bitcrusher");
+        let run = run_frames(&inst, None, &mut 0, &drag(center(&inst), vec2(0.0, -8.0), Modifiers::NONE), Modifiers::NONE);
+        let last = drags(&run.edits, "pw3:sat#1").last().cloned().expect("a drag");
+        assert_eq!(last.keys().collect::<Vec<_>>(), ["bits"]);
+        assert!(last["bits"] < 8.0, "{last:?}");
+    }
+
+    #[test]
+    fn wheel_over_the_curve_changes_output() {
+        let wheel = Event::MouseWheel { unit: MouseWheelUnit::Line, delta: vec2(0.0, 1.0), modifiers: Modifiers::NONE };
+        for (kind, id, want) in [("overdrive", "output", -2.0), ("bitcrusher", "downsample", 5.0)] {
+            let inst = instance(kind);
+            let p = center(&inst);
+            let mut g = 0;
+            let run = run_frames(&inst, None, &mut g, &[vec![], vec![Event::PointerMoved(p)], vec![wheel.clone()]], Modifiers::NONE);
+            assert_eq!(run.edits.len(), 1, "{kind}: {:?}", run.edits);
+            let EqEdit::Drag { params, key } = &run.edits[0] else { panic!("{:?}", run.edits) };
+            assert_eq!(key, "pw3:sat:wheel");
+            assert!(near(params[id], want, 1e-4), "{kind}: {params:?}");
+            assert_eq!(g, 0);
+        }
+        // over the meter column the wheel changes nothing
+        let inst = instance("overdrive");
+        let plot = run_frames(&inst, None, &mut 0, &[vec![]], Modifiers::NONE).plot;
+        let meters = pos2(plot.right() + eq_view::PLOT_INSET + theme::SP_5 + SAT_METER_COL_W / 2.0, plot.center().y);
+        let run = run_frames(&inst, None, &mut 0, &[vec![], vec![Event::PointerMoved(meters)], vec![wheel]], Modifiers::NONE);
+        assert!(run.edits.is_empty(), "{:?}", run.edits);
+    }
+
+    #[test]
+    fn double_click_resets_the_curve_params() {
+        let inst = with(instance("overdrive"), &[("drive", 0.9), ("output", 6.0)]);
+        let p = center(&inst);
+        let n = Modifiers::NONE;
+        let frames = [vec![], vec![Event::PointerMoved(p)], vec![press(p, true, n)], vec![press(p, false, n)], vec![press(p, true, n)], vec![press(p, false, n)]];
+        let run = run_frames(&inst, None, &mut 0, &frames, n);
+        assert!(run.edits.contains(&EqEdit::Set { params: point_reset(&inst) }), "{:?}", run.edits);
+    }
+
+    #[test]
+    fn the_saturation_view_reuses_the_common_header() {
+        let src = include_str!("saturation_view.rs");
+        assert!(!src.contains(concat!("plugin_ai_bar", "(")));
+        assert!(!src.contains(concat!("plugin_header", "(")));
+    }
+
+    #[test]
+    fn the_saturation_view_uses_theme_tokens() {
+        let src = include_str!("saturation_view.rs");
+        assert!(!src.contains(concat!("Color32::from_rgb", "(")));
+        assert!(!src.contains(concat!("FontId::new", "(")));
     }
 }
