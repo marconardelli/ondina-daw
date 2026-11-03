@@ -12,4 +12,4 @@ pub mod session_ext;
 pub mod settings;
 
 pub use session::{Session, SharedSession, Source};
-pub use settings::{PanelSizes, Settings};
+pub use settings::{PanelSizes, Settings, WindowRect};

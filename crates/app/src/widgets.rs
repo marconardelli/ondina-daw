@@ -49,6 +49,104 @@ pub fn knob_angle(u: f32) -> f32 {
     KNOB_START + u.clamp(0.0, 1.0) * KNOB_SWEEP
 }
 
+/// Whether a parameter is better turned on a logarithmic scale: frequencies, and times that span more than two
+/// decades (attack 1 ms..5 s).
+pub fn param_is_log(unit: &str, min: f32, max: f32) -> bool {
+    unit == "Hz" || ((unit == "s" || unit == "ms") && max / min.max(1e-4) > 100.0)
+}
+
+/// The bottom of the log curve: the minimum, or a thousandth of the maximum when the range starts at 0 (Glide
+/// 0..1 s, Hold 0..500 ms), so the curve has somewhere to start.
+pub fn log_floor(min: f32, max: f32) -> f32 {
+    if min > 0.0 {
+        min
+    } else {
+        (max * 1e-3).max(1e-6)
+    }
+}
+
+/// Position of `v` inside `min..=max` on a log scale, as 0..1 (clamped). An empty range maps to 0.
+pub fn value_to_unit_log(v: f32, min: f32, max: f32) -> f32 {
+    let lo = log_floor(min, max);
+    if max <= min || max <= lo || v <= min || v <= lo {
+        return 0.0;
+    }
+    ((v / lo).ln() / (max / lo).ln()).clamp(0.0, 1.0)
+}
+
+/// The value at position `u` (0..1, clamped) of `min..=max` on a log scale; 0 gives the minimum exactly.
+pub fn unit_to_value_log(u: f32, min: f32, max: f32) -> f32 {
+    let lo = log_floor(min, max);
+    if max <= min || max <= lo || u <= 0.0 {
+        return min;
+    }
+    (lo * (max / lo).powf(u.min(1.0))).clamp(min, max)
+}
+
+/// A number with a sign when it is not zero once rounded to `decimals`.
+fn signed(v: f32, decimals: usize) -> String {
+    let s = format!("{:.*}", decimals, v.abs());
+    if s.chars().all(|c| c == '0' || c == '.') {
+        s
+    } else if v < 0.0 {
+        format!("-{s}")
+    } else {
+        format!("+{s}")
+    }
+}
+
+/// How a parameter value reads with its unit: "2.40 kHz", "-6.0 dB", "250 ms", "4.0:1", "+7 ct". The minus is the
+/// ASCII hyphen so the text can be typed back ([`parse_param_value`]).
+pub fn format_param_value(v: f32, unit: &str) -> String {
+    let ms = |m: f32| if m.abs() >= 100.0 { format!("{m:.0} ms") } else { format!("{m:.1} ms") };
+    match unit {
+        "Hz" if v.abs() >= 10000.0 => format!("{:.1} kHz", v / 1000.0),
+        "Hz" if v.abs() >= 1000.0 => format!("{:.2} kHz", v / 1000.0),
+        "Hz" if v.abs() >= 100.0 => format!("{v:.0} Hz"),
+        "Hz" => format!("{v:.1} Hz"),
+        "dB" => format!("{} dB", signed(v, 1)),
+        "ms" => ms(v),
+        "s" if v.abs() < 1.0 => ms(v * 1000.0),
+        "s" => format!("{v:.2} s"),
+        ":1" => format!("{v:.1}:1"),
+        "st" | "ct" if (v - v.round()).abs() < 1e-3 => format!("{} {unit}", signed(v.round(), 0)),
+        "st" | "ct" => format!("{} {unit}", signed(v, 1)),
+        "x" => format!("{v:.2}x"),
+        "bit" => format!("{v:.0} bit"),
+        "beats" => format!("{v:.2} beats"),
+        "" => format!("{v:.2}"),
+        _ => format!("{v:.2} {unit}"),
+    }
+}
+
+/// A value typed for a parameter in `unit`: "2.4k", "2.4 kHz", "-6", "250ms", "0,5 s". A unit after the number is
+/// optional; "k" multiplies by a thousand and seconds and milliseconds convert into the parameter's unit. None when
+/// the text is not a finite number. The caller clamps it to the range.
+pub fn parse_param_value(text: &str, unit: &str) -> Option<f32> {
+    let lower = text.trim().to_lowercase().replace(',', ".").replace('\u{2212}', "-");
+    let mut t = lower.trim();
+    let mut scale = 1.0f32;
+    // longer suffixes first: "beats" and "ms" before "s", "khz" before "hz"
+    for suffix in ["beats", "khz", "hz", "ms", "db", "st", "ct", "bit", ":1", "x", "s"] {
+        if let Some(rest) = t.strip_suffix(suffix) {
+            match suffix {
+                "khz" => scale = 1000.0,
+                "ms" if unit == "s" => scale = 0.001,
+                "s" if unit == "ms" => scale = 1000.0,
+                _ => {}
+            }
+            t = rest.trim_end();
+            break;
+        }
+    }
+    if let Some(rest) = t.strip_suffix('k') {
+        scale *= 1000.0;
+        t = rest.trim_end();
+    }
+    let v = t.parse::<f32>().ok()? * scale;
+    v.is_finite().then_some(v)
+}
+
 // ===================================================================================== fader and meter scale
 
 /// The fader scale marks, top to bottom, evenly spaced along the travel (the mixer draws them as labels).
@@ -886,6 +984,8 @@ impl Widget for ToolButton {
 // ===================================================================================== knob
 
 /// Rotary knob: arc and pointer, vertical drag (Shift for fine steps), double-click to reset, value text below.
+/// With a unit it shows the value with its unit (lit while dragging) and in a tooltip; on a log scale it turns
+/// like the ear hears; when editable a right-click opens a field to type the value (Enter sets it, Esc cancels).
 pub struct Knob<'a> {
     value: &'a mut f32,
     min: f32,
@@ -894,6 +994,24 @@ pub struct Knob<'a> {
     bipolar: bool,
     diameter: f32,
     text: Option<String>,
+    log: bool,
+    unit: Option<&'a str>,
+    label: Option<String>,
+    note: Option<String>,
+    editable: bool,
+    width: Option<f32>,
+}
+
+/// The text being typed into a knob, kept in egui's memory between frames.
+#[derive(Debug, Clone, PartialEq)]
+struct KnobEdit {
+    text: String,
+    /// Opened this frame: focus the field and select its text.
+    fresh: bool,
+}
+
+fn knob_edit_id(knob: egui::Id) -> egui::Id {
+    knob.with("knob-edit")
 }
 
 impl<'a> Knob<'a> {
@@ -907,6 +1025,12 @@ impl<'a> Knob<'a> {
             bipolar: false,
             diameter: 34.0,
             text: None,
+            log: false,
+            unit: None,
+            label: None,
+            note: None,
+            editable: false,
+            width: None,
         }
     }
 
@@ -932,6 +1056,69 @@ impl<'a> Knob<'a> {
         self.text = Some(t.into());
         self
     }
+
+    /// Turn on a logarithmic scale (frequencies, long times): see [`param_is_log`].
+    pub fn log(mut self, on: bool) -> Self {
+        self.log = on;
+        self
+    }
+
+    /// Show the value under the knob and in its tooltip with this unit ("Hz", "dB", "" for a plain number).
+    pub fn unit(mut self, unit: &'a str) -> Self {
+        self.unit = Some(unit);
+        self
+    }
+
+    /// A caption above the knob (the parameter's name).
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    /// A line added to the tooltip, under the value.
+    pub fn note(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
+        self
+    }
+
+    /// A right-click opens a field to type the value.
+    pub fn editable(mut self, on: bool) -> Self {
+        self.editable = on;
+        self
+    }
+
+    /// Width of the cell the knob sits in (at least its diameter), so the label and the value have room.
+    pub fn width(mut self, w: f32) -> Self {
+        self.width = Some(w);
+        self
+    }
+
+    fn to_unit(&self, v: f32) -> f32 {
+        if self.log {
+            value_to_unit_log(v, self.min, self.max)
+        } else {
+            value_to_unit(v, self.min, self.max)
+        }
+    }
+
+    fn to_value(&self, u: f32) -> f32 {
+        if self.log {
+            unit_to_value_log(u, self.min, self.max)
+        } else {
+            unit_to_value(u, self.min, self.max)
+        }
+    }
+}
+
+/// A knob's tooltip: its name and value, an optional note, then the gestures.
+pub fn knob_tooltip(label: Option<&str>, value: &str, note: Option<&str>, editable: bool) -> String {
+    let head = match label {
+        Some(l) => format!("{l}: {value}"),
+        None => value.to_string(),
+    };
+    let note = note.map(|n| format!("\n{n}")).unwrap_or_default();
+    let typing = if editable { " · Right-click: type a value" } else { "" };
+    format!("{head}{note}\nDrag up or down · Shift: fine · Double-click: default{typing}")
 }
 
 fn arc_points(c: Pos2, r: f32, a0: f32, a1: f32) -> Vec<Pos2> {
@@ -947,26 +1134,92 @@ fn arc_points(c: Pos2, r: f32, a0: f32, a1: f32) -> Vec<Pos2> {
 impl Widget for Knob<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
         let d = self.diameter;
-        let text_h = if self.text.is_some() { theme::SIZE_NUMBER + 4.0 } else { 0.0 };
-        let (rect, mut resp) = ui.allocate_exact_size(vec2(d, d + text_h), Sense::click_and_drag());
-        let mut u = value_to_unit(*self.value, self.min, self.max);
+        let w = self.width.unwrap_or(d).max(d);
+        let label_h = if self.label.is_some() { theme::SIZE_LABEL + 4.0 } else { 0.0 };
+        let text_h = if self.text.is_some() || self.unit.is_some() { theme::SIZE_NUMBER + 4.0 } else { 0.0 };
+        let (rect, mut resp) = ui.allocate_exact_size(vec2(w, label_h + d + text_h), Sense::click_and_drag());
+        let mut u = self.to_unit(*self.value);
         if resp.double_clicked() {
             *self.value = self.default;
-            u = value_to_unit(self.default, self.min, self.max);
+            u = self.to_unit(self.default);
             resp.mark_changed();
         } else if resp.dragged() {
             let fine = ui.input(|i| i.modifiers.shift);
             let nu = drag_unit(u, resp.drag_delta().y, fine);
             if nu != u {
                 u = nu;
-                *self.value = unit_to_value(u, self.min, self.max);
+                *self.value = self.to_value(u);
                 resp.mark_changed();
             }
         }
+
+        // typing a value: a right-click opens the field over the value row
+        let unit = self.unit.unwrap_or("");
+        let edit_id = knob_edit_id(resp.id);
+        if self.editable && resp.secondary_clicked() {
+            let text = format_param_value(*self.value, unit);
+            ui.data_mut(|m| m.insert_temp(edit_id, KnobEdit { text, fresh: true }));
+        }
+        let editing = if self.editable { ui.data(|m| m.get_temp::<KnobEdit>(edit_id)) } else { None };
+        let value_row = Rect::from_min_size(
+            pos2(rect.left(), rect.bottom() - text_h.max(theme::SIZE_NUMBER + 6.0)),
+            vec2(w, text_h.max(theme::SIZE_NUMBER + 6.0)),
+        );
+        if let Some(mut edit) = editing.clone() {
+            // a child at the value row, so the field does not move the parent's layout cursor
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(value_row));
+            let field_id = resp.id.with("knob-field");
+            let field = child.add(
+                egui::TextEdit::singleline(&mut edit.text)
+                    .id(field_id)
+                    .font(theme::number_font())
+                    .horizontal_align(Align::Center)
+                    .margin(vec2(2.0, 1.0))
+                    .desired_width(w - 4.0),
+            );
+            if edit.fresh {
+                field.request_focus();
+                // select the whole value so typing replaces it
+                if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), field_id) {
+                    let n = edit.text.chars().count();
+                    st.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(0),
+                        egui::text::CCursor::new(n),
+                    )));
+                    st.store(ui.ctx(), field_id);
+                }
+                edit.fresh = false;
+                ui.data_mut(|m| m.insert_temp(edit_id, edit));
+            } else if field.lost_focus() || !field.has_focus() {
+                // egui drops the focus on Esc before the field sees it: check the keys to tell cancel from commit
+                let (esc, enter) = ui.input(|i| (i.key_pressed(egui::Key::Escape), i.key_pressed(egui::Key::Enter)));
+                if !esc && enter {
+                    if let Some(x) = parse_param_value(&edit.text, unit) {
+                        *self.value = x.clamp(self.min.min(self.max), self.max.max(self.min));
+                        u = self.to_unit(*self.value);
+                        resp.mark_changed();
+                    }
+                }
+                ui.data_mut(|m| m.remove::<KnobEdit>(edit_id));
+            } else {
+                ui.data_mut(|m| m.insert_temp(edit_id, edit));
+            }
+        }
+
         if ui.is_rect_visible(rect) {
             let p = ui.painter();
+            if let Some(label) = &self.label {
+                let mut job = egui::text::LayoutJob::simple_singleline(
+                    label.clone(),
+                    egui::FontId::proportional(theme::SIZE_LABEL),
+                    theme::TEXT_2,
+                );
+                job.wrap = egui::text::TextWrapping::truncate_at_width(w);
+                let g = ui.fonts(|f| f.layout_job(job));
+                p.galley(pos2(rect.center().x - g.size().x / 2.0, rect.top()), g, theme::TEXT_2);
+            }
             let s = d / 40.0; // the artwork is drawn on a 40 grid
-            let c = pos2(rect.center().x, rect.top() + d / 2.0);
+            let c = pos2(rect.center().x, rect.top() + label_h + d / 2.0);
             let r = 15.0 * s;
             let body = if resp.hovered() || resp.dragged() { theme::HOVER } else { theme::BORDER };
             p.circle(c, r, body, Stroke::new(1.0_f32, theme::SEPARATOR));
@@ -979,17 +1232,24 @@ impl Widget for Knob<'_> {
                 p.add(PathShape::line(arc_points(c, r, from.min(a), from.max(a)), lit));
             }
             p.line_segment([c, c + vec2(a.cos(), a.sin()) * 11.0 * s], Stroke::new(2.0 * s, theme::TEXT));
-            if let Some(t) = &self.text {
-                p.text(
-                    pos2(rect.center().x, rect.bottom() - text_h / 2.0),
-                    Align2::CENTER_CENTER,
-                    t,
-                    theme::number_font(),
-                    theme::TEXT,
-                );
+            let shown = match (&self.text, self.unit) {
+                (Some(t), _) => Some(t.clone()),
+                (None, Some(unit)) => Some(format_param_value(*self.value, unit)),
+                (None, None) => None,
+            };
+            let typing = self.editable && ui.data(|m| m.get_temp::<KnobEdit>(edit_id)).is_some();
+            if let (Some(t), false) = (shown, typing) {
+                let color = if resp.dragged() { theme::ACCENT_TEXT } else { theme::TEXT };
+                p.text(pos2(rect.center().x, rect.bottom() - text_h / 2.0), Align2::CENTER_CENTER, t, theme::number_font(), color);
             }
         }
-        resp
+        match self.unit {
+            Some(unit) => {
+                let value = format_param_value(*self.value, unit);
+                resp.on_hover_text(knob_tooltip(self.label.as_deref(), &value, self.note.as_deref(), self.editable))
+            }
+            None => resp,
+        }
     }
 }
 
@@ -1673,5 +1933,310 @@ mod tests {
         assert_eq!(parse_path("M1 1L").len(), 1);
         assert!(parse_path("Q1 2 3 4").is_empty());
         assert_eq!(parse_path("M1 1 2 2 3 3")[0].points.len(), 3);
+    }
+
+    #[test]
+    fn log_rule_matches_the_old_parameter_editor() {
+        assert!(param_is_log("Hz", 20.0, 20000.0));
+        assert!(param_is_log("s", 0.001, 5.0));
+        assert!(param_is_log("ms", 0.0, 500.0));
+        assert!(!param_is_log("dB", -24.0, 24.0));
+        assert!(!param_is_log("s", 0.3, 4.0));
+        assert!(!param_is_log("ms", 1.0, 50.0));
+        assert!(!param_is_log("", 0.0, 1.0));
+    }
+
+    #[test]
+    fn log_mapping_round_trips_and_hits_the_ends() {
+        assert_eq!(value_to_unit_log(20.0, 20.0, 20000.0), 0.0);
+        assert_eq!(value_to_unit_log(20000.0, 20.0, 20000.0), 1.0);
+        assert!(close(value_to_unit_log(632.5, 20.0, 20000.0), 0.5, 0.01));
+        for v in [50.0, 440.0, 2500.0, 12000.0] {
+            let back = unit_to_value_log(value_to_unit_log(v, 20.0, 20000.0), 20.0, 20000.0);
+            assert!((back - v).abs() / v < 1e-3, "{v} -> {back}");
+        }
+        let mut last = -1.0;
+        for k in 0..=100 {
+            let v = unit_to_value_log(k as f32 / 100.0, 20.0, 20000.0);
+            assert!(v > last, "not increasing at {k}");
+            last = v;
+        }
+        // a range starting at 0 (Hold 0..500 ms): the ends are exact, the curve still rises
+        assert_eq!(unit_to_value_log(0.0, 0.0, 500.0), 0.0);
+        assert_eq!(unit_to_value_log(1.0, 0.0, 500.0), 500.0);
+        assert_eq!(value_to_unit_log(0.0, 0.0, 500.0), 0.0);
+        let mut last = -1.0;
+        for k in 0..=100 {
+            let v = unit_to_value_log(k as f32 / 100.0, 0.0, 500.0);
+            assert!(v > last, "not increasing at {k}");
+            last = v;
+        }
+        assert_eq!(value_to_unit_log(5.0, 3.0, 3.0), 0.0);
+        assert_eq!(unit_to_value_log(0.5, 3.0, 3.0), 3.0);
+    }
+
+    const SHOWN: [(f32, &str, &str); 15] = [
+        (2400.0, "Hz", "2.40 kHz"),
+        (12500.0, "Hz", "12.5 kHz"),
+        (440.0, "Hz", "440 Hz"),
+        (52.0, "Hz", "52.0 Hz"),
+        (-6.0, "dB", "-6.0 dB"),
+        (2.5, "dB", "+2.5 dB"),
+        (0.0, "dB", "0.0 dB"),
+        (0.005, "s", "5.0 ms"),
+        (1.2, "s", "1.20 s"),
+        (350.0, "ms", "350 ms"),
+        (4.0, ":1", "4.0:1"),
+        (7.0, "ct", "+7 ct"),
+        (0.5, "", "0.50"),
+        (1.0, "x", "1.00x"),
+        (8.0, "bit", "8 bit"),
+    ];
+
+    #[test]
+    fn values_read_with_their_unit() {
+        for (v, unit, text) in SHOWN {
+            assert_eq!(format_param_value(v, unit), text, "{v} {unit}");
+        }
+        assert_eq!(format_param_value(-12.0, "st"), "-12 st");
+        assert_eq!(format_param_value(0.0, "st"), "0 st");
+        assert_eq!(format_param_value(0.75, "beats"), "0.75 beats");
+        assert_eq!(format_param_value(-0.01, "dB"), "0.0 dB");
+    }
+
+    #[test]
+    fn typed_values_parse_with_or_without_units() {
+        let cases: [(&str, &str, f32); 8] = [
+            ("2.4k", "Hz", 2400.0),
+            ("2.4 kHz", "Hz", 2400.0),
+            ("880", "Hz", 880.0),
+            ("-6", "dB", -6.0),
+            ("\u{2212}3,5 dB", "dB", -3.5),
+            ("250ms", "s", 0.25),
+            ("0.5s", "ms", 500.0),
+            ("4:1", ":1", 4.0),
+        ];
+        for (text, unit, v) in cases {
+            let got = parse_param_value(text, unit).unwrap_or_else(|| panic!("{text} did not parse"));
+            assert!(close(got, v, 1e-4), "{text}: {got}");
+        }
+        assert_eq!(parse_param_value("abc", "Hz"), None);
+        assert_eq!(parse_param_value("", "dB"), None);
+        assert_eq!(parse_param_value("inf", ""), None);
+        for (v, unit, text) in SHOWN {
+            let back = parse_param_value(text, unit).unwrap_or_else(|| panic!("{text} did not parse"));
+            assert!((back - v).abs() <= v.abs() * 0.01 + 1e-3, "{text} -> {back}, not {v}");
+        }
+    }
+
+    use egui::{Event, Key, Modifiers, PointerButton};
+
+    /// A knob drawn alone in a context fed with synthetic input, one frame at a time.
+    struct KnobRig {
+        ctx: egui::Context,
+        frame: usize,
+        v: f32,
+        range: (f32, f32),
+        log: bool,
+        unit: &'static str,
+        rect: Rect,
+        id: egui::Id,
+    }
+
+    const RIG_D: f32 = 40.0;
+
+    impl KnobRig {
+        fn new(v: f32, range: (f32, f32), log: bool, unit: &'static str) -> Self {
+            let mut rig = KnobRig { ctx: egui::Context::default(), frame: 0, v, range, log, unit, rect: Rect::NOTHING, id: egui::Id::NULL };
+            rig.run(vec![], Modifiers::NONE);
+            rig
+        }
+
+        /// The center of the knob's dial, under its label.
+        fn grab(&self) -> Pos2 {
+            pos2(self.rect.center().x, self.rect.top() + theme::SIZE_LABEL + 4.0 + RIG_D / 2.0)
+        }
+
+        /// One frame: (changed, dragged, double-clicked).
+        fn run(&mut self, events: Vec<Event>, modifiers: Modifiers) -> (bool, bool, bool) {
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+                time: Some(self.frame as f64 * 0.016),
+                modifiers,
+                events,
+                ..Default::default()
+            };
+            self.frame += 1;
+            let mut out = (false, false, false);
+            let (range, log, unit) = (self.range, self.log, self.unit);
+            let v = &mut self.v;
+            let mut rect = Rect::NOTHING;
+            let mut id = egui::Id::NULL;
+            let _ = self.ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let knob = Knob::new(v, range.0..=range.1)
+                        .log(log)
+                        .unit(unit)
+                        .label("Freq")
+                        .editable(true)
+                        .default_value(range.0)
+                        .diameter(RIG_D)
+                        .width(76.0);
+                    let r = ui.put(Rect::from_min_size(pos2(100.0, 100.0), vec2(76.0, 96.0)), knob);
+                    out = (r.changed(), r.dragged(), r.double_clicked());
+                    rect = r.rect;
+                    id = r.id;
+                });
+            });
+            self.rect = rect;
+            self.id = id;
+            out
+        }
+
+        fn editing(&self) -> Option<KnobEdit> {
+            self.ctx.data(|d| d.get_temp::<KnobEdit>(knob_edit_id(self.id)))
+        }
+
+        /// A vertical drag from the dial: 10 px, then `rest` more (negative is up). The flags of the drag frames.
+        fn drag(&mut self, rest: f32, modifiers: Modifiers) -> Vec<(bool, bool, bool)> {
+            let g = self.grab();
+            let button = |pos, pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers };
+            let dir = rest.signum();
+            self.run(vec![Event::PointerMoved(g)], modifiers);
+            self.run(vec![button(g, true)], modifiers);
+            let first = g + vec2(0.0, 10.0 * dir);
+            let last = first + vec2(0.0, rest);
+            let a = self.run(vec![Event::PointerMoved(first)], modifiers);
+            let b = self.run(vec![Event::PointerMoved(last)], modifiers);
+            self.run(vec![button(last, false)], modifiers);
+            vec![a, b]
+        }
+
+        fn click(&mut self, button: PointerButton) -> (bool, bool, bool) {
+            let g = self.grab();
+            let ev = |pressed| Event::PointerButton { pos: g, button, pressed, modifiers: Modifiers::NONE };
+            self.run(vec![Event::PointerMoved(g)], Modifiers::NONE);
+            self.run(vec![ev(true)], Modifiers::NONE);
+            self.run(vec![ev(false)], Modifiers::NONE)
+        }
+
+        fn key(&mut self, key: Key) -> (bool, bool, bool) {
+            self.run(vec![Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }], Modifiers::NONE)
+        }
+
+        fn type_text(&mut self, text: &str) {
+            self.run(vec![Event::Text(text.into())], Modifiers::NONE);
+        }
+    }
+
+    #[test]
+    fn knob_drag_up_raises_and_shift_is_finer() {
+        let mut rig = KnobRig::new(0.5, (0.0, 1.0), false, "");
+        let flags = rig.drag(-50.0, Modifiers::NONE);
+        assert!((0.74..=0.80).contains(&rig.v), "{}", rig.v);
+        assert!(flags.iter().any(|f| f.0 && f.1), "{flags:?}");
+        let mut rig = KnobRig::new(0.5, (0.0, 1.0), false, "");
+        rig.drag(-50.0, Modifiers::SHIFT);
+        assert!((0.52..=0.5301).contains(&rig.v), "{}", rig.v);
+    }
+
+    #[test]
+    fn knob_drag_follows_the_log_scale() {
+        let mut rig = KnobRig::new(632.5, (20.0, 20000.0), true, "Hz");
+        rig.drag(-90.0, Modifiers::NONE);
+        assert!(rig.v >= 15000.0, "{}", rig.v);
+        let mut rig = KnobRig::new(632.5, (20.0, 20000.0), true, "Hz");
+        rig.drag(90.0, Modifiers::NONE);
+        assert!(rig.v <= 30.0, "{}", rig.v);
+    }
+
+    #[test]
+    fn knob_double_click_restores_the_default() {
+        let mut rig = KnobRig::new(0.7, (0.1, 1.0), false, "");
+        rig.click(PointerButton::Primary);
+        let second = rig.click(PointerButton::Primary);
+        assert_eq!(rig.v, 0.1);
+        assert!(second.2 && second.0, "{second:?}");
+    }
+
+    #[test]
+    fn knob_right_click_types_a_value() {
+        let mut rig = KnobRig::new(632.5, (20.0, 20000.0), true, "Hz");
+        rig.click(PointerButton::Secondary);
+        assert!(rig.editing().is_some());
+        rig.type_text("2.5k");
+        let (changed, dragged, _) = rig.key(Key::Enter);
+        assert_eq!(rig.v, 2500.0);
+        assert!(changed && !dragged);
+        assert!(rig.editing().is_none());
+    }
+
+    #[test]
+    fn knob_typed_values_are_clamped_and_bad_text_is_ignored() {
+        let mut rig = KnobRig::new(632.5, (20.0, 20000.0), true, "Hz");
+        rig.click(PointerButton::Secondary);
+        rig.type_text("50k");
+        rig.key(Key::Enter);
+        assert_eq!(rig.v, 20000.0);
+        rig.click(PointerButton::Secondary);
+        rig.type_text("abc");
+        let (changed, _, _) = rig.key(Key::Enter);
+        assert_eq!(rig.v, 20000.0);
+        assert!(!changed);
+    }
+
+    #[test]
+    fn knob_escape_cancels_the_typed_value() {
+        let mut rig = KnobRig::new(632.5, (20.0, 20000.0), true, "Hz");
+        rig.click(PointerButton::Secondary);
+        rig.type_text("999");
+        let (changed, _, _) = rig.key(Key::Escape);
+        assert!(!changed);
+        assert_eq!(rig.v, 632.5);
+        rig.run(vec![], Modifiers::NONE);
+        assert!(rig.editing().is_none());
+        assert_eq!(rig.ctx.memory(|m| m.focused()), None);
+    }
+
+    #[test]
+    fn knob_without_options_keeps_the_pan_behaviour() {
+        let ctx = egui::Context::default();
+        let mut v = 0.25f32;
+        let g = pos2(100.0 + 17.0, 100.0 + 17.0);
+        let press = |pressed| Event::PointerButton { pos: g, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE };
+        for (frame, events) in [vec![Event::PointerMoved(g)], vec![press(true)], vec![press(false)], vec![]].into_iter().enumerate() {
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+                time: Some(frame as f64 * 0.016),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.put(
+                        Rect::from_min_size(pos2(100.0, 100.0), vec2(34.0, 34.0 + theme::SIZE_NUMBER + 4.0)),
+                        Knob::new(&mut v, -1.0..=1.0).bipolar(true).text("C"),
+                    );
+                });
+            });
+        }
+        assert_eq!(ctx.memory(|m| m.focused()), None);
+        assert_eq!(v, 0.25);
+    }
+
+    #[test]
+    fn knob_tooltip_lists_value_note_and_gestures() {
+        let note = "Normalized 0..1 \u{00B7} the plug-in shows it in dB";
+        let t = knob_tooltip(Some("Gain (dB)"), "0.53", Some(note), true);
+        let lines: Vec<&str> = t.lines().collect();
+        assert_eq!(lines[0], "Gain (dB): 0.53");
+        assert_eq!(lines[1], note);
+        assert!(lines[2].contains("Double-click: default"));
+        assert!(lines[2].contains("Right-click: type a value"));
+        assert_eq!(
+            knob_tooltip(Some("Cutoff"), "2.4 kHz", None, false),
+            "Cutoff: 2.4 kHz\nDrag up or down \u{00B7} Shift: fine \u{00B7} Double-click: default"
+        );
+        assert!(knob_tooltip(None, "0.53", None, true).starts_with("0.53\n"));
     }
 }

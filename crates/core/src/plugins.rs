@@ -656,6 +656,15 @@ pub fn presets_for(kind: &str) -> impl Iterator<Item = &'static Preset> + '_ {
     PRESETS.iter().filter(move |p| p.kind == kind)
 }
 
+/// Every parameter of `p` at its default: the registry's defaults for a built-in plug-in, the reported defaults for
+/// a VST3. One `SetPluginParams` with this map is the plug-in window's Default button (one undo step).
+pub fn default_params(p: &crate::model::PluginInstance) -> std::collections::BTreeMap<String, f32> {
+    if p.kind == "vst3" {
+        return p.vst3_params.iter().map(|v| (v.id.clone(), v.default.clamp(0.0, 1.0))).collect();
+    }
+    find(&p.kind).map(|i| i.params.iter().map(|pi| (pi.id.to_string(), pi.default)).collect()).unwrap_or_default()
+}
+
 /// A track patch: instrument (optional) + insert chain, like a library entry.
 pub struct Patch {
     pub name: &'static str,
@@ -837,5 +846,22 @@ mod tests {
         }
         let mono = find_preset("stereo_imager", "Mono Low End").unwrap();
         assert!(mono.params.contains(&("mono_bass", 1.0)));
+    }
+
+    #[test]
+    fn default_params_cover_every_parameter() {
+        for info in registry() {
+            let d = default_params(&inst(info.kind, None, None));
+            assert_eq!(d.len(), info.params.len(), "{}", info.kind);
+            for pi in info.params {
+                assert_eq!(d.get(pi.id), Some(&pi.default), "{}: {}", info.kind, pi.id);
+            }
+        }
+        let mut v = inst("vst3", Some("X"), Some(r"C:\VST3\X.vst3"));
+        let vp = |id: &str, default: f32| crate::model::Vst3Param { id: id.into(), name: id.into(), default, unit: String::new() };
+        v.vst3_params = vec![vp("p1", 0.3), vp("p2", 1.7)];
+        let d = default_params(&v);
+        assert_eq!(d.into_iter().collect::<Vec<_>>(), [("p1".to_string(), 0.3), ("p2".to_string(), 1.0)]);
+        assert!(default_params(&inst("from_the_future", None, None)).is_empty());
     }
 }

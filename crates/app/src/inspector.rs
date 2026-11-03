@@ -166,7 +166,7 @@ impl OndinaApp {
                 match section {
                     Section::Plugin => {
                         if let Some(pid) = plugin {
-                            self.plugin_editor(ui, &p, pid);
+                            self.plugin_summary(ui, &p, pid);
                         }
                     }
                     Section::Region => {

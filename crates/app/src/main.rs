@@ -36,6 +36,7 @@ mod piano_roll_view;
 mod pr_toolbar;
 mod plugin_ai;
 mod plugin_params;
+mod plugin_window;
 mod region_edit;
 mod region_clipboard;
 mod session_players;

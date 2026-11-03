@@ -1,5 +1,5 @@
 //! Panel chrome: the pieces the panels are built from (header strips, caps section labels, editor tabs, status
-//! pills, slot buttons that open a menu, the dashed "+ Add" slot, LCD value boxes).
+//! pills, slot buttons (plain or opening a menu), the dashed "+ Add" slot, LCD value boxes).
 
 use eframe::egui::{
     self, pos2, vec2, Color32, InnerResponse, Rect, Response, RichText, Rounding, Sense, Shape, Stroke, Ui,
@@ -125,6 +125,23 @@ pub fn slot_menu<R>(
     ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
         ui.set_max_width(width);
         egui::menu::menu_custom_button(ui, button, add_contents)
+    })
+    .inner
+}
+
+/// A full-width slot button with the look of `slot_menu` but no menu: the caller reacts to the click and attaches
+/// a context menu (the instrument slot opens the plug-in window on click and its menu on right-click).
+pub fn slot_button(ui: &mut Ui, look: SlotLook, height: f32, text: RichText) -> Response {
+    let width = ui.available_width();
+    let button = egui::Button::new(text.color(look.text))
+        .fill(look.fill)
+        .stroke(Stroke::new(1.0_f32, look.border))
+        .rounding(Rounding::same(theme::R_MD))
+        .truncate()
+        .min_size(vec2(width, height));
+    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+        ui.set_max_width(width);
+        ui.add(button)
     })
     .inner
 }
