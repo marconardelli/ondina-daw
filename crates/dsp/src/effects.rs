@@ -3834,8 +3834,8 @@ mod saturation_tests {
         let params = [("bits", 6.0), ("downsample", 4.0), ("mix", 1.0)];
         let c = SaturationCurve::of("bitcrusher", get("bitcrusher", &params)).unwrap();
         let processed = render(effect("bitcrusher", &params).as_mut(), &x);
-        for i in 3..x.len() {
-            assert!((i - 3..=i).any(|j| (processed[i] - c.out(x[j])).abs() <= 1e-6), "sample {i}: {} is no held curve value", processed[i]);
+        for (i, &p) in processed.iter().enumerate().skip(3) {
+            assert!(x[i - 3..=i].iter().any(|&v| (p - c.out(v)).abs() <= 1e-6), "sample {i}: {p} is no held curve value");
         }
     }
 
