@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-11-03
+
+### Added
+
+- Dynamics windows: Compressor, Limiter, Noise Gate and De-Esser draw the transfer curve (input against output
+  level) with the threshold point to drag: sideways for the threshold, up and down for the ratio, ceiling,
+  reduction or range, the wheel for knee, release, reduction or range, Shift for fine steps and double-click for
+  the default.
+- A dot on the curve follows the input level while the song plays, next to input, gain reduction and output
+  meters with peak hold.
+- The De-Esser window also shows the band it turns down, with its frequency to drag.
+
 ## [0.25.0] - 2026-11-03
 
 ### Added
@@ -800,7 +812,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/marconardelli/ondina-daw/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/marconardelli/ondina-daw/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/marconardelli/ondina-daw/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/marconardelli/ondina-daw/compare/v0.22.0...v0.23.0
