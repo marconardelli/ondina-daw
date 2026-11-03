@@ -262,7 +262,7 @@ pub static REGISTRY: &[PluginInfo] = &[
         name: "Compressor",
         category: Effect,
         group: "Dynamics",
-        description: "Feed-forward RMS/peak compressor with soft knee, makeup gain and parallel mix.",
+        description: "Feed-forward peak compressor. Above Threshold the output rises 1 dB for every Ratio dB more at the input; Knee bends the curve smoothly over that many dB around the threshold. Attack and Release set how fast the gain reduction follows the level. Makeup Gain raises the output after compressing, and Mix blends in the dry signal for parallel compression.",
         params: &[
             p("threshold", "Threshold", -60.0, 0.0, -18.0, "dB"),
             p("ratio", "Ratio", 1.0, 20.0, 4.0, ":1"),
@@ -291,7 +291,7 @@ pub static REGISTRY: &[PluginInfo] = &[
         name: "Noise Gate",
         category: Effect,
         group: "Dynamics",
-        description: "Noise gate with threshold, reduction, attack, hold and release.",
+        description: "Noise gate: while the level stays under Threshold the signal is turned down by Reduction dB (-90 dB closes it). Attack sets how fast it opens, Hold how long it stays open after the level drops, and Release how fast it closes.",
         params: &[
             p("threshold", "Threshold", -90.0, 0.0, -50.0, "dB"),
             p("reduction", "Reduction", -90.0, 0.0, -60.0, "dB"),
@@ -714,6 +714,17 @@ mod tests {
         assert!(d.starts_with("Six-band parametric equalizer"), "{d}");
         for word in ["Mid 1", "Q", "High Pass", "0 dB does nothing", "Output Gain"] {
             assert!(d.contains(word), "missing {word:?} in {d}");
+        }
+    }
+
+    #[test]
+    fn dynamics_descriptions_explain_their_parameters() {
+        for (kind, words) in [("compressor", &["Threshold", "Ratio", "Knee", "Makeup Gain", "Mix"][..]), ("noise_gate", &["Threshold", "Reduction", "Hold", "Release"][..])] {
+            let d = find(kind).unwrap().description;
+            for word in words {
+                assert!(d.contains(word), "{kind}: missing {word:?} in {d}");
+            }
+            assert!(d.len() < 450, "{kind}: {} characters", d.len());
         }
     }
 

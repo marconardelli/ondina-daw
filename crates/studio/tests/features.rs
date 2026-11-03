@@ -3904,7 +3904,7 @@ fn every_window_family_reads_and_sets_its_parameters_over_mcp() {
     let mut s = Session::new(false);
     let vox = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
     let mut plugins = Vec::new();
-    for kind in ["channel_eq", "dynamic_eq", "compressor"] {
+    for kind in ["channel_eq", "dynamic_eq", "compressor", "limiter", "noise_gate", "de_esser", "reverb"] {
         let fx = ok(&mut s, "add_effect", json!({"track_id": vox, "kind": kind}))["plugin_id"].as_u64().unwrap();
         plugins.push((fx, kind, "Vox"));
     }
@@ -3934,4 +3934,178 @@ fn every_window_family_reads_and_sets_its_parameters_over_mcp() {
         s.execute(Command::Undo {}, Source::Gui).unwrap();
         assert_eq!(plugin_value(&mut s, fx, &id), old, "{kind}: {id}");
     }
+}
+
+/// The transfer curve the dynamics window draws for `fx` (output dB for a steady input at `in_db`).
+fn dyn_curve(s: &Session, fx: u64, in_db: f32) -> f32 {
+    let inst = s.project.find_plugin(fx).unwrap();
+    ondina_dsp::effects::transfer_db(&inst.kind, |id| inst.param(id), in_db).expect("a dynamics curve")
+}
+
+#[test]
+fn dynamics_curve_follows_the_assistant_and_undo() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
+    let comp = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "compressor"}))["plugin_id"].as_u64().unwrap();
+    let lim = ok(&mut s, "add_effect", json!({"track_id": 0, "kind": "limiter"}))["plugin_id"].as_u64().unwrap();
+    let gate = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "noise_gate"}))["plugin_id"].as_u64().unwrap();
+    // (plug-in, new values, input level, the curve's output there after the change)
+    let cases = [
+        (comp, &[("threshold", -30.0), ("ratio", 8.0), ("knee", 0.0)][..], -6.0, -30.0 + 24.0 / 8.0),
+        (lim, &[("gain", 6.0), ("ceiling", -3.0)][..], 0.0, -3.0),
+        (gate, &[("threshold", -40.0), ("reduction", -20.0)][..], -50.0, -70.0),
+    ];
+    for (fx, values, in_db, out_db) in cases {
+        let kind = s.project.find_plugin(fx).unwrap().kind.clone();
+        let defaults = ondina_core::plugins::find(&kind).unwrap();
+        let default_curve = ondina_dsp::effects::transfer_db(&kind, |id| defaults.params.iter().find(|p| p.id == id).map_or(0.0, |p| p.default), in_db).unwrap();
+        let before = plugin_values(&mut s, fx);
+        let curve_before = dyn_curve(&s, fx, in_db);
+        assert_eq!(curve_before, default_curve, "{kind}");
+        let params = values.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        s.execute(Command::SetPluginParams { plugin_id: fx, params }, Source::Ai).unwrap();
+        assert!(s.last_undo_is_ai(), "{kind}");
+        // the window reads the project the session publishes every frame: this is the curve it draws at once, and
+        // get_plugin returns the values its knobs show
+        let at = dyn_curve(&s, fx, in_db);
+        assert!((at - out_db).abs() <= 0.01, "{kind}: {at}");
+        for (k, v) in values {
+            assert_eq!(plugin_value(&mut s, fx, k), *v as f64, "{kind}: {k}");
+        }
+        s.execute(Command::Undo {}, Source::Gui).unwrap();
+        assert_eq!(plugin_values(&mut s, fx), before, "{kind}");
+        assert_eq!(dyn_curve(&s, fx, in_db), curve_before, "{kind}");
+    }
+}
+
+#[test]
+fn dynamics_point_drag_is_one_undo_step() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
+    let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "compressor"}))["plugin_id"].as_u64().unwrap();
+    let de = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "de_esser"}))["plugin_id"].as_u64().unwrap();
+    // the merge keys have the format of the dynamics graph's drag_key ("pw{plugin}:dyn#{gesture}"), wheel_key
+    // ("pw{plugin}:dyn:wheel") and freq_key ("pw{plugin}:dyn:freq#{gesture}")
+    let set = |s: &mut Session, pid: u64, kv: &[(&str, f32)], key: &str| {
+        let params = kv.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        s.execute_coalesced(Command::SetPluginParams { plugin_id: pid, params }, key).unwrap();
+    };
+    let first = format!("pw{fx}:dyn#1");
+    let second = format!("pw{fx}:dyn#2");
+    for (t, r) in [(-20.0, 5.0), (-24.0, 6.0), (-28.0, 7.0)] {
+        set(&mut s, fx, &[("threshold", t), ("ratio", r)], &first);
+    }
+    for (t, r) in [(-12.0, 2.0), (-10.0, 1.5)] {
+        set(&mut s, fx, &[("threshold", t), ("ratio", r)], &second);
+    }
+    let point = |s: &mut Session| (plugin_value(s, fx, "threshold"), plugin_value(s, fx, "ratio"));
+    assert_eq!(point(&mut s), (-10.0, 1.5));
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(point(&mut s), (-28.0, 7.0), "the second drag is its own step");
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(point(&mut s), (-18.0, 4.0), "the first drag is one step");
+    let wheel = format!("pw{fx}:dyn:wheel");
+    for k in [7.0, 8.0, 9.0] {
+        set(&mut s, fx, &[("knee", k)], &wheel);
+    }
+    assert_eq!(plugin_value(&mut s, fx, "knee"), 9.0);
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(plugin_value(&mut s, fx, "knee"), 6.0, "close wheel turns are one step");
+    let freq = format!("pw{de}:dyn:freq#3");
+    for f in [7000.0, 8000.0] {
+        set(&mut s, de, &[("freq", f)], &freq);
+    }
+    assert_eq!(plugin_value(&mut s, de, "freq"), 8000.0);
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(plugin_value(&mut s, de, "freq"), 6000.0, "a frequency drag is one step");
+}
+
+#[test]
+fn live_meters_show_what_every_dynamics_plugin_does() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "instrument", "name": "Keys", "instrument": "analog_synth"}))["track_id"].as_u64().unwrap();
+    let chord: Vec<Value> = [48, 55, 60, 64].iter().map(|p| json!({"pitch": p, "velocity": 127, "start": 0, "length": 16})).collect();
+    ok(&mut s, "create_midi_region", json!({"track_id": t, "start": 0, "length": 16, "notes": chord}));
+    // in series: each one gets a signal that drives it into reduction
+    let chain = [
+        ("de_esser", json!({"freq": 2000, "threshold": -60, "range": 12})),
+        ("limiter", json!({"gain": 24, "ceiling": -12})),
+        ("compressor", json!({"threshold": -40, "ratio": 8, "knee": 0, "attack": 1})),
+        ("noise_gate", json!({"threshold": 0, "reduction": -60})),
+    ];
+    let mut ids = Vec::new();
+    for (kind, params) in chain {
+        let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": kind}))["plugin_id"].as_u64().unwrap();
+        ok(&mut s, "set_plugin_params", json!({"plugin_id": fx, "params": params}));
+        ids.push((kind, fx));
+    }
+    ok(&mut s, "play", json!({"from_beat": 0}));
+    for (kind, fx) in &ids {
+        assert!(wait_for_meter(&s, *fx, |m| m.gain_reduction_db.is_some_and(|g| g < -1.0)), "the {kind} never reduced");
+    }
+    // over MCP: the reduction the window's GR meter shows
+    for (kind, fx) in &ids {
+        let v = ok(&mut s, "get_plugin", json!({"plugin_id": fx}));
+        let m = &v["meters"];
+        assert!(m["input_db"].is_number(), "{kind}: {m}");
+        assert!(m["gain_reduction_db"].as_f64().unwrap() < -0.5, "{kind}: {m}");
+    }
+    // bypassed, they report no reduction: the window shows 0 dB
+    for (_, fx) in &ids {
+        ok(&mut s, "set_plugin_bypass", json!({"plugin_id": fx, "bypass": true}));
+    }
+    for (kind, fx) in &ids {
+        assert!(wait_for_meter(&s, *fx, |m| m.gain_reduction_db.is_none()), "a bypassed {kind} still reports a reduction");
+    }
+    ok(&mut s, "stop", json!({}));
+}
+
+#[test]
+fn get_plugin_explains_every_dynamics_parameter() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
+    let mut ids = Vec::new();
+    for kind in ["compressor", "limiter", "noise_gate", "de_esser"] {
+        ids.push((kind, ok(&mut s, "add_effect", json!({"track_id": t, "kind": kind}))["plugin_id"].as_u64().unwrap()));
+    }
+    for (kind, fx) in &ids {
+        let info = ok(&mut s, "get_plugin", json!({"plugin_id": fx}));
+        let params = info["params"].as_array().unwrap();
+        assert_eq!(params.len(), ondina_core::plugins::find(kind).unwrap().params.len(), "{kind}");
+        for p in params {
+            let id = p["id"].as_str().unwrap();
+            let unit = p["unit"].as_str().unwrap_or_default();
+            assert!(!p["name"].as_str().unwrap().is_empty(), "{kind}: {id} has no name");
+            let (min, max, default) = (p["min"].as_f64().unwrap(), p["max"].as_f64().unwrap(), p["default"].as_f64().unwrap());
+            assert!(min < max, "{kind}: {id} has no range");
+            assert!((min..=max).contains(&default), "{kind}: {id} default {default} outside {min}..{max}");
+            match id {
+                "threshold" | "knee" | "makeup" | "ceiling" | "gain" | "reduction" | "range" => assert_eq!(unit, "dB", "{kind}: {id}"),
+                "ratio" => assert_eq!(unit, ":1", "{kind}: {id}"),
+                "freq" => assert_eq!(unit, "Hz", "{kind}: {id}"),
+                _ => {}
+            }
+        }
+    }
+    let (comp, gate) = (ids[0].1, ids[2].1);
+    assert!(ok(&mut s, "get_plugin", json!({"plugin_id": comp}))["description"].as_str().unwrap().contains("Ratio"));
+    assert!(ok(&mut s, "get_plugin", json!({"plugin_id": gate}))["description"].as_str().unwrap().contains("Reduction"));
+    ok(&mut s, "set_plugin_params", json!({"plugin_id": comp, "params": {"threshold": -30, "ratio": 6}}));
+    ok(&mut s, "set_plugin_params", json!({"plugin_id": gate, "params": {"threshold": -45, "reduction": -25}}));
+    assert_eq!((plugin_value(&mut s, comp, "threshold"), plugin_value(&mut s, comp, "ratio")), (-30.0, 6.0));
+    assert_eq!((plugin_value(&mut s, gate, "threshold"), plugin_value(&mut s, gate, "reduction")), (-45.0, -25.0));
+}
+
+#[test]
+fn dynamics_bar_context_carries_the_curve_note_and_meters() {
+    use ondina_studio::prompts;
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Drum Room"}))["track_id"].as_u64().unwrap();
+    let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "noise_gate"}))["plugin_id"].as_u64().unwrap();
+    let meter = ondina_engine::PluginMeter { input_peak: 0.5, output_peak: 0.05, gain_reduction_db: Some(-20.0) };
+    let text = prompts::plugin_bar_context_live(&s.project, fx, Some(&meter)).expect("the gate has a bar context");
+    for want in [prompts::dynamics_bar_note("noise_gate"), "- threshold", "- reduction", "gain reduction -20 dB", "Drum Room"] {
+        assert!(text.contains(want), "missing {want:?} in {text}");
+    }
+    assert_eq!(prompts::plugin_bar_actions(&s.project, fx), prompts::plugin_quick_actions("noise_gate"));
 }

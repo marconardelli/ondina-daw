@@ -130,6 +130,22 @@ fn bundled_local() -> bool {
     *FOUND.get_or_init(|| ondina_studio::local_ai::bundled_llm().is_some())
 }
 
+/// An "Ask the AI" button, disabled with the reason `blocked` on hover (see ask_blocked_reason). True when clicked.
+pub fn ai_button_for(ui: &mut egui::Ui, text: &str, blocked: Option<&'static str>) -> bool {
+    let enabled = blocked.is_none();
+    let fg = if enabled { theme::AI_TEXT } else { theme::TEXT_DISABLED };
+    let b = egui::Button::new(widgets::leading_icon_text(ui, RichText::new(text).color(fg)))
+        .fill(theme::AI_BG)
+        .stroke(Stroke::new(1.0_f32, theme::AI_BORDER))
+        .rounding(Rounding::same(theme::R_LG));
+    let resp = ui.add_enabled(enabled, b);
+    widgets::paint_leading_icon(ui, &resp, Icon::Ai, if enabled { theme::AI } else { theme::TEXT_DISABLED });
+    match blocked {
+        Some(why) => resp.on_disabled_hover_text(why).clicked(),
+        None => resp.clicked(),
+    }
+}
+
 /// Width the assistant's header needs after its title, besides the pill's label, to show the engine pill next to
 /// New chat and its two buttons.
 const ASSISTANT_PILL_ROOM: f32 = 150.0;
@@ -153,19 +169,7 @@ impl OndinaApp {
     /// An "Ask the AI" button, disabled (with the reason on hover) while no model is connected or the assistant is
     /// busy. True when clicked.
     pub fn ai_button(&self, ui: &mut egui::Ui, text: &str) -> bool {
-        let blocked = ask_blocked_reason(self.ai_engine(), self.ai.busy);
-        let enabled = blocked.is_none();
-        let fg = if enabled { theme::AI_TEXT } else { theme::TEXT_DISABLED };
-        let b = egui::Button::new(widgets::leading_icon_text(ui, RichText::new(text).color(fg)))
-            .fill(theme::AI_BG)
-            .stroke(Stroke::new(1.0_f32, theme::AI_BORDER))
-            .rounding(Rounding::same(theme::R_LG));
-        let resp = ui.add_enabled(enabled, b);
-        widgets::paint_leading_icon(ui, &resp, Icon::Ai, if enabled { theme::AI } else { theme::TEXT_DISABLED });
-        match blocked {
-            Some(why) => resp.on_disabled_hover_text(why).clicked(),
-            None => resp.clicked(),
-        }
+        ai_button_for(ui, text, ask_blocked_reason(self.ai_engine(), self.ai.busy))
     }
 
     pub fn assistant_ui(&mut self, ui: &mut egui::Ui) {

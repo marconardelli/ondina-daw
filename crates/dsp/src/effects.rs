@@ -124,15 +124,21 @@ impl Compressor {
         Compressor { sr, threshold: -18.0, ratio: 4.0, attack: 10.0, release: 150.0, knee: 6.0, makeup: 0.0, mix: 1.0, env_db: -120.0, gain_reduction_db: 0.0 }
     }
     fn curve(&self, x_db: f32) -> f32 {
-        let (t, r, k) = (self.threshold, self.ratio, self.knee);
-        let over = x_db - t;
-        if k > 0.0 && over.abs() <= k / 2.0 {
-            x_db + (1.0 / r - 1.0) * (over + k / 2.0).powi(2) / (2.0 * k)
-        } else if over > 0.0 {
-            t + over / r
-        } else {
-            x_db
-        }
+        compressor_curve_db(self.threshold, self.ratio, self.knee, x_db)
+    }
+}
+
+/// What the compressor's gain computer makes of a level `x_db` (soft knee of `knee` dB around `threshold`). The
+/// processor and the drawn curve share it.
+pub fn compressor_curve_db(threshold: f32, ratio: f32, knee: f32, x_db: f32) -> f32 {
+    let (t, r, k) = (threshold, ratio, knee);
+    let over = x_db - t;
+    if k > 0.0 && over.abs() <= k / 2.0 {
+        x_db + (1.0 / r - 1.0) * (over + k / 2.0).powi(2) / (2.0 * k)
+    } else if over > 0.0 {
+        t + over / r
+    } else {
+        x_db
     }
 }
 
@@ -479,6 +485,80 @@ impl Effect for NoiseGate {
     }
     fn gain_reduction_db(&self) -> Option<f32> {
         Some(self.gain_reduction_db)
+    }
+}
+
+// ============================================================================ Static curves of the dynamics
+
+/// The static input/output curve of a dynamics effect: the level it settles at for a steady input. Attack,
+/// release, hold and look-ahead are left out; the De-Esser's levels are those of the band above its frequency.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DynamicsCurve {
+    Compressor { threshold: f32, ratio: f32, knee: f32, makeup: f32, mix: f32 },
+    Limiter { gain: f32, ceiling: f32 },
+    NoiseGate { threshold: f32, reduction: f32 },
+    DeEsser { threshold: f32, range: f32 },
+}
+
+impl DynamicsCurve {
+    /// The curve of plug-in `kind` with its parameters read by `get` (for example `|id| inst.param(id)`), clamped as
+    /// the processor's `set_param` clamps them. None for a kind without one.
+    pub fn of(kind: &str, get: impl Fn(&str) -> f32) -> Option<DynamicsCurve> {
+        Some(match kind {
+            "compressor" => DynamicsCurve::Compressor { threshold: get("threshold"), ratio: get("ratio").max(1.0), knee: get("knee"), makeup: get("makeup"), mix: get("mix") },
+            "limiter" => DynamicsCurve::Limiter { gain: get("gain"), ceiling: get("ceiling") },
+            "noise_gate" => DynamicsCurve::NoiseGate { threshold: get("threshold"), reduction: get("reduction") },
+            "de_esser" => DynamicsCurve::DeEsser { threshold: get("threshold").clamp(-60.0, 0.0), range: get("range").clamp(0.0, 24.0) },
+            _ => return None,
+        })
+    }
+
+    /// Output level (dB) for a steady input at `in_db`.
+    pub fn out_db(&self, in_db: f32) -> f32 {
+        let x = in_db;
+        match *self {
+            DynamicsCurve::Compressor { threshold, ratio, knee, makeup, mix } => {
+                let gr = compressor_curve_db(threshold, ratio, knee, x) - x;
+                let lin = (1.0 - mix) + mix * db_to_gain(gr) * db_to_gain(makeup);
+                x + gain_to_db(lin)
+            }
+            DynamicsCurve::Limiter { gain, ceiling } => (x + gain).min(ceiling),
+            // Under -96 dB of reduction the processor reaches silence; the graph shows that at the bottom of its axis
+            // all the same.
+            DynamicsCurve::NoiseGate { threshold, reduction } => {
+                if x > threshold {
+                    x
+                } else {
+                    x + reduction
+                }
+            }
+            DynamicsCurve::DeEsser { threshold, range } => x - (x - threshold).clamp(0.0, range),
+        }
+    }
+
+    /// The input level where the curve bends: the threshold (Limiter: ceiling - gain).
+    pub fn threshold_db(&self) -> f32 {
+        match *self {
+            DynamicsCurve::Compressor { threshold, .. } | DynamicsCurve::NoiseGate { threshold, .. } | DynamicsCurve::DeEsser { threshold, .. } => threshold,
+            DynamicsCurve::Limiter { gain, ceiling } => ceiling - gain,
+        }
+    }
+}
+
+/// `DynamicsCurve::of(kind, get)` at `in_db`; None for a kind without a curve.
+pub fn transfer_db(kind: &str, get: impl Fn(&str) -> f32, in_db: f32) -> Option<f32> {
+    DynamicsCurve::of(kind, get).map(|c| c.out_db(in_db))
+}
+
+/// Gain (dB) at `f` of what the De-Esser does to the signal when it turns the band down by `reduction_db` (>= 0):
+/// its high shelf in Split mode, the whole signal in Wideband.
+pub fn de_esser_band_db(freq: f32, reduction_db: f32, wideband: bool, f: f32, sr: f32) -> f32 {
+    if reduction_db <= 0.0 {
+        0.0
+    } else if wideband {
+        -reduction_db
+    } else {
+        Biquad::new(BiquadKind::HighShelf, freq * DE_ESS_SHELF_RATIO, DE_ESS_SHELF_Q, -reduction_db, sr).magnitude_db(f, sr)
     }
 }
 
@@ -3345,5 +3425,150 @@ mod gain_reduction_tests {
             fx.reset();
             assert_eq!(fx.gain_reduction_db(), Some(0.0), "{kind} after reset");
         }
+    }
+}
+
+#[cfg(test)]
+mod transfer_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    const SR: f32 = 48000.0;
+    const BLOCK: usize = 480;
+
+    /// A square wave that alternates +amp and -amp: |x| is constant, so the detectors settle on its level.
+    fn square(amp: f32, len: usize) -> Vec<f32> {
+        (0..len).map(|n| if n % 2 == 0 { amp } else { -amp }).collect()
+    }
+
+    /// An effect set up the way the engine does it: registry defaults, then `params`.
+    fn effect(kind: &str, params: &[(&str, f32)]) -> Box<dyn Effect> {
+        let mut fx = crate::create_effect(kind, SR).expect("effect in the registry");
+        let map: BTreeMap<String, f32> = params.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        crate::configure(kind, &map, |k, v| fx.set_param(k, v));
+        fx
+    }
+
+    /// Parameter reader: the value in `params`, otherwise the registry default.
+    fn get<'a>(kind: &'a str, params: &'a [(&'a str, f32)]) -> impl Fn(&str) -> f32 + 'a {
+        move |id: &str| {
+            params.iter().find(|(k, _)| *k == id).map(|(_, v)| *v).unwrap_or_else(|| {
+                ondina_core::plugins::find(kind).and_then(|i| i.params.iter().find(|p| p.id == id)).map_or(0.0, |p| p.default)
+            })
+        }
+    }
+
+    /// Output level (dB) the effect settles at for a steady square wave of `amp`: the peak of the last block.
+    fn settled_out_db(fx: &mut dyn Effect, amp: f32) -> f32 {
+        let input = square(amp, (SR * 0.75) as usize);
+        let mut l = input.clone();
+        let mut r = input;
+        let ctx = ProcessContext::idle(SR);
+        let mut last = 0.0f32;
+        for (a, b) in l.chunks_mut(BLOCK).zip(r.chunks_mut(BLOCK)) {
+            fx.process(a, b, &ctx);
+            last = a.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        }
+        gain_to_db(last)
+    }
+
+    /// The drawn curve and the settled processor agree within 0.5 dB at every amplitude of `amps`.
+    fn check(kind: &str, params: &[(&str, f32)], amps: &[f32]) {
+        for &amp in amps {
+            let mut fx = effect(kind, params);
+            let measured = settled_out_db(fx.as_mut(), amp);
+            let drawn = transfer_db(kind, get(kind, params), gain_to_db(amp)).expect("a dynamics curve");
+            assert!((drawn - measured).abs() <= 0.5, "{kind} {params:?} amp {amp}: curve {drawn} dB, processor {measured} dB");
+        }
+    }
+
+    #[test]
+    fn compressor_curve_matches_the_processor() {
+        let t = [("attack", 1.0), ("release", 50.0)];
+        check("compressor", &[t[0], t[1], ("threshold", -20.0), ("ratio", 4.0), ("knee", 0.0)], &[0.5, 0.05]);
+        check("compressor", &[t[0], t[1], ("threshold", -30.0), ("ratio", 8.0), ("knee", 6.0)], &[0.5, 0.0316, 0.01]);
+        check("compressor", &[t[0], t[1], ("threshold", -10.0), ("ratio", 2.0), ("knee", 12.0)], &[0.708, 0.316, 0.1]);
+        check("compressor", &[t[0], t[1], ("threshold", -24.0), ("ratio", 3.0), ("knee", 0.0), ("makeup", 6.0), ("mix", 0.5)], &[0.5]);
+    }
+
+    #[test]
+    fn limiter_curve_matches_the_processor() {
+        check("limiter", &[("gain", 0.0), ("ceiling", -6.0)], &[1.0, 0.1]);
+        check("limiter", &[("gain", 12.0), ("ceiling", -1.0)], &[0.25]);
+        check("limiter", &[("gain", 6.0), ("ceiling", -3.0), ("true_peak", 1.0)], &[0.5]);
+    }
+
+    #[test]
+    fn noise_gate_curve_matches_the_processor() {
+        let closed = [("threshold", -40.0), ("reduction", -30.0)];
+        check("noise_gate", &closed, &[0.001, 0.1]);
+        assert!((transfer_db("noise_gate", get("noise_gate", &closed), gain_to_db(0.001)).unwrap() + 90.0).abs() < 0.01);
+        check("noise_gate", &[("threshold", -20.0), ("reduction", -10.0)], &[0.05, 0.5]);
+    }
+
+    #[test]
+    fn de_esser_curve_matches_the_processor() {
+        for mode in [0.0, 1.0] {
+            check("de_esser", &[("freq", 4000.0), ("mode", mode), ("threshold", -30.0), ("range", 8.0)], &[0.5, 0.01]);
+            check("de_esser", &[("freq", 4000.0), ("mode", mode), ("threshold", -20.0), ("range", 24.0)], &[0.5]);
+        }
+        let a = [("threshold", -30.0), ("range", 8.0)];
+        assert!((transfer_db("de_esser", get("de_esser", &a), gain_to_db(0.5)).unwrap() + 14.0).abs() < 0.1);
+        assert!((transfer_db("de_esser", get("de_esser", &a), gain_to_db(0.01)).unwrap() + 40.0).abs() < 0.1);
+        let b = [("threshold", -20.0), ("range", 24.0)];
+        assert!((transfer_db("de_esser", get("de_esser", &b), gain_to_db(0.5)).unwrap() + 20.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn transfer_db_knows_only_the_dynamics() {
+        for kind in ["reverb", "channel_eq", "vst3"] {
+            assert_eq!(transfer_db(kind, get(kind, &[]), -10.0), None, "{kind}");
+        }
+        for kind in ["compressor", "limiter", "noise_gate", "de_esser"] {
+            assert!(transfer_db(kind, get(kind, &[]), -10.0).is_some(), "{kind}");
+        }
+    }
+
+    #[test]
+    fn dynamics_curves_clamp_like_the_processors_and_stay_finite() {
+        let c = DynamicsCurve::of("compressor", get("compressor", &[("ratio", 0.5), ("makeup", 3.0)])).unwrap();
+        assert!(matches!(c, DynamicsCurve::Compressor { ratio, .. } if ratio == 1.0), "{c:?}");
+        for x in [-40.0, -10.0, 0.0] {
+            assert!((c.out_db(x) - (x + 3.0)).abs() < 1e-3, "{x}: {}", c.out_db(x));
+        }
+        let wide = DynamicsCurve::of("de_esser", get("de_esser", &[("range", 40.0), ("threshold", -30.0)])).unwrap();
+        let full = DynamicsCurve::of("de_esser", get("de_esser", &[("range", 24.0), ("threshold", -30.0)])).unwrap();
+        assert_eq!(wide, full);
+        for kind in ["compressor", "limiter", "noise_gate", "de_esser"] {
+            let info = ondina_core::plugins::find(kind).unwrap();
+            for pick_max in [false, true] {
+                let ext: Vec<(&str, f32)> = info.params.iter().map(|p| (p.id, if pick_max { p.max } else { p.min })).collect();
+                let c = DynamicsCurve::of(kind, get(kind, &ext)).unwrap();
+                for k in -120..=24 {
+                    let y = c.out_db(k as f32);
+                    assert!(y.is_finite(), "{kind} max {pick_max} at {k} dB: {y}");
+                }
+                assert!(c.threshold_db().is_finite());
+            }
+        }
+    }
+
+    #[test]
+    fn de_esser_band_follows_its_shelf() {
+        assert!((de_esser_band_db(6000.0, 8.0, false, 16000.0, SR) + 8.0).abs() <= 0.5);
+        assert!(de_esser_band_db(6000.0, 8.0, false, 200.0, SR).abs() <= 0.1);
+        assert_eq!(de_esser_band_db(6000.0, 8.0, true, 200.0, SR), -8.0);
+        assert_eq!(de_esser_band_db(6000.0, 8.0, true, 16000.0, SR), -8.0);
+        assert_eq!(de_esser_band_db(6000.0, 0.0, false, 16000.0, SR), 0.0);
+        assert_eq!(de_esser_band_db(6000.0, 0.0, true, 16000.0, SR), 0.0);
+    }
+
+    #[test]
+    fn threshold_point_of_each_curve() {
+        let thr = |kind: &str, p: &[(&str, f32)]| DynamicsCurve::of(kind, get(kind, p)).unwrap().threshold_db();
+        assert_eq!(thr("compressor", &[("threshold", -22.0)]), -22.0);
+        assert_eq!(thr("limiter", &[("gain", 6.0), ("ceiling", -1.0)]), -7.0);
+        assert_eq!(thr("noise_gate", &[("threshold", -45.0)]), -45.0);
+        assert_eq!(thr("de_esser", &[("threshold", -33.0)]), -33.0);
     }
 }
