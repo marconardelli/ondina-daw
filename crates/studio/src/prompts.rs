@@ -80,6 +80,7 @@ pub fn plugin_quick_actions(kind: &str) -> &'static [(&'static str, &'static str
         "compressor" => COMPRESSOR_ACTIONS,
         "limiter" => LIMITER_ACTIONS,
         "de_esser" => DE_ESSER_ACTIONS,
+        "noise_gate" => NOISE_GATE_ACTIONS,
         "reverb" => REVERB_ACTIONS,
         "stereo_delay" | "tape_delay" => DELAY_ACTIONS,
         "stereo_imager" => STEREO_IMAGER_ACTIONS,
@@ -150,6 +151,11 @@ const LIMITER_TRACK_ACTIONS: &[(&str, &str)] = &[
 const DE_ESSER_ACTIONS: &[(&str, &str)] = &[
     ("Tame the sibilance", "Tame the harsh S and T sounds of this track: find the frequency of the sibilance and set the threshold so only the S sounds are turned down."),
     ("Gentler de-essing", "De-ess more gently: less range and a higher threshold, so the voice keeps its brightness."),
+];
+const NOISE_GATE_ACTIONS: &[(&str, &str)] = &[
+    ("Clean up the pauses", "Set this noise gate so it closes in the pauses and opens on every note: measure the track with analyze_mix, put the Threshold a few dB above the noise and under the quietest notes, a short Attack, a Hold of 20 to 50 ms and a Release that does not cut the tails. Change the parameters with set_plugin_params, then explain in a few lines which parameters you changed and why."),
+    ("Tighter drums", "Make these drums tighter with this noise gate: a Threshold just under the hits, a fast Attack, a short Hold and a Release of 30 to 80 ms, and a Reduction of -20 to -40 dB so the bleed drops without vanishing. Change the parameters with set_plugin_params, then explain in a few lines which parameters you changed and why."),
+    ("Gentle noise reduction", "Lower the noise in the pauses without closing the gate completely: a Reduction of -10 to -15 dB, a Threshold just above the noise and a slow Release, so the background breathes instead of switching on and off. Change the parameters with set_plugin_params, then explain in a few lines which parameters you changed and why."),
 ];
 const REVERB_ACTIONS: &[(&str, &str)] = &[
     ("Small, close room", "Make this reverb a small, close room: short size, little pre-delay, low mix, so the track stays upfront."),
@@ -291,7 +297,7 @@ pub fn plugin_bar_rules(plugin_id: Id, label: &str) -> String {
 pub fn plugin_bar_context(project: &Project, plugin_id: Id) -> Option<String> {
     let inst = project.find_plugin(plugin_id)?;
     let label = plugins::plugin_label(inst);
-    Some(format!("{}{}\n{}", plugin_bar_rules(plugin_id, &label), eq_bar_note(&inst.kind), plugin_context(project, plugin_id)?))
+    Some(format!("{}{}{}\n{}", plugin_bar_rules(plugin_id, &label), eq_bar_note(&inst.kind), dynamics_bar_note(&inst.kind), plugin_context(project, plugin_id)?))
 }
 
 /// plugin_bar_context plus the insert's live meters when there are any (instruments and MIDI effects have none), so
@@ -316,6 +322,18 @@ pub fn meter_note(m: &ondina_engine::PluginMeter) -> String {
     }
     text.push('.');
     text
+}
+
+/// What the AI bar of a dynamics plug-in adds to the rules: its window draws the transfer curve and the gain
+/// reduction, so the answer gives the values that move them.
+pub fn dynamics_bar_note(kind: &str) -> &'static str {
+    match kind {
+        "compressor" => " This compressor's window draws its transfer curve with the threshold point, and its input, gain reduction and output meters: in your answer give Threshold, Ratio, Knee and Makeup Gain before and after, and the gain reduction you expect on the loud parts.",
+        "limiter" => " This limiter's window draws its transfer curve (the point is where limiting starts: Output Ceiling minus Input Gain) and its input, gain reduction and output meters: in your answer give Input Gain, Output Ceiling and Release before and after, and the gain reduction you expect on the loudest peaks.",
+        "noise_gate" => " This noise gate's window draws its transfer curve with the threshold point, and its input, gain reduction and output meters: in your answer give Threshold, Reduction, Hold and Release before and after, and say when the gate will close.",
+        "de_esser" => " This de-esser's window draws its transfer curve with the threshold point, the band it turns down around Frequency and its gain reduction meter: in your answer give Frequency, Threshold and Range before and after, and the reduction you expect on the S sounds.",
+        _ => "",
+    }
 }
 
 /// What an equalizer's AI bar adds to the rules: its window draws the bands as points, so the answer names them.
@@ -369,6 +387,51 @@ mod tests {
         }
         assert_eq!(plugin_quick_actions("vst3"), GENERIC_ACTIONS);
         assert_eq!(plugin_quick_actions("unknown_kind"), GENERIC_ACTIONS);
+    }
+
+    #[test]
+    fn dynamics_plugins_have_their_own_quick_actions() {
+        for kind in ["compressor", "limiter", "noise_gate", "de_esser"] {
+            for on_master in [true, false] {
+                let actions = plugin_quick_actions_at(kind, on_master);
+                assert!(actions.len() >= 2, "{kind} (master {on_master}): {} actions", actions.len());
+                assert_ne!(actions, GENERIC_ACTIONS, "{kind} (master {on_master})");
+            }
+        }
+        let gate = plugin_quick_actions("noise_gate");
+        assert_eq!(gate.iter().map(|a| a.0).collect::<Vec<_>>(), ["Clean up the pauses", "Tighter drums", "Gentle noise reduction"]);
+        for (label, request) in gate {
+            assert!(request.contains("set_plugin_params"), "{label}");
+            assert!(request.contains("explain in a few lines which parameters you changed and why"), "{label}");
+        }
+    }
+
+    #[test]
+    fn dynamics_bar_note_names_the_curve_parameters() {
+        let wanted: [(&str, &[&str]); 4] = [
+            ("compressor", &["Threshold", "Ratio", "Knee"]),
+            ("limiter", &["Input Gain", "Output Ceiling"]),
+            ("noise_gate", &["Threshold", "Reduction"]),
+            ("de_esser", &["Frequency", "Threshold", "Range"]),
+        ];
+        let tools: Vec<String> = ondina_core::command::tool_specs().into_iter().map(|t| t.name).collect();
+        for (kind, names) in wanted {
+            let note = dynamics_bar_note(kind);
+            assert!(note.contains("transfer curve"), "{kind}: {note}");
+            for name in names {
+                assert!(note.contains(name), "{kind}: missing {name:?} in {note}");
+            }
+            for word in note.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                assert!(!tools.iter().any(|t| t == word), "{word} names a tool");
+            }
+        }
+        assert_eq!(dynamics_bar_note("channel_eq"), "");
+        assert_eq!(dynamics_bar_note("reverb"), "");
+        let mut s = Session::new(false);
+        let t = id(&run(&mut s, "add_track", json!({"kind": "audio", "name": "Drums"})), "track_id");
+        let comp = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "compressor"})), "plugin_id");
+        let text = plugin_bar_context(&s.project, comp).unwrap();
+        assert!(text.contains(dynamics_bar_note("compressor")), "{text}");
     }
 
     #[test]
@@ -494,7 +557,7 @@ mod tests {
         }
         assert_eq!(eq_bar_note("compressor"), "");
         let rules = plugin_bar_rules(comp, &plugins::plugin_label(s.project.find_plugin(comp).unwrap()));
-        assert_eq!(plugin_bar_context(&s.project, comp).unwrap(), format!("{rules}\n{}", plugin_context(&s.project, comp).unwrap()));
+        assert_eq!(plugin_bar_context(&s.project, comp).unwrap(), format!("{rules}{}\n{}", dynamics_bar_note("compressor"), plugin_context(&s.project, comp).unwrap()));
         let tools: Vec<String> = ondina_core::command::tool_specs().into_iter().map(|t| t.name).collect();
         for kind in ["channel_eq", "dynamic_eq"] {
             for word in eq_bar_note(kind).split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
