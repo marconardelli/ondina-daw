@@ -1337,6 +1337,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn every_registry_kind_opens_exactly_its_family() {
+        // the drawing each built-in's window shows above its knobs; every other built-in shows the knobs alone
+        let families: [(&str, &[&str]); 5] = [
+            ("Eq", &["channel_eq", "dynamic_eq"]),
+            ("Synth", &["analog_synth", "fm_synth"]),
+            ("Dynamics", &["compressor", "limiter", "noise_gate", "de_esser"]),
+            ("Delay", &["stereo_delay", "tape_delay"]),
+            ("Saturation", &["overdrive", "bitcrusher", "exciter"]),
+        ];
+        for (_, kinds) in families {
+            for kind in kinds {
+                assert!(plugins::find(kind).is_some(), "{kind} is not in the registry");
+            }
+        }
+        let expected = |kind: &str| families.iter().find(|(_, kinds)| kinds.contains(&kind)).map_or("Generic", |f| f.0);
+        for info in plugins::registry() {
+            let (family, of) = match plugin_view(info.kind) {
+                PluginView::Generic(i) => ("Generic", i.kind),
+                PluginView::Eq(i) => ("Eq", i.kind),
+                PluginView::Synth(i) => ("Synth", i.kind),
+                PluginView::Dynamics(i) => ("Dynamics", i.kind),
+                PluginView::Delay(i) => ("Delay", i.kind),
+                PluginView::Saturation(i) => ("Saturation", i.kind),
+                PluginView::Vst3 => ("Vst3", ""),
+                PluginView::Unknown => ("Unknown", ""),
+            };
+            assert_eq!((family, of), (expected(info.kind), info.kind), "{}", info.kind);
+        }
+        assert!(matches!(plugin_view("vst3"), PluginView::Vst3));
+        assert!(matches!(plugin_view("from_the_future"), PluginView::Unknown));
+    }
+
     /// What a plug-in window draws under its header for `inst`, in a headless 900x700 context, two frames without
     /// input, with the functions plugin_window_body uses: every edit asked for, every note sent and the height of the
     /// drawing above the knobs.
