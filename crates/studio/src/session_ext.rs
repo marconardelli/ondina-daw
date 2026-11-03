@@ -16,6 +16,18 @@ use serde_json::{json, Value};
 
 use crate::session::{Session, Source};
 
+/// A plug-in meter as the tools return it: dBFS peaks rounded to 0.1 dB (-120 for silence) and, for plug-ins that
+/// reduce gain, the reduction in dB (<= 0).
+pub(crate) fn plugin_meter_json(m: &ondina_engine::PluginMeter) -> Value {
+    // `+ 0.0` turns -0.0 into 0.0, so the JSON never shows "-0.0"
+    let r = |x: f32| (x * 10.0).round() / 10.0 + 0.0;
+    let mut v = json!({"input_db": r(ondina_dsp::util::gain_to_db(m.input_peak)), "output_db": r(ondina_dsp::util::gain_to_db(m.output_peak))});
+    if let Some(g) = m.gain_reduction_db {
+        v["gain_reduction_db"] = json!(r(g));
+    }
+    v
+}
+
 fn ops2_musicxml(p: &Project, ids: Option<&[Id]>) -> Result<String, String> {
     ondina_core::ops2::musicxml(p, ids)
 }
@@ -375,6 +387,14 @@ impl Session {
     pub(crate) fn dispatch_ext(&mut self, cmd: &Command, source: Source) -> Option<Result<Value, String>> {
         use Command::*;
         Some(match cmd {
+            GetPlugin { plugin_id } => {
+                let Some(p) = self.project.find_plugin(*plugin_id) else { return Some(Err("plug-in not found".into())) };
+                let mut v = ops::plugin_read(&self.project, p);
+                if let Some(m) = self.engine.plugin_meter(*plugin_id) {
+                    v["meters"] = plugin_meter_json(&m);
+                }
+                Ok(v)
+            }
             SendLiveMidi { track_id, events } => self.send_live_midi(*track_id, events),
             TimeStretchRegion { region_id, ratio, target_length } => {
                 let len = match self.project.find_region(*region_id) {

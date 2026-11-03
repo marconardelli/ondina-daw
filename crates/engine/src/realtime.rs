@@ -16,6 +16,7 @@ use cpal::{FromSample, SizedSample};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use parking_lot::Mutex;
 
+use crate::plugin_meters::{PluginMeter, PluginMeters};
 use crate::pool::AudioPool;
 use crate::renderer::{LiveAction, LiveLogEntry, RecordedEvent, Renderer};
 
@@ -117,11 +118,17 @@ pub struct Shared {
     pub input_device_name: Mutex<String>,
     pub live_state: Mutex<LiveState>,
     pub live_log: Mutex<Vec<LiveLogEntry>>,
+    /// Live meters of every insert, written by the audio thread without locks.
+    pub plugin_meters: Arc<PluginMeters>,
     device_notice: Mutex<Option<String>>,
     device_notices: AtomicU64,
 }
 
 impl Shared {
+    /// The live meters of insert `plugin_id`, read without locks; None when it has none (yet).
+    pub fn plugin_meter(&self, plugin_id: Id) -> Option<PluginMeter> {
+        self.plugin_meters.read(plugin_id)
+    }
     /// The last thing that happened to the output device on its own (it stopped working and was replaced), if any.
     pub fn device_notice(&self) -> Option<String> {
         self.device_notice.lock().clone()
@@ -212,6 +219,7 @@ impl Engine {
         let (tx, rx) = unbounded();
         let shared = Arc::new(Shared::default());
         shared.sample_rate.store(48000, Ordering::Relaxed);
+        shared.plugin_meters.assign_project(&project);
         let mut e = Engine { tx, rx, shared, song: Arc::new(Mutex::new(Song { project: project.clone(), pool: pool.clone() })), project, pool, device: None, input: None, output_name: None, input_name: None, audio_enabled };
         e.start_device();
         e
@@ -257,7 +265,14 @@ impl Engine {
     pub fn set_project(&mut self, p: Arc<Project>) {
         self.project = p.clone();
         self.song.lock().project = p.clone();
+        // before the message: the audio thread looks up the cells when it applies the project
+        self.shared.plugin_meters.assign_project(&p);
         self.send(EngineMsg::Project(p));
+    }
+
+    /// The live meters of insert `plugin_id` (input and output peaks, gain reduction), read without locks.
+    pub fn plugin_meter(&self, plugin_id: Id) -> Option<PluginMeter> {
+        self.shared.plugin_meter(plugin_id)
     }
 
     /// The project snapshot most recently handed to the audio thread.
@@ -600,6 +615,7 @@ fn open_output(name: Option<&str>, rx: &Receiver<EngineMsg>, shared: &Arc<Shared
     *shared.device_name.lock() = device.name().unwrap_or_default();
     let mut renderer = Renderer::new(sr as f32, project.clone(), pool.clone());
     renderer.beat = beat;
+    renderer.set_plugin_meters(Some(shared.plugin_meters.clone()));
     let stream_config: cpal::StreamConfig = config.clone().into();
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => build_stream::<f32>(&device, &stream_config, renderer, rx.clone(), shared.clone(), lost),
@@ -671,6 +687,7 @@ fn null_device(rx: &Receiver<EngineMsg>, shared: &Arc<Shared>, project: Arc<Proj
     *shared.device_name.lock() = "Null device (no audio output)".into();
     let mut r = Renderer::new(sr as f32, project, pool);
     r.beat = beat;
+    r.set_plugin_meters(Some(shared.plugin_meters.clone()));
     let mut applied = Applied::from_shared(shared);
     let frames = 480;
     let mut l = vec![0.0; frames];
@@ -939,6 +956,29 @@ mod tests {
         let p = e.position();
         assert!((16.0..17.0).contains(&p), "{p}");
         e.stop();
+    }
+
+    #[test]
+    fn the_null_device_publishes_plug_in_meters() {
+        use ondina_core::command::Command;
+        use ondina_core::model::TrackKind;
+        use ondina_core::ops::{self, Outcome};
+        let mut p = Project::new("t");
+        let done = |o| match o {
+            Ok(Outcome::Done(v)) => v,
+            _ => panic!("command failed"),
+        };
+        let t = done(ops::apply(&mut p, &Command::AddTrack { kind: TrackKind::Audio, name: None, patch: None, instrument: None, preset: None, index: None }))["track_id"].as_u64().unwrap();
+        let bare = p.clone();
+        let comp = done(ops::apply(&mut p, &Command::AddEffect { track_id: t, kind: "compressor".into(), preset: None, index: None }))["plugin_id"].as_u64().unwrap();
+        let mut e = Engine::new(Arc::new(p), Arc::new(AudioPool::new()), false);
+        let t0 = Instant::now();
+        while e.plugin_meter(comp).is_none() && t0.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(e.plugin_meter(comp).is_some(), "no meter for the compressor within 2 s");
+        e.set_project(Arc::new(bare));
+        assert_eq!(e.plugin_meter(comp), None, "a removed insert keeps its meter");
     }
 }
 

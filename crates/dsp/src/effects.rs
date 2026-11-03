@@ -169,6 +169,10 @@ impl Effect for Compressor {
     }
     fn reset(&mut self) {
         self.env_db = -120.0;
+        self.gain_reduction_db = 0.0;
+    }
+    fn gain_reduction_db(&self) -> Option<f32> {
+        Some(self.gain_reduction_db)
     }
 }
 
@@ -186,12 +190,14 @@ pub struct Limiter {
     mins: VecDeque<(usize, f32)>,
     counter: usize,
     current: f32,
+    /// Deepest reduction of the last block in dB (<= 0).
+    gain_reduction_db: f32,
 }
 
 impl Limiter {
     pub fn new(sr: f32) -> Self {
         let look = (sr * 0.0015) as usize;
-        Limiter { sr, gain: 1.0, ceiling: db_to_gain(-1.0), release: 60.0, look, dl: VecDeque::from(vec![0.0; look]), dr: VecDeque::from(vec![0.0; look]), targets: VecDeque::new(), mins: VecDeque::new(), counter: 0, current: 1.0 }
+        Limiter { sr, gain: 1.0, ceiling: db_to_gain(-1.0), release: 60.0, look, dl: VecDeque::from(vec![0.0; look]), dr: VecDeque::from(vec![0.0; look]), targets: VecDeque::new(), mins: VecDeque::new(), counter: 0, current: 1.0, gain_reduction_db: 0.0 }
     }
 }
 
@@ -207,6 +213,7 @@ impl Effect for Limiter {
     fn process(&mut self, l: &mut [f32], r: &mut [f32], _ctx: &ProcessContext) {
         let rel = 1.0 - (-1.0 / (self.release * 0.001 * self.sr)).exp();
         let att = 1.0 - (-1.0 / (self.look.max(1) as f32 / 3.0)).exp();
+        let mut min_gain = 1.0f32;
         for i in 0..l.len() {
             let a = l[i] * self.gain;
             let b = r[i] * self.gain;
@@ -235,6 +242,7 @@ impl Effect for Limiter {
             } else {
                 self.current += (win_min - self.current) * rel;
             }
+            min_gain = min_gain.min(self.current);
             self.dl.push_back(a);
             self.dr.push_back(b);
             let da = self.dl.pop_front().unwrap_or(0.0);
@@ -244,12 +252,17 @@ impl Effect for Limiter {
             r[i] = (db * self.current).clamp(-c, c);
         }
         let _ = &self.targets;
+        self.gain_reduction_db = gain_to_db(min_gain).min(0.0);
     }
     fn reset(&mut self) {
         self.dl.iter_mut().for_each(|x| *x = 0.0);
         self.dr.iter_mut().for_each(|x| *x = 0.0);
         self.mins.clear();
         self.current = 1.0;
+        self.gain_reduction_db = 0.0;
+    }
+    fn gain_reduction_db(&self) -> Option<f32> {
+        Some(self.gain_reduction_db)
     }
 }
 
@@ -265,11 +278,13 @@ pub struct NoiseGate {
     env: f32,
     gain: f32,
     hold_count: usize,
+    /// Deepest reduction of the last block in dB, between `reduction` and 0.
+    gain_reduction_db: f32,
 }
 
 impl NoiseGate {
     pub fn new(sr: f32) -> Self {
-        NoiseGate { sr, threshold: -50.0, reduction: -60.0, attack: 1.0, hold: 20.0, release: 100.0, env: 0.0, gain: 0.0, hold_count: 0 }
+        NoiseGate { sr, threshold: -50.0, reduction: -60.0, attack: 1.0, hold: 20.0, release: 100.0, env: 0.0, gain: 0.0, hold_count: 0, gain_reduction_db: 0.0 }
     }
 }
 
@@ -291,6 +306,7 @@ impl Effect for NoiseGate {
         let rel = 1.0 - (-1.0 / (self.release * 0.001 * self.sr)).exp();
         let det = 1.0 - (-1.0 / (0.002 * self.sr)).exp();
         let hold = (self.hold * 0.001 * self.sr) as usize;
+        let mut min_gain = 1.0f32;
         for i in 0..l.len() {
             let x = l[i].abs().max(r[i].abs());
             self.env += (x - self.env) * det;
@@ -305,12 +321,19 @@ impl Effect for NoiseGate {
             };
             let target = if open { 1.0 } else { floor };
             self.gain += (target - self.gain) * if open { att } else { rel };
+            min_gain = min_gain.min(self.gain);
             l[i] *= self.gain;
             r[i] *= self.gain;
         }
+        // A new gate starts fully closed (gain 0): never report more than its own floor.
+        self.gain_reduction_db = gain_to_db(min_gain).clamp(self.reduction.min(0.0), 0.0);
     }
     fn reset(&mut self) {
         self.env = 0.0;
+        self.gain_reduction_db = 0.0;
+    }
+    fn gain_reduction_db(&self) -> Option<f32> {
+        Some(self.gain_reduction_db)
     }
 }
 
@@ -1221,6 +1244,9 @@ impl Effect for DeEsser {
         self.gain_reduction_db = 0.0;
         self.set_shelf(0.0);
     }
+    fn gain_reduction_db(&self) -> Option<f32> {
+        Some(self.gain_reduction_db)
+    }
 }
 
 // ============================================================================ Dynamic EQ
@@ -1534,6 +1560,10 @@ impl Effect for DynamicEq {
         }
         self.since_update = 0;
         self.dynamic_gain_db = [0.0; DEQ_BANDS];
+    }
+    /// Only the cuts: a band that boosts is not reducing anything.
+    fn gain_reduction_db(&self) -> Option<f32> {
+        Some(self.dynamic_gain_db.iter().fold(0.0f32, |m, g| m.min(*g)))
     }
 }
 
@@ -2862,5 +2892,116 @@ mod eq_response_tests {
         assert_eq!(p[2], 20.0);
         assert_eq!(p[4], 10.0);
         assert_eq!(p[DEQ_ATTACK], 10.0);
+    }
+}
+
+#[cfg(test)]
+mod gain_reduction_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    const SR: f32 = 48000.0;
+    const BLOCK: usize = 480;
+
+    /// A square wave that alternates +amp and -amp: |x| is constant, so the detectors settle on its level.
+    fn square(amp: f32, len: usize) -> Vec<f32> {
+        (0..len).map(|n| if n % 2 == 0 { amp } else { -amp }).collect()
+    }
+
+    fn tone(freq: f64, amp: f32, len: usize) -> Vec<f32> {
+        (0..len).map(|n| amp * (2.0 * std::f64::consts::PI * freq * n as f64 / SR as f64).sin() as f32).collect()
+    }
+
+    /// Processes `input` on both channels in blocks of 480 and returns what the effect reports.
+    fn feed(fx: &mut dyn Effect, input: &[f32]) -> Option<f32> {
+        let mut l = input.to_vec();
+        let mut r = input.to_vec();
+        let ctx = ProcessContext::idle(SR);
+        for (a, b) in l.chunks_mut(BLOCK).zip(r.chunks_mut(BLOCK)) {
+            fx.process(a, b, &ctx);
+        }
+        fx.gain_reduction_db()
+    }
+
+    fn run(fx: &mut dyn Effect, amp: f32, secs: f32) -> Option<f32> {
+        feed(fx, &square(amp, (SR * secs) as usize))
+    }
+
+    /// An effect set up the way the engine does it: registry defaults, then `params`.
+    fn effect(kind: &str, params: &[(&str, f32)]) -> Box<dyn Effect> {
+        let mut fx = crate::create_effect(kind, SR).expect("effect in the registry");
+        let map: BTreeMap<String, f32> = params.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        crate::configure(kind, &map, |k, v| fx.set_param(k, v));
+        fx
+    }
+
+    fn reduction(v: Option<f32>) -> f32 {
+        v.expect("a dynamics effect reports its gain reduction")
+    }
+
+    #[test]
+    fn compressor_reduction_follows_threshold_and_ratio() {
+        let params = [("threshold", -20.0), ("ratio", 4.0), ("knee", 0.0), ("attack", 1.0)];
+        let mut c = effect("compressor", &params);
+        let g = reduction(run(c.as_mut(), 0.5, 0.5));
+        assert!((g + 10.485).abs() < 0.1, "reduction {g} dB");
+        let mut c = effect("compressor", &params);
+        assert_eq!(run(c.as_mut(), 0.05, 0.5), Some(0.0));
+    }
+
+    #[test]
+    fn limiter_reduction_reaches_the_ceiling() {
+        let params = [("gain", 0.0), ("ceiling", -6.0)];
+        let mut l = effect("limiter", &params);
+        let g = reduction(run(l.as_mut(), 1.0, 0.5));
+        assert!((g + 6.02).abs() < 0.2, "reduction {g} dB");
+        let mut l = effect("limiter", &params);
+        assert_eq!(run(l.as_mut(), 0.1, 0.5), Some(0.0));
+    }
+
+    #[test]
+    fn gate_reduction_reaches_its_floor_below_threshold() {
+        let params = [("threshold", -40.0), ("reduction", -60.0)];
+        let mut g = effect("noise_gate", &params);
+        let closed = reduction(run(g.as_mut(), 0.001, 1.0));
+        assert!((closed + 60.0).abs() < 0.5, "closed gate {closed} dB");
+        let mut g = effect("noise_gate", &params);
+        let open = reduction(run(g.as_mut(), 0.5, 1.0));
+        assert!(open > -0.1, "open gate {open} dB");
+        let mut g = effect("noise_gate", &params);
+        let first = reduction(run(g.as_mut(), 0.0, BLOCK as f32 / SR));
+        assert!(first >= -60.0, "a new gate reported {first} dB");
+    }
+
+    #[test]
+    fn de_esser_and_dynamic_eq_report_what_they_measure() {
+        let mut d = DeEsser::new(SR);
+        crate::configure("de_esser", &BTreeMap::new(), |k, v| d.set_param(k, v));
+        let g = reduction(feed(&mut d, &tone(7000.0, 0.5, 24000)));
+        assert_eq!(g, d.gain_reduction_db);
+        assert!(g < 0.0, "de-esser reduction {g}");
+
+        let mut cut = effect("dynamic_eq", &[("b2_threshold", -20.0), ("b2_range", -12.0)]);
+        let g = reduction(feed(cut.as_mut(), &tone(300.0, 0.5, 24000)));
+        assert!(g < 0.0, "a cutting band reported {g}");
+        let mut boost = effect("dynamic_eq", &[("b2_threshold", -20.0), ("b2_range", 6.0)]);
+        assert_eq!(feed(boost.as_mut(), &tone(300.0, 0.5, 24000)), Some(0.0));
+    }
+
+    #[test]
+    fn reset_clears_the_reported_reduction() {
+        let loud: [(&str, Box<dyn Effect>, Vec<f32>); 5] = [
+            ("compressor", effect("compressor", &[("threshold", -30.0)]), square(0.5, 24000)),
+            ("limiter", effect("limiter", &[("ceiling", -6.0)]), square(1.0, 24000)),
+            ("noise_gate", effect("noise_gate", &[("threshold", -40.0)]), square(0.001, 24000)),
+            ("de_esser", effect("de_esser", &[]), tone(7000.0, 0.5, 24000)),
+            ("dynamic_eq", effect("dynamic_eq", &[("b2_threshold", -20.0), ("b2_range", -12.0)]), tone(300.0, 0.5, 24000)),
+        ];
+        for (kind, mut fx, input) in loud {
+            let g = reduction(feed(fx.as_mut(), &input));
+            assert!(g < -1.0, "{kind} did not reduce ({g} dB)");
+            fx.reset();
+            assert_eq!(fx.gain_reduction_db(), Some(0.0), "{kind} after reset");
+        }
     }
 }

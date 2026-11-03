@@ -80,6 +80,7 @@ pub struct SurroundOut {
 }
 
 use crate::analysis::Analyzer;
+use crate::plugin_meters::PluginMeters;
 use crate::pool::AudioPool;
 
 pub const MAX_BLOCK: usize = 64;
@@ -90,6 +91,45 @@ struct FxSlot {
     fx: Box<dyn Effect>,
     bypass: bool,
     state: Option<String>,
+    /// Cell of the live meter table, when the real-time engine attached one.
+    meter: Option<usize>,
+    /// Peak entering and leaving the slot, and deepest gain reduction, since `render` started.
+    in_peak: f32,
+    out_peak: f32,
+    reduction: Option<f32>,
+}
+
+impl FxSlot {
+    fn clear_meter(&mut self) {
+        self.in_peak = 0.0;
+        self.out_peak = 0.0;
+        self.reduction = None;
+    }
+}
+
+/// Run an insert chain in place. With `measure`, each slot also keeps the peak entering and leaving it and the
+/// deepest gain reduction of the blocks since `render` started (no allocation: a few max/min per block).
+fn run_chain(chain: &mut [FxSlot], l: &mut [f32], r: &mut [f32], ctx: &ProcessContext, measure: bool) {
+    for f in chain.iter_mut() {
+        if measure {
+            f.in_peak = f.in_peak.max(block_peak(l, r));
+        }
+        if !f.bypass {
+            f.fx.process(l, r, ctx);
+            if measure {
+                if let Some(g) = f.fx.gain_reduction_db() {
+                    f.reduction = Some(f.reduction.map_or(g, |x| x.min(g)));
+                }
+            }
+        }
+        if measure {
+            f.out_peak = f.out_peak.max(block_peak(l, r));
+        }
+    }
+}
+
+fn block_peak(l: &[f32], r: &[f32]) -> f32 {
+    l.iter().chain(r).fold(0.0f32, |m, x| m.max(x.abs()))
 }
 
 struct MidiFxSlot {
@@ -161,6 +201,8 @@ pub struct Renderer {
     pub surround_out: Option<SurroundOut>,
     /// Object-based capture (ADM export): post-fader mono signal of every object track.
     pub object_out: Option<HashMap<Id, Vec<f32>>>,
+    /// Live meters of the inserts. Only the real-time engine attaches the table: offline renders measure nothing.
+    plugin_meters: Option<Arc<PluginMeters>>,
 }
 
 impl Renderer {
@@ -191,6 +233,7 @@ impl Renderer {
             live_log: vec![],
             surround_out: None,
             object_out: None,
+            plugin_meters: None,
         };
         r.set_project(project);
         r
@@ -213,12 +256,20 @@ impl Renderer {
         self.set_project(p);
     }
 
-    fn sync_fx(old: &mut Vec<FxSlot>, desired: &[PluginInstance], sr: f32) {
+    /// Attach (or detach) the live meter table and find the cell of every insert.
+    pub fn set_plugin_meters(&mut self, meters: Option<Arc<PluginMeters>>) {
+        for f in self.tracks.values_mut().flat_map(|st| st.fx.iter_mut()).chain(self.master_fx.iter_mut()) {
+            f.meter = meters.as_deref().and_then(|m| m.cell_of(f.id));
+        }
+        self.plugin_meters = meters;
+    }
+
+    fn sync_fx(old: &mut Vec<FxSlot>, desired: &[PluginInstance], sr: f32, meters: Option<&PluginMeters>) {
         let mut pool: HashMap<Id, FxSlot> = old.drain(..).map(|s| (s.id, s)).collect();
         for p in desired {
             let slot = match pool.remove(&p.id) {
                 Some(s) if s.kind == p.kind => Some(s),
-                _ => make_effect(p, sr).map(|fx| FxSlot { id: p.id, kind: p.kind.clone(), fx, bypass: false, state: None }),
+                _ => make_effect(p, sr).map(|fx| FxSlot { id: p.id, kind: p.kind.clone(), fx, bypass: false, state: None, meter: None, in_peak: 0.0, out_peak: 0.0, reduction: None }),
             };
             if let Some(mut s) = slot {
                 if s.state != p.vst3_state {
@@ -229,6 +280,8 @@ impl Renderer {
                 }
                 configure_any(&p.kind, &p.params, |k, v| s.fx.set_param(k, v));
                 s.bypass = p.bypass;
+                // Always: an id removed and added again can have another cell.
+                s.meter = meters.and_then(|m| m.cell_of(p.id));
                 old.push(s);
             }
         }
@@ -237,6 +290,7 @@ impl Renderer {
     /// Install a new project snapshot, reusing DSP instances where possible.
     pub fn set_project(&mut self, project: Arc<Project>) {
         let sr = self.sr;
+        let meters = self.plugin_meters.clone();
         let mut keep: HashSet<Id> = HashSet::new();
         for t in &project.tracks {
             keep.insert(t.id);
@@ -282,10 +336,10 @@ impl Renderer {
                     st.midi_fx.push(s);
                 }
             }
-            Self::sync_fx(&mut st.fx, &t.channel.inserts, sr);
+            Self::sync_fx(&mut st.fx, &t.channel.inserts, sr, meters.as_deref());
         }
         self.tracks.retain(|id, _| keep.contains(id));
-        Self::sync_fx(&mut self.master_fx, &project.master.inserts, sr);
+        Self::sync_fx(&mut self.master_fx, &project.master.inserts, sr, meters.as_deref());
         // refresh Clip Grid overrides from the new cell contents
         let ids: Vec<Id> = self.live_playing.keys().copied().collect();
         for tid in ids {
@@ -455,7 +509,9 @@ impl Renderer {
     pub fn render(&mut self, left: &mut [f32], right: &mut [f32]) {
         for st in self.tracks.values_mut() {
             st.peak = [0.0; 2];
+            st.fx.iter_mut().for_each(FxSlot::clear_meter);
         }
+        self.master_fx.iter_mut().for_each(FxSlot::clear_meter);
         self.master_peak = [0.0; 2];
         let mut done = 0;
         while done < left.len() {
@@ -485,6 +541,17 @@ impl Renderer {
                 }
             }
             done += n;
+        }
+        self.write_plugin_meters();
+    }
+
+    /// One write per insert into the live table (one per audio callback): atomic stores, no allocation.
+    fn write_plugin_meters(&self) {
+        let Some(m) = self.plugin_meters.as_deref() else { return };
+        for f in self.tracks.values().flat_map(|st| st.fx.iter()).chain(self.master_fx.iter()) {
+            if let Some(cell) = f.meter {
+                m.write(cell, f.id, f.in_peak, f.out_peak, f.reduction);
+            }
         }
     }
 
@@ -621,6 +688,7 @@ impl Renderer {
         let b1 = b0 + frames as f64 * bps;
         let ctx = ProcessContext { sample_rate: self.sr, bpm: bpm as f32, beat: b0, beats_per_sample: bps, playing: self.playing && self.count_in_beats <= 0.0 };
         let timeline_running = ctx.playing;
+        let measure = self.plugin_meters.is_some();
         let any_solo = project.any_solo();
         self.master_l[..frames].iter_mut().for_each(|x| *x = 0.0);
         self.master_r[..frames].iter_mut().for_each(|x| *x = 0.0);
@@ -765,9 +833,7 @@ impl Renderer {
                 Self::render_audio_regions(&project, &self.pool, self.sr, content_track, b0, frames, &mut st.l[..frames], &mut st.r[..frames]);
             }
             let st = self.tracks.get_mut(&tid).unwrap();
-            for f in st.fx.iter_mut().filter(|f| !f.bypass) {
-                f.fx.process(&mut st.l[..frames], &mut st.r[..frames], &ctx);
-            }
+            run_chain(&mut st.fx, &mut st.l[..frames], &mut st.r[..frames], &ctx, measure);
             // fader + pan with per-block linear smoothing
             let g = if audible { db_to_gain(vol_db) } else { 0.0 };
             let to_master = !matches!(track.channel.output, Output::Bus(b) if b != tid && project.track(b).is_some());
@@ -871,9 +937,7 @@ impl Renderer {
         }
 
         // ---- master
-        for f in self.master_fx.iter_mut().filter(|f| !f.bypass) {
-            f.fx.process(&mut self.master_l[..frames], &mut self.master_r[..frames], &ctx);
-        }
+        run_chain(&mut self.master_fx, &mut self.master_l[..frames], &mut self.master_r[..frames], &ctx, measure);
         let g = if project.master.mute { 0.0 } else { db_to_gain(project.master.volume_db) };
         let (pl, pr) = pan_gains(project.master.pan);
         let (tl, tr) = (g * pl, g * pr);
@@ -1137,5 +1201,100 @@ mod tests {
         p.metronome = true;
         p.metronome_only_recording = false;
         assert!(click_peak(&p, false, 0.0) > 0.1, "by default the click sounds in every playback");
+    }
+
+    struct Metered {
+        project: Project,
+        comp: Id,
+        eq: Id,
+        bypassed: Id,
+        limiter: Id,
+    }
+
+    /// A synth playing a loud chord through a working compressor, a Channel EQ and a bypassed compressor, with a
+    /// limiter on the master.
+    fn metered_project() -> Metered {
+        let mut p = Project::new("t");
+        let t = run(&mut p, Command::AddTrack { kind: TrackKind::Instrument, name: None, patch: None, instrument: Some("analog_synth".into()), preset: None, index: None })["track_id"].as_u64().unwrap();
+        run(&mut p, Command::SetInstrument { track_id: t, kind: "analog_synth".into(), preset: None });
+        let notes = [48u8, 55, 60, 64].iter().map(|&pitch| Note { pitch, velocity: 127, start: 0.0, length: 4.0 }).collect();
+        run(&mut p, Command::CreateMidiRegion { track_id: t, start: 0.0, length: 4.0, name: None, notes: Some(notes) });
+        let effect = |p: &mut Project, track_id: Id, kind: &str| run(p, Command::AddEffect { track_id, kind: kind.into(), preset: None, index: None })["plugin_id"].as_u64().unwrap();
+        let comp = effect(&mut p, t, "compressor");
+        let params = [("threshold", -40.0), ("ratio", 8.0), ("knee", 0.0), ("attack", 1.0)].iter().map(|(k, v)| (k.to_string(), *v)).collect();
+        run(&mut p, Command::SetPluginParams { plugin_id: comp, params });
+        let eq = effect(&mut p, t, "channel_eq");
+        let bypassed = effect(&mut p, t, "compressor");
+        run(&mut p, Command::SetPluginBypass { plugin_id: bypassed, bypass: true });
+        let limiter = effect(&mut p, MASTER_ID, "limiter");
+        Metered { project: p, comp, eq, bypassed, limiter }
+    }
+
+    /// Renders `secs` seconds in blocks of 512 and returns the left channel.
+    fn render_for(r: &mut Renderer, secs: f32) -> Vec<f32> {
+        let mut out = vec![];
+        let mut l = vec![0.0; 512];
+        let mut rr = vec![0.0; 512];
+        for _ in 0..((48000.0 * secs) as usize / 512) {
+            r.render(&mut l, &mut rr);
+            out.extend_from_slice(&l);
+            out.extend_from_slice(&rr);
+        }
+        out
+    }
+
+    #[test]
+    fn inserts_report_their_meters_to_the_table() {
+        let m = metered_project();
+        let meters = Arc::new(crate::PluginMeters::default());
+        meters.assign_project(&m.project);
+        let mut r = Renderer::new(48000.0, Arc::new(m.project), Arc::new(AudioPool::new()));
+        r.set_plugin_meters(Some(meters.clone()));
+        r.play();
+        render_for(&mut r, 0.5);
+        let comp = meters.read(m.comp).expect("the compressor is measured");
+        assert!(comp.input_peak > 0.01, "{comp:?}");
+        assert!(comp.output_peak < comp.input_peak, "{comp:?}");
+        assert!(comp.gain_reduction_db.unwrap() < -1.0, "{comp:?}");
+        let eq = meters.read(m.eq).expect("the Channel EQ is measured");
+        assert_eq!(eq.gain_reduction_db, None);
+        let bypassed = meters.read(m.bypassed).expect("a bypassed insert is measured");
+        assert_eq!(bypassed.gain_reduction_db, None);
+        assert_eq!(bypassed.output_peak, bypassed.input_peak);
+        assert!(meters.read(m.limiter).is_some(), "the master limiter is measured");
+    }
+
+    #[test]
+    fn meters_do_not_change_the_audio() {
+        let m = metered_project();
+        let meters = Arc::new(crate::PluginMeters::default());
+        meters.assign_project(&m.project);
+        let project = Arc::new(m.project);
+        let mut with = Renderer::new(48000.0, project.clone(), Arc::new(AudioPool::new()));
+        with.set_plugin_meters(Some(meters));
+        let mut without = Renderer::new(48000.0, project, Arc::new(AudioPool::new()));
+        with.play();
+        without.play();
+        let mut a = (vec![0.0; 512], vec![0.0; 512]);
+        let mut b = (vec![0.0; 512], vec![0.0; 512]);
+        for _ in 0..(48000 / 512) {
+            with.render(&mut a.0, &mut a.1);
+            without.render(&mut b.0, &mut b.1);
+            assert_eq!(a, b);
+        }
+    }
+
+    #[test]
+    fn a_renderer_without_the_table_writes_nothing() {
+        let m = metered_project();
+        let meters = Arc::new(crate::PluginMeters::default());
+        meters.assign_project(&m.project);
+        let mut r = Renderer::new(48000.0, Arc::new(m.project), Arc::new(AudioPool::new()));
+        r.play();
+        render_for(&mut r, 0.5);
+        for id in [m.comp, m.eq, m.bypassed, m.limiter] {
+            assert!(meters.cell_of(id).is_some());
+            assert_eq!(meters.read(id), None, "plug-in {id} was measured without the table");
+        }
     }
 }

@@ -998,4 +998,34 @@ mod tests {
             assert_eq!(result_for_model("get_plugin", &out), out);
         }
     }
+
+    #[test]
+    fn get_plugin_with_meters_reaches_the_local_model_whole() {
+        use ondina_core::command::Command;
+        use ondina_core::model::TrackKind;
+        use ondina_core::plugins::{registry, PluginCategory};
+        let mut s = Session::new(false);
+        let add = Command::AddTrack { kind: TrackKind::Audio, name: None, patch: None, instrument: None, preset: None, index: None };
+        let track_id = s.execute(add, Source::Mcp).unwrap()["track_id"].as_u64().unwrap();
+        let effects: Vec<(&str, u64)> = registry()
+            .iter()
+            .filter(|i| i.category == PluginCategory::Effect)
+            .map(|i| (i.kind, s.execute(Command::AddEffect { track_id, kind: i.kind.to_string(), preset: None, index: None }, Source::Mcp).unwrap()["plugin_id"].as_u64().unwrap()))
+            .collect();
+        let t0 = std::time::Instant::now();
+        while effects.iter().any(|(_, id)| s.engine.plugin_meter(*id).is_none()) && t0.elapsed() < std::time::Duration::from_secs(5) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        for (kind, plugin_id) in effects {
+            let v = s.execute(Command::GetPlugin { plugin_id }, Source::Mcp).unwrap();
+            assert!(v.get("meters").is_some(), "get_plugin of {kind} has no meters: {v}");
+            if kind == "dynamic_eq" {
+                assert!(v["meters"]["gain_reduction_db"].is_number(), "{v}");
+            }
+            let out = v.to_string();
+            let len = out.chars().count();
+            assert!(len <= READ_RESULT_CHARS, "get_plugin of {kind} with meters is {len} characters, the local model reads {READ_RESULT_CHARS}");
+            assert_eq!(result_for_model("get_plugin", &out), out);
+        }
+    }
 }
