@@ -110,21 +110,27 @@ impl FxSlot {
 /// Run an insert chain in place. With `measure`, each slot also keeps the peak entering and leaving it and the
 /// deepest gain reduction of the blocks since `render` started (no allocation: a few max/min per block).
 fn run_chain(chain: &mut [FxSlot], l: &mut [f32], r: &mut [f32], ctx: &ProcessContext, measure: bool) {
-    for f in chain.iter_mut() {
-        if measure {
-            f.in_peak = f.in_peak.max(block_peak(l, r));
+    if !measure {
+        for f in chain.iter_mut().filter(|f| !f.bypass) {
+            f.fx.process(l, r, ctx);
         }
+        return;
+    }
+    if chain.is_empty() {
+        return;
+    }
+    // A slot's output is the next slot's input, and a bypassed slot leaves the signal as it is: one peak per slot.
+    let mut peak = block_peak(l, r);
+    for f in chain.iter_mut() {
+        f.in_peak = f.in_peak.max(peak);
         if !f.bypass {
             f.fx.process(l, r, ctx);
-            if measure {
-                if let Some(g) = f.fx.gain_reduction_db() {
-                    f.reduction = Some(f.reduction.map_or(g, |x| x.min(g)));
-                }
+            if let Some(g) = f.fx.gain_reduction_db() {
+                f.reduction = Some(f.reduction.map_or(g, |x| x.min(g)));
             }
+            peak = block_peak(l, r);
         }
-        if measure {
-            f.out_peak = f.out_peak.max(block_peak(l, r));
-        }
+        f.out_peak = f.out_peak.max(peak);
     }
 }
 
@@ -1363,5 +1369,62 @@ mod tests {
         let p3 = (**r.project()).clone();
         r.set_project(Arc::new(p3));
         assert_eq!(r.tracks[&track].fx.iter().find(|f| f.id == added).unwrap().meter, cells2.cell(added));
+    }
+
+    #[test]
+    fn run_chain_reuses_each_output_peak_as_the_next_input() {
+        use std::collections::BTreeMap;
+        let inst = |id: Id, kind: &str, params: &[(&str, f32)], bypass: bool| PluginInstance {
+            id,
+            kind: kind.into(),
+            params: params.iter().map(|(k, v)| (k.to_string(), *v)).collect::<BTreeMap<_, _>>(),
+            bypass,
+            preset: None,
+            sample: None,
+            vst3_path: None,
+            vst3_params: vec![],
+            vst3_state: None,
+        };
+        let plugins = [inst(1, "gain", &[("gain", -6.0206)], false), inst(2, "gain", &[("gain", 12.0)], true), inst(3, "compressor", &[("threshold", -30.0)], false)];
+        let chain = || -> Vec<FxSlot> {
+            plugins
+                .iter()
+                .map(|p| {
+                    let mut fx = make_effect(p, 48000.0).unwrap();
+                    configure_any(&p.kind, &p.params, |k, v| fx.set_param(k, v));
+                    FxSlot { id: p.id, kind: p.kind.clone(), fx, bypass: p.bypass, state: None, meter: None, in_peak: 0.0, out_peak: 0.0, reduction: None }
+                })
+                .collect()
+        };
+        let ctx = ProcessContext::idle(48000.0);
+        let block = |n: usize| -> Vec<f32> { (0..64).map(|i| if (n * 64 + i) % 40 < 20 { 0.5 } else { -0.5 }).collect() };
+        let (mut a, mut b, mut off) = (chain(), chain(), chain());
+        for n in 0..20 {
+            let (mut l, mut r) = (block(n), block(n));
+            run_chain(&mut a, &mut l, &mut r, &ctx, true);
+            // the calculation as it was: a peak before and after every slot
+            let (mut l2, mut r2) = (block(n), block(n));
+            for f in b.iter_mut() {
+                f.in_peak = f.in_peak.max(block_peak(&l2, &r2));
+                if !f.bypass {
+                    f.fx.process(&mut l2, &mut r2, &ctx);
+                    if let Some(g) = f.fx.gain_reduction_db() {
+                        f.reduction = Some(f.reduction.map_or(g, |x| x.min(g)));
+                    }
+                }
+                f.out_peak = f.out_peak.max(block_peak(&l2, &r2));
+            }
+            assert_eq!((l, r), (l2, r2));
+            let (mut l3, mut r3) = (block(n), block(n));
+            run_chain(&mut off, &mut l3, &mut r3, &ctx, false);
+        }
+        for (x, y) in a.iter().zip(&b) {
+            assert_eq!((x.in_peak, x.out_peak, x.reduction), (y.in_peak, y.out_peak, y.reduction), "slot {}", x.id);
+        }
+        assert!(a[0].in_peak > 0.4 && a[2].reduction.is_some());
+        assert_eq!(a[0].out_peak, a[1].in_peak);
+        assert_eq!(a[1].out_peak, a[1].in_peak, "a bypassed slot leaves the peak as it is");
+        assert_eq!(a[1].out_peak, a[2].in_peak);
+        assert!(off.iter().all(|f| f.in_peak == 0.0 && f.out_peak == 0.0 && f.reduction.is_none()));
     }
 }
