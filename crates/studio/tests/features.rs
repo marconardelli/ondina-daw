@@ -3990,3 +3990,109 @@ fn get_plugin_reads_delay_times_as_note_values() {
     ok(&mut s, "undo", json!({}));
     assert_eq!(plugin_value(&mut s, st, "time_l"), 0.75);
 }
+
+#[test]
+fn delay_window_gestures_are_one_undo_step_each() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
+    let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "stereo_delay"}))["plugin_id"].as_u64().unwrap();
+    // the merge keys have the format of the delay window's drag_key ("pw{plugin}:delay:L#{gesture}") and
+    // mix_wheel_key ("pw{plugin}:delay:mix")
+    let edit = |s: &mut Session, id: &str, v: f32, key: &str| {
+        let params = [(id.to_string(), v)].into_iter().collect();
+        s.execute_coalesced(Command::SetPluginParams { plugin_id: fx, params }, key).unwrap();
+    };
+    let time_drag = format!("pw{fx}:delay:L#1");
+    for v in [0.5, 0.375, 1.0 / 3.0] {
+        edit(&mut s, "time_l", v, &time_drag);
+    }
+    let feedback_drag = format!("pw{fx}:delay:L#2");
+    for v in [0.5, 0.6] {
+        edit(&mut s, "feedback", v, &feedback_drag);
+    }
+    let wheel = format!("pw{fx}:delay:mix");
+    for v in [0.3, 0.35] {
+        edit(&mut s, "mix", v, &wheel);
+    }
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    assert!(near(plugin_value(&mut s, fx, "time_l"), 1.0 / 3.0) && near(plugin_value(&mut s, fx, "mix"), 0.35));
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert!(near(plugin_value(&mut s, fx, "mix"), 0.25), "close wheel turns are one step");
+    assert!(near(plugin_value(&mut s, fx, "feedback"), 0.6));
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert!(near(plugin_value(&mut s, fx, "feedback"), 0.35), "the feedback drag is one step");
+    assert!(near(plugin_value(&mut s, fx, "time_l"), 1.0 / 3.0));
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert!(near(plugin_value(&mut s, fx, "time_l"), 0.75), "the time drag is one step");
+}
+
+/// The repeats the delay window draws for plug-in `fx` at 120 BPM, as (side, ms) pairs.
+fn drawn_repeats(s: &Session, fx: u64) -> Vec<(ondina_dsp::echoes::Side, f32)> {
+    let inst = s.project.find_plugin(fx).unwrap();
+    let t = ondina_core::note_value::delay_times(inst, 120.0).unwrap();
+    ondina_dsp::echoes::stereo_echoes(t.left_ms, t.right_ms.unwrap(), inst.param("feedback"), inst.param("crossfeed"), 2000.0).into_iter().map(|t| (t.side, t.ms)).collect()
+}
+
+#[test]
+fn delay_view_follows_the_assistant_and_undo() {
+    use ondina_dsp::echoes::Side;
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
+    let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "stereo_delay"}))["plugin_id"].as_u64().unwrap();
+    let before = plugin_values(&mut s, fx);
+    let drawn = drawn_repeats(&s, fx);
+    let first_right = |r: &[(Side, f32)]| r.iter().find(|x| x.0 == Side::Right).unwrap().1;
+    assert_eq!(first_right(&drawn), 250.0);
+    s.begin_undo_group("assistant: Dotted-eighth echo in time");
+    run(&mut s, "set_plugin_params", json!({"plugin_id": fx, "params": {"time_l": 0.75, "time_r": 1, "feedback": 0.4, "crossfeed": 0.3, "high_cut": 6000, "mix": 0.2}}), Source::Ai);
+    s.end_undo_group();
+    // the window reads the project the session publishes every frame: this is what it draws at once
+    let after = drawn_repeats(&s, fx);
+    assert_eq!(first_right(&after), 500.0);
+    assert_ne!(after, drawn);
+    assert_eq!(s.can_undo(), Some("assistant: Dotted-eighth echo in time"));
+    assert!(s.last_undo_is_ai());
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(plugin_values(&mut s, fx), before, "one undo restores every parameter");
+    assert_eq!(drawn_repeats(&s, fx), drawn);
+    s.execute(Command::Redo {}, Source::Gui).unwrap();
+    assert_eq!(drawn_repeats(&s, fx), after);
+}
+
+#[test]
+fn delay_quick_actions_are_covered_by_the_local_tools() {
+    use ondina_studio::local_ai::LOCAL_TOOLS;
+    use ondina_studio::prompts::plugin_quick_actions;
+    let all: Vec<String> = tool_specs().into_iter().map(|t| t.name).collect();
+    for tool in ["get_project", "set_plugin_params"] {
+        assert!(LOCAL_TOOLS.contains(&tool), "{tool} is needed by the delay requests");
+    }
+    for kind in ["stereo_delay", "tape_delay"] {
+        let actions = plugin_quick_actions(kind);
+        assert!(actions.len() >= 2, "{kind}");
+        for (label, text) in actions.iter() {
+            for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                if all.iter().any(|t| t == word) {
+                    assert!(LOCAL_TOOLS.contains(&word), "{word}, named by {kind} {label:?}, is not offered to the local model");
+                }
+            }
+            assert!(text.contains("set_plugin_params"), "{kind} {label:?} changes the parameters with set_plugin_params");
+            assert!(text.contains("explain in a few lines which times (as note values with their ms at the project tempo)"), "{kind} {label:?} must ask for an explanation");
+        }
+    }
+}
+
+#[test]
+fn delay_times_follow_tempo_changes_at_the_playhead() {
+    let mut s = Session::new(false);
+    let t = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
+    let fx = ok(&mut s, "add_effect", json!({"track_id": t, "kind": "stereo_delay"}))["plugin_id"].as_u64().unwrap();
+    ok(&mut s, "add_tempo_change", json!({"beat": 8, "bpm": 140}));
+    let inst = s.project.find_plugin(fx).unwrap();
+    let at = |beat: f64| ondina_core::note_value::delay_times(inst, s.project.tempo.bpm_at(beat)).unwrap().left_ms;
+    assert_eq!(at(0.0), 375.0);
+    assert!((at(10.0) - 321.4).abs() <= 0.1, "{}", at(10.0));
+    let v = ok(&mut s, "get_plugin", json!({"plugin_id": fx}));
+    assert_eq!(v["timing"]["tempo_changes"], json!(true));
+    assert!(v["timing"]["summary"].as_str().unwrap().contains("The tempo changes along the song"), "{}", v["timing"]);
+}
