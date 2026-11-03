@@ -732,13 +732,17 @@ apre accanto alla loro finestra.
   altre.
 - L'assistente riceve con la richiesta il plug-in, la traccia su cui sta, il resto della catena e tutti i
   parametri con valori e intervalli (per un VST3 i primi 64). Quando serve misura il mix con `analyze_mix`.
+- Per gli effetti sul canale e sul master la richiesta porta anche i misuratori del momento: picco d'ingresso e
+  d'uscita e, per compressore, limiter, gate, de-esser e Dynamic EQ, quanti dB di guadagno stanno togliendo. Con il
+  trasporto fermo scendono al silenzio.
 - Cambia i parametri solo con i comandi della sessione: le manopole della finestra si muovono subito e tutto quello
   che ha fatto per una richiesta si annulla con un solo Ctrl+Z (o **Undo AI edit**).
 - Nel pannello dell'assistente risponde in poche righe: quali parametri ha cambiato e perché.
 - Funziona con Claude e con il modello locale; mentre l'assistente lavora, accanto ad **Ask** compare **Stop**,
   che lo interrompe. Senza modello la barra è disattivata, e mentre l'assistente lavora i bottoni aspettano.
 - Un agente MCP legge le stesse informazioni con `get_plugin`: descrizione, valori, intervalli e default dei
-  parametri, traccia e slot.
+  parametri, traccia e slot; per gli insert anche `meters` (`input_db`, `output_db`, `gain_reduction_db`).
+  `get_meters` li elenca per tutti gli insert sotto `plugins`.
 
 ## Plug-in VST3
 

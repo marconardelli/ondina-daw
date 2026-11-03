@@ -66,7 +66,7 @@ Every row is available both in the GUI and as MCP tools (full list in [`MCP_TOOL
 | Time and pitch | WSOLA time-stretch, pitch shift, varispeed, key-aware pitch correction, audio→MIDI (YIN) | `time_stretch_region` `pitch_shift_region` `varispeed_region` `pitch_correct_region` `audio_to_midi` |
 | Tempo and key detection | BPM estimation from audio; key of the MIDI parts (major/minor, with confidence and close alternatives), set as the project key from **Detect from MIDI** in the key menu | `detect_tempo` `detect_key` |
 | Stem splitter | neural network (Spleeter, ONNX Runtime) for vocals/accompaniment plus spectral drums/bass/other; DSP-only fallback | `split_stems` |
-| Mixer, sends, automation | channel strips with meters, routing, volume/pan/send/parameter automation | `set_volume` `add_send` `set_automation` |
+| Mixer, sends, automation | channel strips with meters, live input, output and gain-reduction meters of every insert, routing, volume/pan/send/parameter automation | `set_volume` `add_send` `set_automation` `get_meters` |
 | Clip Grid | cell × scene grid, quantized launching, record the performance to the timeline | `create_live_cell` `launch_cell` `launch_scene` `commit_live_performance` |
 | Score | notation view (staff, values, ties, lyrics), MusicXML export | `get_score` `set_lyrics` `export_music_xml` |
 | Surround and spatial audio | 5.1, 7.1, 7.1.4, 3D VBAP panner, automated trajectories, binaural monitoring and bounce | `set_surround_format` `set_surround_pan` `bounce_surround` `bounce_binaural` |
@@ -253,8 +253,8 @@ actions, and can "listen" to the mix through `analyze_mix`. MCP clients read the
 `get_selection`. With `get_activity` they see what happened since they last looked: the edits made in the window, the
 assistant's and other clients' tool calls, and whether the project was replaced or Ondina restarted. Contextual AI
 buttons live in the piano roll, step sequencer and region menus, and every plug-in (built-in or VST3) ends with an AI
-bar: a request box plus two or three ready-made requests for that plug-in, sent with its track and all its parameter
-values as context. The local model edits just the selected notes by passing their indices:
+bar: a request box plus two or three ready-made requests for that plug-in, sent with its track, all its parameter
+values and, for an insert, its live meters as context. The local model edits just the selected notes by passing their indices:
 it can quantize, humanize, transpose them, snap them to the project key or add a harmony voice. The line under the
 panel title shows which engine answers and how many tools it gets.
 
