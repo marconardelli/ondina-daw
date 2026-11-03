@@ -7,6 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-11-03
+
+### Added
+
+- Synth windows: the Analog Synth window draws the shapes of both oscillators (click or wheel to change them; the
+  square shows its pulse width), the filter curve (drag its point sideways for the cutoff, up and down for the
+  resonance) and the amp and filter envelopes with points to drag. The FM Synth window draws the amp and
+  modulation index envelopes. Every drag is one undo step.
+- A two-octave keyboard at the bottom of every built-in instrument window: a note plays as long as you hold its
+  key, the velocity follows where you click, and the octave moves with the buttons or the arrow keys.
+- New ready-made AI requests: *Give me a bass for this song* and *A warm pad that opens slowly* (Analog Synth),
+  *A short pluck* (FM Synth). The answer names the envelope stages and the filter it changed.
+
 ## [0.24.0] - 2026-11-03
 
 ### Added
@@ -787,7 +800,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/marconardelli/ondina-daw/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/marconardelli/ondina-daw/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/marconardelli/ondina-daw/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/marconardelli/ondina-daw/compare/v0.21.0...v0.22.0
