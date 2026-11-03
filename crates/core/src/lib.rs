@@ -1,6 +1,7 @@
 //! Ondina DAW core: project model, the command API, music theory and generators.
 
 pub mod command;
+pub mod drum_kit;
 pub mod generate;
 pub mod midi_io;
 pub mod model;
