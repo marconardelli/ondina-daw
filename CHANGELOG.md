@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-11-03
+
+### Added
+
+- Delay windows: Stereo Delay and Tape Delay draw the repeats of a hit on the project's tempo grid (one, two or
+  four bars), each as tall as its level down to -60 dB. The Stereo Delay shows left above and right below.
+- Drag the first repeat sideways to change its time: it snaps to note values, dotted and triplet included, and
+  Shift gives free values. Drag up or down for the feedback and use the wheel for the mix. **Sync** switches the
+  Stereo Delay to times in ms. Every gesture is one undo step.
+- The labels give each time as a note value and in ms at the tempo at the playhead, and `get_plugin` returns the
+  times as note values too.
+- New ready-made AI requests: *Dotted-eighth echo in time*, *Slapback for the vocal*, *Wide ping-pong* and *Dark
+  dub echoes*. The request carries the project tempo and the answer names the times as note values.
+
 ## [0.26.0] - 2026-11-03
 
 ### Added
@@ -812,7 +826,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/marconardelli/ondina-daw/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/marconardelli/ondina-daw/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/marconardelli/ondina-daw/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/marconardelli/ondina-daw/compare/v0.23.0...v0.24.0
