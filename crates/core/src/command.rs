@@ -180,7 +180,7 @@ pub enum Command {
     LoadPreset { plugin_id: Id, preset: String },
     /// Bypass or enable a plug-in.
     SetPluginBypass { plugin_id: Id, bypass: bool },
-    /// Get a plug-in with its description, all its parameter values with their ranges and defaults, and where it sits: track (id, name, kind; id 0 and kind "master" for the master channel), slot ("instrument", "midi_fx" or "insert") and index in that chain. Inserts also return live meters: input_db, output_db (peak dBFS) and, for dynamics, gain_reduction_db (<= 0).
+    /// Get a plug-in with its description, all its parameter values with their ranges and defaults, and where it sits: track (id, name, kind; id 0 and kind "master" for the master channel), slot ("instrument", "midi_fx" or "insert") and index in that chain. Inserts also return live meters (input_db, output_db, gain_reduction_db).
     GetPlugin { plugin_id: Id },
     /// Load an audio file into a Sampler instrument. The file must be on a local drive (no network shares).
     SetSamplerSample { plugin_id: Id, path: String },
@@ -375,7 +375,7 @@ pub enum Command {
     InsertTime { at_beat: f64, length: f64 },
 
     // ------------------------------------------------------------------ import / export
-    /// Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed). After the end the render goes on until reverb and delay tails fade below about -90 dBFS (at least 2 s, at most 20 s: a sound that never fades, like a note held past the end or a noisy plug-in, stops at 20 s). tail_sec sets an exact tail instead: 0 cuts exactly at end, e.g. to export a loop. normalize=true scales the peak to -1 dBFS. normalize_lufs brings the integrated loudness to a target with one gain for the whole mix (no limiter), keeping the peak under true_peak_ceiling_db: the result's loudness reports gain_db, lufs_after, true_peak_after and target_reached (false when the ceiling stopped the gain: the mix needs a limiter, e.g. auto_master, to get that loud). The peak is the 4x oversampled true peak, as in analyze_mix; 16 and 24 bit dither can add about one LSB. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. At most 60 minutes of song per render.
+    /// Bounce (render) the mix to an audio file (.wav). Defaults: whole song, 24 bit. track_ids renders only those tracks (soloed). After the end the render goes on until reverb and delay tails fade below about -90 dBFS (at least 2 s, at most 20 s: a sound that never fades, like a note held past the end or a noisy plug-in, stops at 20 s). tail_sec sets an exact tail instead: 0 cuts exactly at end, e.g. to export a loop. normalize=true scales the peak to -1 dBFS. normalize_lufs brings the integrated loudness to a target with one gain for the whole mix (no limiter), keeping the peak under true_peak_ceiling_db: the result's loudness reports gain_db, lufs_after, true_peak_after and target_reached (false when the ceiling stopped the gain: the mix needs a limiter, e.g. auto_master, to get that loud). The peak is the true peak of analyze_mix; 16 and 24 bit dither can add about one LSB. The path must be a .wav file on a local drive (no network shares); .wav is added when the path has no extension. At most 60 minutes of song per render.
     Bounce {
         path: String,
         start: Option<f64>,
@@ -399,11 +399,11 @@ pub enum Command {
     ImportMidi { path: String, at_beat: Option<f64> },
 
     // ------------------------------------------------------------------ analysis / mastering
-    /// Render offline and analyze: integrated loudness (LUFS), true peak (dBTP, 4x oversampled: peaks between samples count), RMS, crest factor, stereo correlation, low/mid/high spectral balance for the master and each track. Use it to "listen" to the mix. At most 60 minutes of song per render.
+    /// Render offline and analyze: integrated loudness (LUFS), true peak (dBTP, 4x oversampled), RMS, crest factor, stereo correlation, low/mid/high spectral balance for the master and each track. Use it to "listen" to the mix. At most 60 minutes of song per render.
     AnalyzeMix { start: Option<f64>, end: Option<f64> },
     /// Get live peak meters (dBFS) for every track, keyed by track id ("0" = master), plus "plugins": every insert plug-in id with name, track_id, input_db, output_db and, for plug-ins that reduce gain, gain_reduction_db. With the transport stopped the values fall to silence.
     GetMeters {},
-    /// Mastering assistant: analyze the mix and build a master chain (EQ, glue compressor, limiter with True Peak On) targeting a loudness (default -14 LUFS). Returns measured_lufs, true_peak_dbtp, limiter_gain_db.
+    /// Mastering assistant: analyze the mix and build a master chain (EQ, glue compressor, limiter with True Peak On) targeting a loudness (default -14 LUFS).
     AutoMaster { target_lufs: Option<f32>, character: Option<String> },
 
     // ------------------------------------------------------------------ devices
