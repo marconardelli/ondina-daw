@@ -8,6 +8,7 @@ use std::sync::Arc;
 pub mod denormal;
 pub mod drums;
 pub mod effects;
+pub mod echoes;
 pub mod midifx;
 pub mod synth;
 pub mod util;
