@@ -3904,7 +3904,7 @@ fn every_window_family_reads_and_sets_its_parameters_over_mcp() {
     let mut s = Session::new(false);
     let vox = ok(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
     let mut plugins = Vec::new();
-    for kind in ["channel_eq", "dynamic_eq", "compressor", "limiter", "noise_gate", "de_esser", "reverb"] {
+    for kind in ["channel_eq", "dynamic_eq", "compressor", "limiter", "noise_gate", "de_esser", "stereo_delay", "tape_delay", "reverb"] {
         let fx = ok(&mut s, "add_effect", json!({"track_id": vox, "kind": kind}))["plugin_id"].as_u64().unwrap();
         plugins.push((fx, kind, "Vox"));
     }
