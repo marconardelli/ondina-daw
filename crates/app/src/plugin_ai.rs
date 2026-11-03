@@ -129,4 +129,20 @@ mod tests {
         assert_eq!(context, prompts::plugin_bar_context_live(&s.project, fx, Some(&m)));
         assert!(context.unwrap().contains("Live meters now"));
     }
+
+    #[test]
+    fn bar_request_from_a_synth_window_carries_the_synth_context() {
+        use ondina_core::command::Command;
+        use ondina_studio::{Session, Source};
+        let mut s = Session::new(false);
+        let add = |s: &mut Session, name: &str, args: serde_json::Value| s.execute(Command::from_tool_call(name, &args).unwrap(), Source::Gui).unwrap();
+        let t = add(&mut s, "add_track", serde_json::json!({"kind": "instrument", "name": "Pad", "instrument": "analog_synth"}))["track_id"].as_u64().unwrap();
+        let synth = s.project.track(t).unwrap().instrument.as_ref().unwrap().id;
+        let (request, context) = bar_ask(&s.project, synth, "a warm pad".into(), None);
+        assert_eq!(request, "a warm pad");
+        let context = context.unwrap();
+        assert_eq!(Some(&context), prompts::plugin_bar_context_live(&s.project, synth, None).as_ref());
+        assert!(context.contains(prompts::synth_bar_note("analog_synth")), "{context}");
+        assert!(context.contains("- cutoff \"Cutoff\" = "), "{context}");
+    }
 }
