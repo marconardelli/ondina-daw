@@ -182,6 +182,15 @@ extension: Ondina opens both.
   moves with the buttons or the arrow keys. The AI bar offers *Give me a bass for this song* and *A warm pad that
   opens slowly* (Analog Synth) or *A short pluck* (FM Synth), and the answer names the envelope stages and the
   filter it changed.
+- **Delay windows**: the Stereo Delay and Tape Delay windows draw the repeats of a hit on the project's tempo grid
+  (one, two or four bars), left above and right below for the Stereo Delay, each one as tall as its level down to
+  -60 dB as the feedback (and, for the Tape Delay, the saturation and Tone) sets it. Drag the first repeat sideways
+  to change its time (it snaps to note values, dotted and triplet included; Shift for free values), up or down for
+  the feedback, the wheel for the mix; **Sync** switches the Stereo Delay to times in ms. The labels give each time
+  as a note value and in ms at the tempo at the playhead, every gesture is one undo step, and `get_plugin` returns
+  the times as note values too. The AI bar offers *Dotted-eighth echo in time* and *Slapback for the vocal* (plus
+  *Wide ping-pong* or *Dark dub echoes*), the request carries the project tempo and the answer names the times as
+  note values.
 - **Unsaved changes**: when the project has unsaved changes (the • in the title bar), closing the window, New,
   Open or a recent project first asks *Save*, *Don't Save* or *Cancel*. Esc cancels, Enter saves. A recording in
   progress is stopped and kept before the question.

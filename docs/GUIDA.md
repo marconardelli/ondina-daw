@@ -737,6 +737,25 @@ Ogni plug-in (strumenti, effetti ed effetti MIDI di Ondina, plug-in VST3) si reg
   sinistra e destra mentre il mouse è sui tasti); chiudere la finestra o passare a un'altra applicazione ferma la
   nota. Funziona anche durante la riproduzione e, se stai registrando, la nota entra nella registrazione come quelle
   della tastiera MIDI.
+- **Delay: ripetizioni sulla griglia del tempo**: la finestra dello Stereo Delay e del Tape Delay mostra sopra le
+  manopole le ripetizioni di un colpo (*ECHOES*) sulla griglia del tempo del progetto: una, due o quattro misure,
+  con le battute e, se c'è spazio, i sedicesimi. Nello Stereo Delay le ripetizioni di sinistra stanno sopra la riga
+  centrale (azzurre) e quelle di destra sotto (arancio), con quelle che passano da un lato all'altro per il
+  Ping-Pong; nel Tape Delay c'è una sola fila, che si scurisce a ogni giro secondo il Tone. L'altezza di ogni
+  ripetizione è il suo livello: con Feedback 0.5 ognuna è 6 dB sotto la precedente, e sotto -60 dB non si disegna
+  più. Trascina la prima ripetizione di un lato in orizzontale per cambiarne il tempo: si aggancia ai valori di nota
+  (da 1/32 a 1/1, puntati e terzine; con Shift il valore è libero); in verticale cambia il feedback (verso l'esterno
+  sale), la rotella sopra il riquadro cambia il mix, il doppio clic riporta il tempo al default. Il riquadro e la
+  riga sotto il disegno scrivono il valore di nota e i ms al tempo del playhead, per esempio *L 1/8 dotted · 375
+  ms*, e quante ripetizioni restano sopra -60 dB. Il pulsante **Sync** dello Stereo Delay spegne il tempo
+  sincronizzato: la griglia passa ai ms, le due maniglie muovono *Time (unsynced)* e il lato destro resta a 3/4 del
+  sinistro. Nel Tape Delay con Saturation alta il nastro tiene su le ripetizioni: durano a lungo o restano a un
+  livello fisso, e l'etichetta lo dice (*the tape holds the repeats at -11 dB*); è il suono del nastro. Ogni gesto è
+  un passo di annulla, e le modifiche dell'assistente o di un agente MCP si vedono subito.
+- **Richieste pronte dei delay**: la barra AI dello Stereo Delay offre *Dotted-eighth echo in time*, *Slapback for
+  the vocal* e *Wide ping-pong*; quella del Tape Delay *Dotted-eighth echo in time*, *Slapback for the vocal* e *Dark
+  dub echoes*. La richiesta porta con sé il tempo del progetto, e nella risposta l'assistente nomina ogni tempo che
+  ha cambiato come valore di nota con i suoi ms, con feedback e mix prima e dopo, e dice perché.
 - **Richieste pronte dei synth**: la barra AI dell'Analog Synth offre *Design a sound*, *Give me a bass for this
   song* e *A warm pad that opens slowly*; quella dell'FM Synth *Design a sound*, *Give me a bass for this song* e *A
   short pluck*. Nella risposta l'assistente nomina le fasi dell'inviluppo e il filtro che ha cambiato, con i valori

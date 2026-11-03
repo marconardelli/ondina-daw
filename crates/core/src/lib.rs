@@ -4,6 +4,7 @@ pub mod command;
 pub mod generate;
 pub mod midi_io;
 pub mod model;
+pub mod note_value;
 pub mod ops;
 pub mod ops2;
 pub mod plugins;

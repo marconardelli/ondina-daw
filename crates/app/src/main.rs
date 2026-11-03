@@ -16,6 +16,7 @@ mod autosave;
 mod bounce_menu;
 mod cc_lane;
 mod control_bar;
+mod delay_view;
 mod doc_guard;
 mod drag_cancel;
 mod dynamics_view;

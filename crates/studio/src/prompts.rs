@@ -4,6 +4,7 @@
 use std::fmt::Write;
 
 use ondina_core::model::{Id, PluginInstance, PluginSlot, Project, TrackKind};
+use ondina_core::note_value;
 use ondina_core::plugins;
 
 /// Piano roll: "AI: continue / improve".
@@ -83,7 +84,8 @@ pub fn plugin_quick_actions(kind: &str) -> &'static [(&'static str, &'static str
         "de_esser" => DE_ESSER_ACTIONS,
         "noise_gate" => NOISE_GATE_ACTIONS,
         "reverb" => REVERB_ACTIONS,
-        "stereo_delay" | "tape_delay" => DELAY_ACTIONS,
+        "stereo_delay" => STEREO_DELAY_ACTIONS,
+        "tape_delay" => TAPE_DELAY_ACTIONS,
         "stereo_imager" => STEREO_IMAGER_ACTIONS,
         _ => GENERIC_ACTIONS,
     }
@@ -169,10 +171,17 @@ const REVERB_ACTIONS: &[(&str, &str)] = &[
     ("Big, lush space", "Make this reverb a big, lush space for this track's role: long size, some pre-delay to keep the attack clear, a mix that suits an insert or a send."),
     ("Keep the low end clean", "Keep the reverb out of the low end: raise its low cut so the bass and the kick stay clear."),
 ];
-const DELAY_ACTIONS: &[(&str, &str)] = &[
-    ("Echo in time with the song", "Set this delay to echo in time with the song (synced, for example a dotted eighth or a quarter) with a few repeats that sit behind the dry sound."),
-    ("Subtle slapback", "Make this delay a subtle slapback: one short repeat (about 80-120 ms), little feedback, low mix."),
-    ("Fewer, darker repeats", "Make the repeats fewer and darker so the delay stays behind the dry sound."),
+/// Stereo Delay: the requests speak in note values, as its window draws the times.
+const STEREO_DELAY_ACTIONS: &[(&str, &str)] = &[
+    ("Dotted-eighth echo in time", "Make this Stereo Delay echo in time with the song: Tempo Sync On (sync 1), Left Time 0.75 (1/8 dotted) and Right Time 0.5 (1/8) or 1 (1/4) so the repeats answer each other, Ping-Pong around 0.3, Feedback 0.3 to 0.4 for three or four audible repeats, High Cut around 6 kHz so the repeats sit behind the dry sound, Mix 0.15 to 0.25 on a track; read the tempo with get_project if you need the ms. Change the parameters with set_plugin_params, then explain in a few lines which times (as note values with their ms at the project tempo) and which parameters you changed and why."),
+    ("Slapback for the vocal", "Make this Stereo Delay a slapback for the vocal: Tempo Sync Off (sync 0), Time (unsynced) 90 to 130 ms (the right side plays 3/4 of it), Feedback 0 to 0.1 for a single repeat, Ping-Pong 0, Low Cut around 200 Hz, High Cut around 5 kHz, Mix 0.15 to 0.2. Change the parameters with set_plugin_params, then explain in a few lines which times (as note values with their ms at the project tempo) and which parameters you changed and why."),
+    ("Wide ping-pong", "Make this Stereo Delay a wide ping-pong: Tempo Sync On (sync 1), Left Time 0.5 (1/8) and Right Time 1 (1/4), Ping-Pong 0.8 or more so the repeats bounce from side to side, Feedback 0.4 to 0.5, Mix 0.2 to 0.3. Change the parameters with set_plugin_params, then explain in a few lines which times (as note values with their ms at the project tempo) and which parameters you changed and why."),
+];
+/// Tape Delay: always in time with the project; Saturation and Tone shape how the repeats fade.
+const TAPE_DELAY_ACTIONS: &[(&str, &str)] = &[
+    ("Dotted-eighth echo in time", "Make this Tape Delay echo in time with the song: Time 0.75 (1/8 dotted; the Tape Delay always follows the project tempo), Feedback 0.3 to 0.4 (with Saturation the repeats fade slowly: keep it moderate), Tone 0.3 to 0.5 so each repeat gets darker, Wow/Flutter about 0.2, Saturation 0.2 to 0.3, Mix about 0.2. Change the parameters with set_plugin_params, then explain in a few lines which times (as note values with their ms at the project tempo) and which parameters you changed and why."),
+    ("Slapback for the vocal", "Make this Tape Delay a slapback for the vocal: a Time of about 100 ms in beats (beats = ms x BPM / 60000; read the tempo with get_project), Feedback 0.1 or less for one repeat, Tone 0.5, Wow/Flutter 0.1, Saturation 0.2, Mix 0.15 to 0.2. Change the parameters with set_plugin_params, then explain in a few lines which times (as note values with their ms at the project tempo) and which parameters you changed and why."),
+    ("Dark dub echoes", "Make this Tape Delay dark dub echoes: Time 0.75 or 1, Feedback 0.4 to 0.45 with Saturation 0.4 or more so the repeats keep going and saturate, Tone 0.2 so they get darker, Mix 0.3; warn that Feedback above 0.45 with high Saturation makes the repeats hold at a steady level. Change the parameters with set_plugin_params, then explain in a few lines which times (as note values with their ms at the project tempo) and which parameters you changed and why."),
 ];
 const GENERIC_ACTIONS: &[(&str, &str)] = &[
     (DESIGN_A_SOUND, ""),
@@ -304,7 +313,35 @@ pub fn plugin_bar_rules(plugin_id: Id, label: &str) -> String {
 pub fn plugin_bar_context(project: &Project, plugin_id: Id) -> Option<String> {
     let inst = project.find_plugin(plugin_id)?;
     let label = plugins::plugin_label(inst);
-    Some(format!("{}{}{}{}\n{}", plugin_bar_rules(plugin_id, &label), eq_bar_note(&inst.kind), synth_bar_note(&inst.kind), dynamics_bar_note(&inst.kind), plugin_context(project, plugin_id)?))
+    Some(format!("{}{}{}{}{}\n{}", plugin_bar_rules(plugin_id, &label), eq_bar_note(&inst.kind), synth_bar_note(&inst.kind), dynamics_bar_note(&inst.kind), delay_bar_note(project, inst), plugin_context(project, plugin_id)?))
+}
+
+/// Most tempo changes delay_bar_note lists; the rest are counted.
+const DELAY_NOTE_TEMPO_CHANGES: usize = 4;
+
+/// What a delay's AI bar adds to the rules: its window draws the repeats on the tempo grid and names the times as
+/// note values, so the request carries the project tempo and the answer speaks in note values. Empty for other kinds.
+pub fn delay_bar_note(project: &Project, inst: &PluginInstance) -> String {
+    let bpm = project.tempo.initial_bpm();
+    let later = project.tempo.points.get(1..).unwrap_or_default();
+    let Some(summary) = note_value::timing_summary(inst, bpm, !later.is_empty()) else {
+        return String::new();
+    };
+    let mut changes = String::new();
+    if !later.is_empty() {
+        let listed: Vec<String> = later.iter().take(DELAY_NOTE_TEMPO_CHANGES).map(|p| format!("{} BPM from beat {}", note_value::bpm_text(p.bpm), num(p.beat as f32))).collect();
+        let _ = write!(changes, "; it changes along the song: {}", listed.join(", "));
+        if later.len() > DELAY_NOTE_TEMPO_CHANGES {
+            let _ = write!(changes, ", and {} more", later.len() - DELAY_NOTE_TEMPO_CHANGES);
+        }
+    }
+    let sig = project.time_signature;
+    format!(
+        " This delay's window draws its repeats on the project's tempo grid and names its times as note values. The project tempo is {} BPM in {}/{}{changes}. Times in beats are quarter notes: 1 = 1/4, 0.5 = 1/8, 0.75 = 1/8 dotted, 0.333 = 1/8 triplet, 0.25 = 1/16, 1.5 = 1/4 dotted; ms = beats \u{00D7} 60000 / BPM. Now: {summary} In your answer name each time you changed as a note value with its ms at the project tempo, give the feedback and mix before and after, and say why.",
+        note_value::bpm_text(bpm),
+        sig.numerator,
+        sig.denominator
+    )
 }
 
 /// plugin_bar_context plus the insert's live meters when there are any (instruments and MIDI effects have none), so
@@ -750,6 +787,56 @@ mod tests {
             let m = PluginMeter { input_peak: 0.5, output_peak: 0.5, gain_reduction_db: None };
             let live = plugin_bar_context_live(&s.project, p, Some(&m)).unwrap();
             assert!(live.starts_with(&text) && live.ends_with(&meter_note(&m)), "{live}");
+        }
+    }
+
+    #[test]
+    fn delay_quick_actions_speak_in_note_values() {
+        let stereo = plugin_quick_actions("stereo_delay");
+        let tape = plugin_quick_actions("tape_delay");
+        for (kind, actions) in [("stereo_delay", stereo), ("tape_delay", tape)] {
+            assert!(actions.len() >= 2, "{kind}");
+            assert_ne!(actions, GENERIC_ACTIONS, "{kind}");
+            for (label, request) in actions.iter() {
+                assert!(request.contains("set_plugin_params"), "{kind} '{label}'");
+                assert!(request.contains("explain in a few lines which times (as note values with their ms at the project tempo)"), "{kind} '{label}'");
+            }
+        }
+        assert_ne!(stereo, tape);
+        let labels: Vec<&str> = stereo.iter().map(|a| a.0).collect();
+        assert!(labels.contains(&"Dotted-eighth echo in time") && labels.contains(&"Slapback for the vocal"), "{labels:?}");
+        let dotted = |a: &[(&str, &'static str)]| a.iter().find(|x| x.0 == "Dotted-eighth echo in time").unwrap().1;
+        assert!(dotted(stereo).contains("Left Time 0.75") && dotted(stereo).contains("Ping-Pong"));
+        assert!(dotted(tape).contains("Time 0.75") && dotted(tape).contains("Saturation"));
+    }
+
+    #[test]
+    fn delay_bar_context_carries_the_tempo_and_the_note_values() {
+        let mut s = Session::new(false);
+        let t = id(&run(&mut s, "add_track", json!({"kind": "audio", "name": "Vox"})), "track_id");
+        let d = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "stereo_delay"})), "plugin_id");
+        let comp = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "compressor"})), "plugin_id");
+        let text = plugin_bar_context(&s.project, d).unwrap();
+        let note = delay_bar_note(&s.project, s.project.find_plugin(d).unwrap());
+        assert!(!note.is_empty() && text.contains(&note), "{text}");
+        for want in ["AI bar of plug-in", "120 BPM in 4/4", "1/8 dotted (375 ms)", "- time_l \"Left Time\" = 0.75 [0.063..4 beats]", "0.75 = 1/8 dotted", "name each time you changed as a note value", "say why"] {
+            assert!(text.contains(want), "missing {want:?} in:\n{text}");
+        }
+        run(&mut s, "set_tempo", json!({"bpm": 90}));
+        run(&mut s, "add_tempo_change", json!({"beat": 64, "bpm": 140}));
+        let text = plugin_bar_context(&s.project, d).unwrap();
+        for want in ["90 BPM", "140 BPM from beat 64", "the delay follows it"] {
+            assert!(text.contains(want), "missing {want:?} in:\n{text}");
+        }
+        for k in 0..5 {
+            run(&mut s, "add_tempo_change", json!({"beat": 100 + 8 * k, "bpm": 100 + k}));
+        }
+        let note = delay_bar_note(&s.project, s.project.find_plugin(d).unwrap());
+        assert!(note.contains("and 2 more"), "{note}");
+        assert_eq!(delay_bar_note(&s.project, s.project.find_plugin(comp).unwrap()), "");
+        let tools: Vec<String> = ondina_core::command::tool_specs().into_iter().map(|t| t.name).collect();
+        for word in note.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            assert!(!tools.iter().any(|t| t == word), "{word} names a tool");
         }
     }
 }
