@@ -1,6 +1,7 @@
-//! Streaming loudness / spectrum analyzer (ITU-R BS.1770 style K-weighting with gating).
+//! Streaming loudness / spectrum analyzer (ITU-R BS.1770 style K-weighting with
+//! gating, 4x oversampled true peak).
 
-use ondina_dsp::util::{gain_to_db, Biquad, BiquadKind};
+use ondina_dsp::util::{gain_to_db, Biquad, BiquadKind, TruePeak};
 use serde::{Deserialize, Serialize};
 
 pub struct Analyzer {
@@ -21,7 +22,8 @@ pub struct Analyzer {
     sum_lr: f64,
     sum_ll: f64,
     sum_rr: f64,
-    prev: [f32; 2],
+    /// 4x oversampled true-peak detectors, one per channel.
+    tp: [TruePeak; 2],
     true_peak: f32,
 }
 
@@ -62,7 +64,7 @@ impl Analyzer {
             sum_lr: 0.0,
             sum_ll: 0.0,
             sum_rr: 0.0,
-            prev: [0.0; 2],
+            tp: [TruePeak::new(); 2],
             true_peak: 0.0,
         }
     }
@@ -74,14 +76,9 @@ impl Analyzer {
             for c in 0..2 {
                 let a = x[c].abs();
                 self.peak = self.peak.max(a);
-                // 4x linear-interpolated inter-sample peak estimate
-                for j in 1..4 {
-                    let t = j as f32 / 4.0;
-                    let v = (self.prev[c] + (x[c] - self.prev[c]) * t).abs();
-                    self.true_peak = self.true_peak.max(v);
-                }
-                self.true_peak = self.true_peak.max(a);
-                self.prev[c] = x[c];
+                // 4x oversampled true peak (BS.1770 style); the sample itself counts too, so the last few samples of
+                // the buffer, whose segments the detector has not reached yet, are not missed
+                self.true_peak = self.true_peak.max(self.tp[c].push_above(x[c], self.true_peak)).max(a);
                 let kw = self.k2[c].process(self.k1[c].process(x[c])) as f64;
                 k += kw * kw;
                 let lo = self.low[c].process(x[c]) as f64;
@@ -160,4 +157,34 @@ impl Analyzer {
 
 fn round1(x: f32) -> f32 {
     (x * 10.0).round() / 10.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    fn analyze(sr: f32, x: &[f32]) -> AnalysisReport {
+        let mut a = Analyzer::new(sr);
+        a.push(x, x);
+        a.report()
+    }
+
+    #[test]
+    fn true_peak_reads_the_peak_between_samples() {
+        // fs/4 shifted by 45 degrees: the samples sit at 0.354, the real peak at 0.5 (-6.02 dB); the phase restarts
+        // every period so f32 rounding does not move the samples
+        let x: Vec<f32> = (0..48000).map(|n| 0.5 * (PI * (n % 4) as f32 / 2.0 + PI / 4.0).sin()).collect();
+        let r = analyze(48000.0, &x);
+        assert!((r.true_peak_dbtp - -6.02).abs() <= 0.5, "true peak {} dBTP", r.true_peak_dbtp);
+        assert!((r.peak_dbfs - -9.0).abs() <= 0.1, "sample peak {} dBFS", r.peak_dbfs);
+    }
+
+    #[test]
+    fn true_peak_stays_at_the_sample_peak_on_a_low_sine() {
+        let sr = 44100.0;
+        let x: Vec<f32> = (0..44100).map(|n| 0.5 * (2.0 * PI * 997.0 * n as f32 / sr).sin()).collect();
+        let r = analyze(sr, &x);
+        assert!((r.true_peak_dbtp - r.peak_dbfs).abs() <= 0.1, "true peak {} dBTP, sample peak {} dBFS", r.true_peak_dbtp, r.peak_dbfs);
+    }
 }

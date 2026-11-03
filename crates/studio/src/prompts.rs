@@ -96,6 +96,24 @@ pub fn quick_action_request(action: (&str, &str), plugin_id: Id, name: &str) -> 
     }
 }
 
+/// Ready-made requests for a plug-in of `kind` on the master channel (`on_master`) or on a track or bus. Most
+/// plug-ins ask the same in both places; the limiter masters the song on the master and tames one part on a track.
+pub fn plugin_quick_actions_at(kind: &str, on_master: bool) -> &'static [(&'static str, &'static str)] {
+    match kind {
+        "limiter" if !on_master => LIMITER_TRACK_ACTIONS,
+        _ => plugin_quick_actions(kind),
+    }
+}
+
+/// The ready-made requests the AI bar of plug-in `plugin_id` offers, following where it sits.
+pub fn plugin_bar_actions(project: &Project, plugin_id: Id) -> &'static [(&'static str, &'static str)] {
+    let Some(inst) = project.find_plugin(plugin_id) else {
+        return GENERIC_ACTIONS;
+    };
+    let on_master = matches!(project.plugin_slot(plugin_id), Some((None, _)));
+    plugin_quick_actions_at(&inst.kind, on_master)
+}
+
 const SYNTH_ACTIONS: &[(&str, &str)] = &[
     (DESIGN_A_SOUND, ""),
     ("A bass for this song", "Turn this synth into a bass sound that fits this song: solid low end, controlled resonance, short release."),
@@ -122,8 +140,12 @@ const COMPRESSOR_ACTIONS: &[(&str, &str)] = &[
     ("Gentle glue", "Gentle glue compression: low ratio, soft knee, about 2-3 dB of gain reduction on the loudest parts."),
 ];
 const LIMITER_ACTIONS: &[(&str, &str)] = &[
-    ("Bring the master to -14 LUFS", "Bring the master to -14 LUFS integrated with the true peak at or under -1 dB: measure it with analyze_mix, set this limiter's gain and ceiling with set_plugin_params, then measure again and report the numbers."),
-    ("Just catch the peaks", "Set this limiter to catch only the highest peaks: ceiling at -1 dB and the least input gain, so the sound does not change."),
+    ("Bring the master to -14 LUFS", "Bring the master to -14 LUFS integrated with the true peak at or under -1 dBTP: measure it with analyze_mix, set this limiter's gain and ceiling with set_plugin_params and turn true_peak On, then measure again and report the numbers."),
+    ("Just catch the peaks", "Set this limiter to catch only the highest peaks of the master: ceiling at -1 dB, true_peak On and the least input gain, so the sound does not change."),
+];
+const LIMITER_TRACK_ACTIONS: &[(&str, &str)] = &[
+    ("Catch this track's peaks", "Set this limiter to catch only the highest peaks of this track: measure the track with analyze_mix, then set a ceiling just under its loudest hits and little input gain, so its sound does not change."),
+    ("Even out the loudest hits", "Even out the loudest hits of this track with this limiter: raise the input gain by a few dB, keep the ceiling where the track sits now and set a release that brings the loud notes down without pumping. Measure the track with analyze_mix before and after."),
 ];
 const DE_ESSER_ACTIONS: &[(&str, &str)] = &[
     ("Tame the sibilance", "Tame the harsh S and T sounds of this track: find the frequency of the sibilance and set the threshold so only the S sounds are turned down."),
@@ -303,15 +325,17 @@ mod tests {
     fn quick_actions_cover_every_builtin_plugin() {
         let kinds: Vec<&str> = plugins::registry().iter().map(|i| i.kind).chain(["vst3", "unknown_kind"]).collect();
         for kind in kinds {
-            let actions = plugin_quick_actions(kind);
-            assert!((2..=3).contains(&actions.len()), "{kind}: {} actions", actions.len());
-            for (i, (label, request)) in actions.iter().enumerate() {
-                assert!(!label.is_empty(), "{kind}");
-                assert!(actions[..i].iter().all(|a| a.0 != *label), "{kind}: '{label}' twice");
-                assert_eq!(request.is_empty(), *label == DESIGN_A_SOUND, "{kind}: '{label}'");
-            }
-            if plugins::find(kind).is_some_and(|i| i.category == PluginCategory::Instrument) {
-                assert!(actions.iter().any(|a| a.0 == DESIGN_A_SOUND), "{kind}");
+            // the same rules for the plain list and for the lists on the master and on a track
+            for (place, actions) in [("any", plugin_quick_actions(kind)), ("master", plugin_quick_actions_at(kind, true)), ("track", plugin_quick_actions_at(kind, false))] {
+                assert!((2..=3).contains(&actions.len()), "{kind} ({place}): {} actions", actions.len());
+                for (i, (label, request)) in actions.iter().enumerate() {
+                    assert!(!label.is_empty(), "{kind} ({place})");
+                    assert!(actions[..i].iter().all(|a| a.0 != *label), "{kind} ({place}): '{label}' twice");
+                    assert_eq!(request.is_empty(), *label == DESIGN_A_SOUND, "{kind} ({place}): '{label}'");
+                }
+                if plugins::find(kind).is_some_and(|i| i.category == PluginCategory::Instrument) {
+                    assert!(actions.iter().any(|a| a.0 == DESIGN_A_SOUND), "{kind} ({place})");
+                }
             }
         }
         assert!(plugin_quick_actions("channel_eq").iter().any(|a| a.0 == "Clean up the muddy frequencies"));
@@ -460,6 +484,51 @@ mod tests {
         let text = plugin_bar_rules(7, "Compressor");
         for want in ["get_plugin also returns meters", "gain reduction", "transport stopped"] {
             assert!(text.contains(want), "missing {want:?}: {text}");
+        }
+    }
+
+    #[test]
+    fn limiter_quick_actions_follow_the_slot() {
+        let mut s = Session::new(false);
+        let l = id(&run(&mut s, "add_effect", json!({"track_id": MASTER_ID, "kind": "limiter"})), "plugin_id");
+        let t = id(&run(&mut s, "add_track", json!({"kind": "audio", "name": "Drums"})), "track_id");
+        let t_lim = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "limiter"})), "plugin_id");
+        let comp = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "compressor"})), "plugin_id");
+        let b = id(&run(&mut s, "add_track", json!({"kind": "bus"})), "track_id");
+        let b_lim = id(&run(&mut s, "add_effect", json!({"track_id": b, "kind": "limiter"})), "plugin_id");
+
+        let labels = |pid: Id| -> Vec<&'static str> { plugin_bar_actions(&s.project, pid).iter().map(|a| a.0).collect() };
+        let master = labels(l);
+        assert!(master.contains(&"Bring the master to -14 LUFS") && master.contains(&"Just catch the peaks"), "{master:?}");
+        for pid in [t_lim, b_lim] {
+            let track = labels(pid);
+            assert!(track.contains(&"Catch this track's peaks") && track.contains(&"Even out the loudest hits"), "{track:?}");
+            assert!(!track.contains(&"Bring the master to -14 LUFS"), "{track:?}");
+        }
+        assert_eq!(plugin_bar_actions(&s.project, comp), plugin_quick_actions("compressor"));
+        assert_eq!(plugin_quick_actions_at("limiter", true), plugin_quick_actions("limiter"));
+        assert_eq!(plugin_bar_actions(&s.project, 9999), GENERIC_ACTIONS);
+    }
+
+    #[test]
+    fn limiter_context_lists_every_parameter_and_the_rules() {
+        let mut s = Session::new(false);
+        let l = id(&run(&mut s, "add_effect", json!({"track_id": MASTER_ID, "kind": "limiter"})), "plugin_id");
+        let text = plugin_bar_context(&s.project, l).unwrap();
+        for want in [
+            "on the master channel",
+            "- gain \"Input Gain\" = 0 [0..24 dB]",
+            "- ceiling \"Output Ceiling\" = -1 [-12..0 dB]",
+            "- release \"Release\" = 60 [1..1000 ms]",
+            "- true_peak \"True Peak\" = 0 (Off) [choices: 0 Off, 1 On]",
+            "About it: Look-ahead brickwall limiter",
+            "set_plugin_params",
+            "which parameters you changed",
+            "from what value to what value",
+            "and why",
+        ] {
+            assert!(text.contains(want), "missing {want:?} in:
+{text}");
         }
     }
 

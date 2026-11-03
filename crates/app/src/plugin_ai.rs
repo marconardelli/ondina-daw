@@ -63,7 +63,7 @@ impl OndinaApp {
             });
         });
         ui.horizontal_wrapped(|ui| {
-            for &action in prompts::plugin_quick_actions(&inst.kind) {
+            for &action in prompts::plugin_bar_actions(project, pid) {
                 if self.ai_button(ui, action.0) {
                     send = Some(prompts::quick_action_request(action, pid, &label));
                 }

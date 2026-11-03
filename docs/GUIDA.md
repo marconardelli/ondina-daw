@@ -572,6 +572,26 @@ Nella barra **Ask the AI** nell'intestazione della finestra del plug-in ci sono 
 frequencies*, *Tame harsh resonances* e *More air on the vocal*. L'assistente sceglie la frequenza a
 orecchio (`analyze_mix` misura solo bassi, medi e acuti) e poi spiega quali bande ha cambiato e perché.
 
+## Limiter
+
+Il Limiter (gruppo Dynamics) tiene il segnale sotto un tetto. Di solito si mette per ultimo sul master.
+
+- **Input Gain** alza il segnale prima del limiter: è il comando che rende il mix più forte.
+- **Output Ceiling** è il tetto in dB.
+- **Release** dice quanto in fretta il guadagno torna su dopo un picco.
+- **True Peak**: con Off il limiter guarda solo i campioni; con On guarda anche i picchi tra un campione e
+  l'altro (oversampling 4x), quelli che compaiono dopo la conversione in analogico o in MP3 e AAC. Con On un
+  master con il tetto a -1 dB resta sotto -1 dBTP, come chiedono i servizi di streaming.
+- Il preset **Master Limiter** e il Mastering Assistant accendono True Peak. I progetti salvati prima restano su
+  Off e suonano come prima.
+- Il limiter ritarda il segnale di 1,5 ms, con True Peak acceso o spento.
+
+Nella barra **Ask the AI** le richieste pronte dipendono da dove sta il limiter: sul master *Bring the master
+to -14 LUFS* e *Just catch the peaks*, su una traccia *Catch this track's peaks* e *Even out the loudest hits*.
+
+`analyze_mix`, il bounce con un target LUFS e il Mastering Assistant misurano il true peak con oversampling 4x.
+Su materiale denso il valore può essere qualche decimo di dB più alto del picco dei campioni: è quello giusto.
+
 ## Bounce
 
 - **File > Bounce to WAV…** (Ctrl+B) scrive il mix in un file WAV: tutta la canzone, oppure solo
@@ -584,8 +604,8 @@ orecchio (`analyze_mix` misura solo bassi, medi e acuti) e poi spiega quali band
   il target non è stato raggiunto: per arrivarci serve un limiter (**Mix > Mastering Assistant**). Da
   MCP e dall'assistente: `bounce` con `normalize_lufs` (da -30 a -6) e, se serve,
   `true_peak_ceiling_db` (da -9 a 0, default -1); il risultato riporta `loudness` con `gain_db`,
-  `lufs_after`, `true_peak_after` e `target_reached`. Il picco è la stima di `analyze_mix`; a 16 e
-  24 bit il dither può aggiungere circa un LSB.
+  `lufs_after`, `true_peak_after` e `target_reached`. Il picco è il true peak, misurato con
+  oversampling 4x come in `analyze_mix`; a 16 e 24 bit il dither può aggiungere circa un LSB.
 - Dopo la fine, Ondina continua finché le code di riverbero e delay non si spengono (sotto circa
   −90 dBFS): almeno 2 secondi, al massimo 20. Così il finale suona come in riproduzione. Vale anche
   per Bounce in Place, Bounce Surround e Bounce Binaural.
@@ -708,7 +728,8 @@ apre accanto alla loro finestra.
 - Scrivi cosa vuoi nella casella ("più aria sulla voce", "togli il rimbombo sotto i 200 Hz", "un pad caldo che si
   apre lentamente") e premi Invio o **Ask**. L'assistente regola proprio quel plug-in.
 - Sotto la casella ci sono due o tre richieste pronte adatte al plug-in: per l'EQ *Clean up the muddy
-  frequencies*, per il limiter *Bring the master to -14 LUFS*, per gli strumenti *Design a sound* e altre.
+  frequencies*, per il limiter sul master *Bring the master to -14 LUFS*, per gli strumenti *Design a sound* e
+  altre.
 - L'assistente riceve con la richiesta il plug-in, la traccia su cui sta, il resto della catena e tutti i
   parametri con valori e intervalli (per un VST3 i primi 64). Quando serve misura il mix con `analyze_mix`.
 - Cambia i parametri solo con i comandi della sessione: le manopole della finestra si muovono subito e tutto quello

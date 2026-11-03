@@ -960,7 +960,9 @@ mod tests {
     fn local_tools_cover_the_plugin_bar() {
         let all: Vec<&str> = mcp::tools().iter().map(|t| t.name.as_str()).collect();
         let kinds = ondina_core::plugins::registry().iter().map(|i| i.kind).chain(["vst3"]);
-        let mut texts: Vec<String> = kinds.flat_map(|k| prompts::plugin_quick_actions(k).iter().map(|&a| prompts::quick_action_request(a, 7, "X"))).collect();
+        let mut texts: Vec<String> = kinds
+            .flat_map(|k| [true, false].into_iter().flat_map(move |on_master| prompts::plugin_quick_actions_at(k, on_master).iter().map(|&a| prompts::quick_action_request(a, 7, "X"))))
+            .collect();
         texts.push(prompts::plugin_bar_rules(7, "X"));
         for text in &texts {
             for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
