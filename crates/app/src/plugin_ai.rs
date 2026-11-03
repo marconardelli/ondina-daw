@@ -145,4 +145,22 @@ mod tests {
         assert!(context.contains(prompts::synth_bar_note("analog_synth")), "{context}");
         assert!(context.contains("- cutoff \"Cutoff\" = "), "{context}");
     }
+
+    #[test]
+    fn bar_request_from_a_delay_window_carries_the_tempo() {
+        use ondina_core::command::Command;
+        use ondina_studio::{Session, Source};
+        let mut s = Session::new(false);
+        let add = |s: &mut Session, name: &str, args: serde_json::Value| s.execute(Command::from_tool_call(name, &args).unwrap(), Source::Gui).unwrap();
+        let t = add(&mut s, "add_track", serde_json::json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
+        let fx = add(&mut s, "add_effect", serde_json::json!({"track_id": t, "kind": "tape_delay"}))["plugin_id"].as_u64().unwrap();
+        let (request, context) = bar_ask(&s.project, fx, "a dotted eighth echo".into(), None);
+        assert_eq!(request, "a dotted eighth echo");
+        let context = context.unwrap();
+        let inst = s.project.find_plugin(fx).unwrap();
+        let note = prompts::delay_bar_note(&s.project, inst);
+        assert!(!note.is_empty() && context.contains(&note), "{context}");
+        assert!(context.contains("- time \"Time\" = 0.5"), "{context}");
+        assert!(context.contains("120 BPM") && context.contains("1/8 (250 ms)"), "{context}");
+    }
 }
