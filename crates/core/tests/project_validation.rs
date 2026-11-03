@@ -141,3 +141,23 @@ fn a_midi_file_with_zero_beats_per_bar_keeps_the_time_signature() {
     let _ = ondina_core::midi_io::import_midi(&mut p, &bytes, 0.0);
     assert_eq!(p.time_signature, TimeSignature { numerator: 4, denominator: 4 });
 }
+
+#[test]
+fn loaded_plugin_parameters_are_put_back_in_range() {
+    let mut p = Project::new("file");
+    let call = |p: &mut Project, name: &str, args: Value| apply(p, Command::from_tool_call(name, &args).unwrap()).unwrap();
+    let t = call(&mut p, "add_track", json!({"kind": "audio", "name": "Gtr"}))["track_id"].as_u64().unwrap();
+    let fx = call(&mut p, "add_effect", json!({"track_id": t, "kind": "stereo_delay"}))["plugin_id"].as_u64().unwrap();
+    let mut doc: Value = serde_json::from_str(&save_project_string(&p).unwrap()).unwrap();
+    // 1e39 does not fit an f32: it loads as infinity
+    doc["project"]["tracks"][0]["channel"]["inserts"][0]["params"] =
+        json!({"time_l": 1.0e9, "time_r": 1.0e39, "feedback": -5.0, "sync": 0.6, "from_a_newer_version": 7.0});
+    let p = load_project_str(&doc.to_string()).unwrap();
+    let inst = p.find_plugin(fx).unwrap();
+    assert_eq!(inst.param("time_l"), 4.0, "clamped to the longest time");
+    assert!(!inst.params.contains_key("time_r"), "a value that is not a number is dropped");
+    assert_eq!(inst.param("time_r"), 0.5, "and reads its default");
+    assert_eq!(inst.param("feedback"), 0.0);
+    assert_eq!(inst.param("sync"), 1.0, "a selector is rounded");
+    assert_eq!(inst.params.get("from_a_newer_version"), Some(&7.0), "unknown parameters are kept");
+}

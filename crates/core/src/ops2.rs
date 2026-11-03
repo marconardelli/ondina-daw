@@ -344,6 +344,12 @@ pub fn check_loaded_project(p: &mut Project) -> Result<(), String> {
             lane.points.sort_by(|a, b| a.beat.total_cmp(&b.beat));
         }
     }
+    // Plug-in parameters go to the DSP and to the plug-in windows as they are: keep them where set_param keeps them,
+    // so a hand-edited file cannot hand a window an absurd delay time or a DSP a value that is not a number.
+    p.master.inserts.iter_mut().for_each(repair_loaded_params);
+    for t in &mut p.tracks {
+        t.instrument.iter_mut().chain(t.midi_fx.iter_mut()).chain(t.channel.inserts.iter_mut()).for_each(repair_loaded_params);
+    }
     for c in &mut p.live.cells {
         if !c.length.is_finite() {
             return Err(format!("Clip Grid cell {} has a length that is not a number", c.id));
@@ -354,6 +360,28 @@ pub fn check_loaded_project(p: &mut Project) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// A value that is not a number is dropped, so the parameter reads its default again. A built-in plug-in's known
+/// parameter is clamped to its range (and rounded for a selector), a VST3 value to 0..1. Parameters this version
+/// does not know are kept, for files saved by a newer Ondina.
+fn repair_loaded_params(inst: &mut PluginInstance) {
+    inst.params.retain(|_, v| v.is_finite());
+    if inst.kind == "vst3" {
+        inst.params.values_mut().for_each(|v| *v = v.clamp(0.0, 1.0));
+        return;
+    }
+    let Some(info) = crate::plugins::find(&inst.kind) else {
+        return;
+    };
+    for (id, v) in inst.params.iter_mut() {
+        if let Some(p) = info.params.iter().find(|p| p.id == id) {
+            *v = v.clamp(p.min, p.max);
+            if !p.choices.is_empty() {
+                *v = v.round();
+            }
+        }
+    }
 }
 
 fn check_loaded_pattern(p: &mut PatternContent) -> Result<(), String> {
