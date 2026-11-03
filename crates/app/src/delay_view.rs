@@ -66,6 +66,9 @@ impl DelayTempo {
     }
 }
 
+/// The most beats the tempo grid draws (the longest repeat, 4 beats, needs 16 at most).
+const MAX_GRID_BEATS: f32 = 64.0;
+
 /// The span the grid shows, in beats: the shortest of 1, 2 or 4 bars that holds four times the longest first
 /// repeat; past that, whole bars holding twice of it.
 pub fn window_beats(longest_beats: f32, beats_per_bar: f32) -> f32 {
@@ -505,7 +508,8 @@ pub fn delay_graph(ui: &mut egui::Ui, inst: &PluginInstance, tempo: DelayTempo, 
         }
     } else {
         let beat_ms = beats_to_ms(1.0, tempo.bpm) as f32;
-        let beats = window / beat_ms.max(1e-3);
+        // with the times in their range the grid holds a few bars; the cap keeps a broken value from drawing millions of lines
+        let beats = (window / beat_ms.max(1e-3)).min(MAX_GRID_BEATS);
         let px_per_beat = plot.width() / beats.max(1e-3);
         if px_per_beat * 0.25 >= 6.0 {
             for k in 1..(beats * 4.0).round() as i32 {
