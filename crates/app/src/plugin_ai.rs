@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering;
 use eframe::egui;
 use ondina_core::model::{Id, Project};
 use ondina_core::plugins;
+use ondina_engine::PluginMeter;
 use ondina_studio::prompts;
 
 use crate::app::OndinaApp;
@@ -20,10 +21,10 @@ fn bar_request(pressed: bool, blocked: bool, text: &str) -> Option<String> {
     (pressed && !blocked && !t.is_empty()).then(|| t.to_string())
 }
 
-/// What the bar sends to the assistant: the request and, as context, the plug-in's id, kind, track and role and every
-/// parameter with its value and range (None when the plug-in is gone).
-fn bar_ask(project: &Project, pid: Id, request: String) -> (String, Option<String>) {
-    (request, prompts::plugin_bar_context(project, pid))
+/// What the bar sends to the assistant: the request and, as context, the plug-in's id, kind, track and role, every
+/// parameter with its value and range and, for an insert, its live meters (None when the plug-in is gone).
+fn bar_ask(project: &Project, pid: Id, request: String, meter: Option<PluginMeter>) -> (String, Option<String>) {
+    (request, prompts::plugin_bar_context_live(project, pid, meter.as_ref()))
 }
 
 impl OndinaApp {
@@ -71,7 +72,9 @@ impl OndinaApp {
         });
         ui.data_mut(|d| d.insert_temp(draft_id, text));
         if let Some(request) = send {
-            let (request, context) = bar_ask(project, pid, request);
+            // an atomic read of the meter table, without the session lock
+            let meter = self.shared.plugin_meter(pid);
+            let (request, context) = bar_ask(project, pid, request, meter);
             self.ask_ai_with(request, context);
         }
     }
@@ -101,13 +104,29 @@ mod tests {
         let add = |s: &mut Session, name: &str, args: serde_json::Value| s.execute(Command::from_tool_call(name, &args).unwrap(), Source::Gui).unwrap();
         let t = add(&mut s, "add_track", serde_json::json!({"kind": "audio", "name": "Vox"}))["track_id"].as_u64().unwrap();
         let fx = add(&mut s, "add_effect", serde_json::json!({"track_id": t, "kind": "compressor"}))["plugin_id"].as_u64().unwrap();
-        let (request, context) = bar_ask(&s.project, fx, "more glue".into());
+        let (request, context) = bar_ask(&s.project, fx, "more glue".into(), None);
         assert_eq!(request, "more glue");
         assert_eq!(context, prompts::plugin_bar_context(&s.project, fx));
         let context = context.unwrap();
         for part in [format!("AI bar of plug-in {fx}"), "Vox".to_string(), "- threshold".to_string()] {
             assert!(context.contains(&part), "{part} missing from {context}");
         }
-        assert_eq!(bar_ask(&s.project, 999_999, "x".into()).1, None);
+        assert_eq!(bar_ask(&s.project, 999_999, "x".into(), None).1, None);
+    }
+
+    #[test]
+    fn bar_request_carries_the_live_meters() {
+        use ondina_core::command::Command;
+        use ondina_engine::PluginMeter;
+        use ondina_studio::{Session, Source};
+        let mut s = Session::new(false);
+        let add = |s: &mut Session, name: &str, args: serde_json::Value| s.execute(Command::from_tool_call(name, &args).unwrap(), Source::Gui).unwrap();
+        let t = add(&mut s, "add_track", serde_json::json!({"kind": "audio", "name": "Bus"}))["track_id"].as_u64().unwrap();
+        let fx = add(&mut s, "add_effect", serde_json::json!({"track_id": t, "kind": "compressor"}))["plugin_id"].as_u64().unwrap();
+        let m = PluginMeter { input_peak: 0.5, output_peak: 0.25, gain_reduction_db: Some(-3.0) };
+        let (request, context) = bar_ask(&s.project, fx, "more glue".into(), Some(m));
+        assert_eq!(request, "more glue");
+        assert_eq!(context, prompts::plugin_bar_context_live(&s.project, fx, Some(&m)));
+        assert!(context.unwrap().contains("Live meters now"));
     }
 }

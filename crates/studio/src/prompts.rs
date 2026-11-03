@@ -294,6 +294,30 @@ pub fn plugin_bar_context(project: &Project, plugin_id: Id) -> Option<String> {
     Some(format!("{}{}\n{}", plugin_bar_rules(plugin_id, &label), eq_bar_note(&inst.kind), plugin_context(project, plugin_id)?))
 }
 
+/// plugin_bar_context plus the insert's live meters when there are any (instruments and MIDI effects have none), so
+/// the assistant knows how hard the plug-in is working without asking.
+pub fn plugin_bar_context_live(project: &Project, plugin_id: Id, meter: Option<&ondina_engine::PluginMeter>) -> Option<String> {
+    let mut text = plugin_bar_context(project, plugin_id)?;
+    if let Some(m) = meter {
+        text.push('\n');
+        text.push_str(&meter_note(m));
+    }
+    Some(text)
+}
+
+/// The live meters of an insert as one sentence: peaks in dBFS rounded to 0.1 dB (-120 is silence) and, for plug-ins
+/// that reduce gain, the reduction.
+pub fn meter_note(m: &ondina_engine::PluginMeter) -> String {
+    let db = |x: f32| num((x * 10.0).round() / 10.0);
+    let peak = |g: f32| db(ondina_dsp::util::gain_to_db(g));
+    let mut text = format!(" Live meters now (peak dBFS; with the transport stopped they fall to silence): input {}, output {}", peak(m.input_peak), peak(m.output_peak));
+    if let Some(g) = m.gain_reduction_db {
+        let _ = write!(text, ", gain reduction {} dB", db(g));
+    }
+    text.push('.');
+    text
+}
+
 /// What an equalizer's AI bar adds to the rules: its window draws the bands as points, so the answer names them.
 pub fn eq_bar_note(kind: &str) -> &'static str {
     match kind {
@@ -538,5 +562,32 @@ mod tests {
         assert_eq!(num(0.005), "0.005");
         assert_eq!(num(-0.0001), "0");
         assert_eq!(num(1.23456), "1.235");
+    }
+
+    #[test]
+    fn bar_context_carries_the_live_meters() {
+        use ondina_engine::PluginMeter;
+        let mut s = Session::new(false);
+        let t = id(&run(&mut s, "add_track", json!({"kind": "audio", "name": "Drums"})), "track_id");
+        let comp = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "compressor"})), "plugin_id");
+        let m = PluginMeter { input_peak: 0.5, output_peak: 0.25, gain_reduction_db: Some(-3.04) };
+        let base = plugin_bar_context(&s.project, comp).unwrap();
+        let live = plugin_bar_context_live(&s.project, comp, Some(&m)).unwrap();
+        assert!(live.starts_with(&base), "{live}");
+        for want in ["Live meters now", "input -6", "output -12", "gain reduction -3 dB"] {
+            assert!(live.contains(want), "missing {want:?} in {live}");
+        }
+        assert_eq!(plugin_bar_context_live(&s.project, comp, None).as_ref(), Some(&base));
+        let eq = PluginMeter { input_peak: 0.5, output_peak: 0.5, gain_reduction_db: None };
+        let no_gr = plugin_bar_context_live(&s.project, comp, Some(&eq)).unwrap();
+        assert!(no_gr.starts_with(&base) && no_gr.contains("input -6, output -6."), "{no_gr}");
+        assert!(!meter_note(&eq).contains("gain reduction"));
+        let silent = PluginMeter { input_peak: 0.0, output_peak: 0.0, gain_reduction_db: Some(0.0) };
+        assert!(meter_note(&silent).contains("input -120, output -120, gain reduction 0 dB"), "{}", meter_note(&silent));
+        assert_eq!(plugin_bar_context_live(&s.project, 9999, Some(&m)), None);
+        let tools: Vec<String> = ondina_core::command::tool_specs().into_iter().map(|t| t.name).collect();
+        for word in meter_note(&m).split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            assert!(!tools.iter().any(|t| t == word), "{word} names a tool");
+        }
     }
 }
