@@ -5,16 +5,16 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use eframe::egui::{self, Rect, Vec2};
+use eframe::egui::{self, CursorIcon, PointerButton, Pos2, Rect, Sense, Stroke, Vec2};
 use ondina_core::model::{Id, PluginInstance};
 use ondina_core::plugins;
-use ondina_dsp::effects::DynamicsCurve;
+use ondina_dsp::effects::{de_esser_band_db, DynamicsCurve};
 use ondina_dsp::util::gain_to_db;
 use ondina_engine::PluginMeter;
 
-use crate::eq_view;
+use crate::eq_view::{self, EqEdit};
 use crate::theme;
-use crate::widgets::format_param_value;
+use crate::widgets::{format_param_value, hold_marker_shown, meter_fill, paint_meter_fill, PeakHold};
 
 /// The four dynamics kinds and what their point moves.
 #[derive(Debug)]
@@ -322,10 +322,305 @@ pub fn total_height(width: f32, height: f32, has_band: bool) -> f32 {
     }
 }
 
+// ---------------------------------------------------------------------------- drawing and mouse
+
+/// What a frame of the dynamics graph asks for and showed.
+pub struct DynGraphOut {
+    /// The plot of the curve and the De-Esser's band (tests use them to find the point and the marker).
+    #[cfg(test)]
+    pub plot: Rect,
+    #[cfg(test)]
+    pub band: Option<Rect>,
+    pub edits: Vec<EqEdit>,
+    /// What the meters showed: the window asks for a repaint while they move.
+    pub levels: MeterLevels,
+}
+
+/// The drag of the threshold point going on, kept in egui's memory between frames.
+#[derive(Clone, Copy)]
+struct DynDrag {
+    start: DragStart,
+    moved: Vec2,
+}
+
+/// The drag of the De-Esser's frequency marker going on.
+#[derive(Clone, Copy)]
+struct FreqDrag {
+    start: f32,
+    moved: f32,
+}
+
+/// The peak markers of the three meters (the reduction's holds its depth, in positive dB).
+#[derive(Clone, Copy, Default)]
+struct MeterHolds {
+    input: PeakHold,
+    output: PeakHold,
+    reduction: PeakHold,
+}
+
+/// The De-Esser's band shows gains from BAND_DB_LO to BAND_DB_HI.
+const BAND_DB_LO: f32 = -24.0;
+const BAND_DB_HI: f32 = 6.0;
+
+/// Whether `params` would change any value of `inst`.
+fn changes(inst: &PluginInstance, params: &BTreeMap<String, f32>) -> bool {
+    params.iter().any(|(k, v)| inst.param(k) != *v)
+}
+
+fn band_db_to_y(db: f32, band: Rect) -> f32 {
+    (band.bottom() - (db - BAND_DB_LO) / (BAND_DB_HI - BAND_DB_LO) * band.height()).clamp(band.top(), band.bottom())
+}
+
+/// The hold marker line across a meter bar at `y`.
+fn hold_line(p: &egui::Painter, bar: Rect, y: f32, color: egui::Color32) {
+    p.rect_filled(Rect::from_min_max(egui::pos2(bar.left(), y - 1.0), egui::pos2(bar.right(), y + 1.0)), 0.0, color);
+}
+
+/// Draws the dynamics graph of `inst` across the available width, `height` points tall (more for the De-Esser's
+/// band when it does not fit beside), reading the insert's live `meter`, and turns what the mouse does into edits.
+/// `gesture` is the window's drag counter (`PluginWindows::gesture`).
+pub fn dynamics_graph(ui: &mut egui::Ui, inst: &PluginInstance, meter: Option<PluginMeter>, sr: f32, height: f32, gesture: &mut u64) -> DynGraphOut {
+    let levels = meter_levels(meter, inst.bypass);
+    let (Some(spec), Some(curve)) = (spec(&inst.kind), curve_of(inst)) else {
+        return DynGraphOut {
+            #[cfg(test)]
+            plot: Rect::NOTHING,
+            #[cfg(test)]
+            band: None,
+            edits: Vec::new(),
+            levels,
+        };
+    };
+    let span = spec.span;
+    let has_band = spec.freq_param.is_some();
+    // the background first, hover only: the point and the marker registered after it take the clicks
+    let width = ui.available_width();
+    let (rect, bg) = ui.allocate_exact_size(egui::vec2(width, total_height(width, height, has_band)), Sense::hover());
+    let (frame, meters, beside) = graph_layout(Rect::from_min_size(rect.min, egui::vec2(rect.width(), height)), has_band);
+    let band_frame = if has_band { beside.or_else(|| Some(Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - BAND_H), rect.max))) } else { None };
+    let band = band_frame.map(|b| b.shrink(theme::SP_3));
+    let plot = frame.shrink(eq_view::PLOT_INSET);
+    ui.interact(meters, ui.id().with("dyn-meters"), Sense::hover()).on_hover_text("Input peak \u{00B7} Gain reduction \u{00B7} Output peak");
+
+    // the threshold point
+    let fine = ui.input(|i| i.modifiers.shift);
+    let mut edits = Vec::new();
+    let (hx, hy) = handle_db(&curve);
+    let pos = egui::pos2(db_to_x(hx, span, plot), db_to_y(hy, span, plot));
+    let drag_id = egui::Id::new(("dyn-drag", inst.id));
+    let mut drag: Option<DynDrag> = ui.data(|d| d.get_temp(drag_id));
+    let r = ui.interact(Rect::from_center_size(pos, Vec2::splat(2.0 * eq_view::HIT_R)), ui.id().with("dyn-point"), Sense::click_and_drag());
+    let mut hot = false;
+    if r.drag_started_by(PointerButton::Primary) {
+        *gesture += 1;
+        drag = Some(DynDrag { start: DragStart { x: inst.param(spec.x_param), y: inst.param(spec.y_param) }, moved: Vec2::ZERO });
+    }
+    if r.dragged_by(PointerButton::Primary) {
+        if let Some(d) = drag.as_mut() {
+            d.moved = eq_view::accumulate(d.moved, r.drag_delta(), fine);
+            let params = drag_values(inst, d.start, d.moved, plot);
+            if changes(inst, &params) {
+                edits.push(EqEdit::Drag { params, key: drag_key(inst.id, *gesture) });
+            }
+            hot = true;
+            ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+        }
+    }
+    if r.drag_stopped() {
+        drag = None;
+    }
+    if r.double_clicked() {
+        edits.push(EqEdit::Set { params: point_reset(inst) });
+    }
+    if r.hovered() {
+        hot = true;
+        if !r.dragged() {
+            ui.ctx().set_cursor_icon(CursorIcon::Grab);
+        }
+        let s = ui.input(|i| i.raw_scroll_delta);
+        if s != Vec2::ZERO {
+            if let Some(params) = wheel_values(inst, s, fine) {
+                edits.push(EqEdit::Drag { params, key: wheel_key(inst.id) });
+            }
+            // the wheel was for this point: the knobs under the graph do not scroll with it
+            ui.input_mut(|i| {
+                i.raw_scroll_delta = Vec2::ZERO;
+                i.smooth_scroll_delta = Vec2::ZERO;
+            });
+        }
+    }
+    ui.data_mut(|m| match drag {
+        Some(d) => m.insert_temp(drag_id, d),
+        None => m.remove::<DynDrag>(drag_id),
+    });
+
+    // the De-Esser's frequency marker
+    let mut marker_hot = false;
+    if let (Some(fid), Some(band)) = (spec.freq_param, band) {
+        let x = eq_view::freq_to_x(inst.param(fid), band);
+        let fdrag_id = egui::Id::new(("dyn-freq-drag", inst.id));
+        let mut fdrag: Option<FreqDrag> = ui.data(|d| d.get_temp(fdrag_id));
+        let strip = Rect::from_min_max(egui::pos2(x - eq_view::HIT_R, band.top()), egui::pos2(x + eq_view::HIT_R, band.bottom()));
+        let m = ui.interact(strip, ui.id().with("dyn-freq"), Sense::click_and_drag());
+        if m.drag_started_by(PointerButton::Primary) {
+            *gesture += 1;
+            fdrag = Some(FreqDrag { start: inst.param(fid), moved: 0.0 });
+        }
+        if m.dragged_by(PointerButton::Primary) {
+            if let Some(d) = fdrag.as_mut() {
+                d.moved = eq_view::accumulate(Vec2::new(d.moved, 0.0), m.drag_delta(), fine).x;
+                let params = freq_drag(inst, d.start, d.moved, band);
+                if changes(inst, &params) {
+                    edits.push(EqEdit::Drag { params, key: freq_key(inst.id, *gesture) });
+                }
+                marker_hot = true;
+                ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+            }
+        }
+        if m.drag_stopped() {
+            fdrag = None;
+        }
+        if m.double_clicked() {
+            if let Some(v) = plugins::default_params(inst).get(fid) {
+                edits.push(EqEdit::Set { params: BTreeMap::from([(fid.to_string(), *v)]) });
+            }
+        }
+        if m.hovered() {
+            marker_hot = true;
+            ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+        }
+        ui.data_mut(|d| match fdrag {
+            Some(f) => d.insert_temp(fdrag_id, f),
+            None => d.remove::<FreqDrag>(fdrag_id),
+        });
+    }
+
+    let painter = ui.painter_at(rect);
+    // the curve: grid, diagonal, what the plug-in takes away, the curve, the input level and the point
+    painter.rect(frame, theme::R_LG, theme::INSET, Stroke::new(1.0_f32, theme::BORDER));
+    let label_every = if span.1 - span.0 > 60.0 { 30 } else { 12 };
+    let steps = ((span.1 - span.0) / 6.0).round() as i32;
+    for k in 0..=steps {
+        let db = span.1 - 6.0 * k as f32;
+        let color = if k % 2 == 0 { theme::GRID_BAR_LINE } else { theme::GRID_BEAT_LINE };
+        let (x, y) = (db_to_x(db, span, plot), db_to_y(db, span, plot));
+        painter.vline(x, plot.y_range(), Stroke::new(1.0_f32, color));
+        painter.hline(plot.x_range(), y, Stroke::new(1.0_f32, color));
+        if (k * 6) % label_every == 0 && k < steps {
+            let text = format!("{db:.0}");
+            painter.text(egui::pos2(plot.left() + theme::SP_1, y + theme::SP_1), egui::Align2::LEFT_TOP, &text, theme::label_font(), theme::TEXT_3);
+            if k > 0 {
+                painter.text(egui::pos2(x - theme::SP_1, plot.bottom() - theme::SP_1), egui::Align2::RIGHT_BOTTOM, text, theme::label_font(), theme::TEXT_3);
+            }
+        }
+    }
+    painter.line_segment([egui::pos2(plot.left(), plot.bottom()), egui::pos2(plot.right(), plot.top())], Stroke::new(1.0_f32, theme::CENTER_LINE));
+    let n = (plot.width() / 2.0).clamp(48.0, 300.0) as usize;
+    let pts = curve_points(&curve, span, n);
+    let xs: Vec<f32> = pts.iter().map(|(i, _)| db_to_x(*i, span, plot)).collect();
+    let diag: Vec<f32> = pts.iter().map(|(i, _)| db_to_y(*i, span, plot)).collect();
+    // only where the curve is under the diagonal: what the plug-in takes away
+    let under: Vec<f32> = pts.iter().zip(&diag).map(|((_, o), d)| db_to_y(*o, span, plot).max(*d)).collect();
+    eq_view::fill_between(&painter, &xs, &diag, &under, eq_view::faded(theme::MONITOR, 40));
+    let tx = db_to_x(curve.threshold_db(), span, plot);
+    painter.extend(egui::Shape::dashed_line(&[egui::pos2(tx, plot.top()), egui::pos2(tx, plot.bottom())], Stroke::new(1.0_f32, theme::GRID_BAR_LINE), 4.0, 3.0));
+    let line: Vec<Pos2> = pts.iter().map(|(i, o)| egui::pos2(db_to_x(*i, span, plot), db_to_y(*o, span, plot))).collect();
+    painter.add(egui::Shape::line(line, Stroke::new(2.0_f32, if inst.bypass { theme::TEXT_DISABLED } else { theme::TEXT })));
+    if levels.input_db > SILENCE_DB && !inst.bypass {
+        let dot = egui::pos2(db_to_x(levels.input_db, span, plot), db_to_y(curve.out_db(levels.input_db), span, plot));
+        painter.circle_filled(dot, 4.0, theme::PLAY);
+    }
+    if inst.bypass {
+        painter.circle_stroke(pos, eq_view::POINT_R, Stroke::new(1.5_f32, theme::TEXT_DISABLED));
+    } else {
+        painter.circle_filled(pos, eq_view::POINT_R, theme::ACCENT);
+    }
+    if hot {
+        painter.circle_stroke(pos, eq_view::POINT_R + 2.0, Stroke::new(1.5_f32, theme::TEXT));
+        let galley = painter.layout_no_wrap(point_readout(inst), theme::number_font(), theme::TEXT);
+        let size = galley.size() + Vec2::splat(2.0 * theme::SP_3);
+        // the readout may run over the meters: it is wider than a small curve
+        let room = Rect::from_min_max(plot.min, egui::pos2(rect.right(), plot.bottom()));
+        let r = eq_view::readout_rect(pos, size, room);
+        painter.rect(r, theme::R_LG, theme::RAISED, Stroke::new(1.0_f32, theme::BORDER));
+        painter.galley(r.min + Vec2::splat(theme::SP_3), galley, theme::TEXT);
+    } else if let Some(p) = bg.hover_pos().filter(|p| frame.contains(*p)) {
+        let text = hover_readout(&curve, x_to_db(p.x, span, plot));
+        painter.text(egui::pos2(plot.left() + theme::SP_3, plot.top() + theme::SP_3), egui::Align2::LEFT_TOP, text, theme::number_font(), theme::TEXT_3);
+    }
+
+    // the meters: input and output rise from the bottom, the gain reduction falls from the top
+    let holds_id = egui::Id::new(("dyn-holds", inst.id));
+    let mut holds: MeterHolds = ui.data(|d| d.get_temp(holds_id)).unwrap_or_default();
+    let dt = ui.input(|i| i.stable_dt).min(0.1);
+    holds.input.update(levels.input_db, dt);
+    holds.output.update(levels.output_db, dt);
+    holds.reduction.update(-levels.reduction_db, dt);
+    ui.data_mut(|d| d.insert_temp(holds_id, holds));
+    let col_w = METER_COL_W / 3.0;
+    let text_h = 14.0;
+    for (k, (label, db)) in [("IN", levels.input_db), ("GR", levels.reduction_db), ("OUT", levels.output_db)].into_iter().enumerate() {
+        let cx = meters.left() + col_w * (k as f32 + 0.5);
+        painter.text(egui::pos2(cx, meters.top()), egui::Align2::CENTER_TOP, label, theme::label_font(), theme::TEXT_3);
+        let bar = Rect::from_min_max(egui::pos2(cx - METER_BAR_W / 2.0, meters.top() + text_h), egui::pos2(cx + METER_BAR_W / 2.0, meters.bottom() - text_h));
+        painter.rect_filled(bar, theme::R_SM, theme::LCD);
+        if k == 1 {
+            let fill = gr_fill(db);
+            if fill > 0.0 {
+                painter.rect_filled(Rect::from_min_max(bar.min, egui::pos2(bar.right(), bar.top() + fill * bar.height())), theme::R_SM, theme::MONITOR);
+            }
+            if holds.reduction.db > 0.05 {
+                hold_line(&painter, bar, bar.top() + gr_fill(-holds.reduction.db) * bar.height(), theme::SOLO);
+            }
+        } else {
+            paint_meter_fill(&painter, bar, meter_fill(db));
+            let hold = if k == 0 { holds.input } else { holds.output };
+            if hold_marker_shown(hold.db) {
+                hold_line(&painter, bar, bar.bottom() - meter_fill(hold.db) * bar.height(), if hold.db > 0.0 { theme::REC } else { theme::SOLO });
+            }
+        }
+        painter.text(egui::pos2(cx, meters.bottom()), egui::Align2::CENTER_BOTTOM, db_text(db), theme::number_font(), theme::TEXT_2);
+    }
+
+    // the De-Esser's band: the most it can turn down (shaded), what it turns down now (line), and its frequency
+    if let (Some(fid), Some(band), Some(band_frame)) = (spec.freq_param, band, band_frame) {
+        painter.rect(band_frame, theme::R_LG, theme::INSET, Stroke::new(1.0_f32, theme::BORDER));
+        let zero = band_db_to_y(0.0, band);
+        painter.hline(band.x_range(), zero, Stroke::new(1.0_f32, theme::CENTER_LINE));
+        let freq = inst.param(fid);
+        let wideband = inst.param("mode") >= 0.5;
+        let range = match curve {
+            DynamicsCurve::DeEsser { range, .. } => range,
+            _ => 0.0,
+        };
+        let nb = (band.width() / 2.0).clamp(32.0, 200.0) as usize;
+        let freqs = eq_view::log_freqs(nb);
+        let bx: Vec<f32> = freqs.iter().map(|f| eq_view::freq_to_x(*f, band)).collect();
+        let most: Vec<f32> = freqs.iter().map(|f| band_db_to_y(de_esser_band_db(freq, range, wideband, *f, sr), band)).collect();
+        eq_view::fill_between(&painter, &bx, &vec![zero; nb], &most, eq_view::faded(theme::MONITOR, 40));
+        let now: Vec<Pos2> = freqs.iter().zip(&bx).map(|(f, x)| egui::pos2(*x, band_db_to_y(de_esser_band_db(freq, -levels.reduction_db, wideband, *f, sr), band))).collect();
+        painter.add(egui::Shape::line(now, Stroke::new(1.5_f32, theme::MONITOR)));
+        let x = eq_view::freq_to_x(freq, band);
+        painter.vline(x, band.y_range(), Stroke::new(if marker_hot { 2.5_f32 } else { 1.5_f32 }, theme::ACCENT));
+        let align = if x > band.center().x { egui::Align2::RIGHT_TOP } else { egui::Align2::LEFT_TOP };
+        let tx = if x > band.center().x { x - theme::SP_2 } else { x + theme::SP_2 };
+        painter.text(egui::pos2(tx, band.top()), align, format_param_value(freq, "Hz"), theme::number_font(), theme::TEXT_2);
+    }
+    ui.label(egui::RichText::new(hint(spec.kind)).small().color(theme::TEXT_3));
+    DynGraphOut {
+        #[cfg(test)]
+        plot,
+        #[cfg(test)]
+        band,
+        edits,
+        levels,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eframe::egui::{pos2, vec2};
+    use eframe::egui::{pos2, vec2, Event, Modifiers, MouseWheelUnit};
 
     fn instance(kind: &str) -> PluginInstance {
         PluginInstance { id: 3, kind: kind.into(), params: Default::default(), bypass: false, preset: None, sample: None, vst3_path: None, vst3_params: vec![], vst3_state: None }
@@ -565,5 +860,199 @@ mod tests {
         assert_eq!(total_height(420.0, 150.0, false), 150.0);
         // never smaller than 60 points
         assert_eq!(graph_layout(Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 150.0)), false).0.width(), 60.0);
+    }
+
+    /// What the harness saw over all its frames.
+    struct Run {
+        plot: Rect,
+        band: Option<Rect>,
+        edits: Vec<EqEdit>,
+        levels: Option<MeterLevels>,
+    }
+
+    /// Frames of the dynamics graph in a headless 700x500 context, one per entry of `frames` (the events of that
+    /// frame), with `modifiers` held throughout.
+    fn run_frames(inst: &PluginInstance, meter: Option<PluginMeter>, gesture: &mut u64, frames: &[Vec<Event>], modifiers: Modifiers) -> Run {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut run = Run { plot: Rect::NOTHING, band: None, edits: Vec::new(), levels: None };
+        for (k, events) in frames.iter().enumerate() {
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(700.0, 500.0))),
+                time: Some(k as f64 / 60.0),
+                events: events.clone(),
+                modifiers,
+                ..Default::default()
+            };
+            let _ = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let out = dynamics_graph(ui, inst, meter, 48000.0, 240.0, gesture);
+                    run.plot = out.plot;
+                    run.band = out.band;
+                    run.edits.extend(out.edits);
+                    run.levels = Some(out.levels);
+                });
+            });
+        }
+        run
+    }
+
+    /// Where the threshold point of `inst` is drawn in the harness.
+    fn handle_pos(inst: &PluginInstance) -> Pos2 {
+        let plot = run_frames(inst, None, &mut 0, &[vec![]], Modifiers::NONE).plot;
+        let span = spec(&inst.kind).unwrap().span;
+        let (x, y) = handle_db(&curve_of(inst).unwrap());
+        pos2(db_to_x(x, span, plot), db_to_y(y, span, plot))
+    }
+
+    fn press(pos: Pos2, pressed: bool, modifiers: Modifiers) -> Event {
+        Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers }
+    }
+
+    /// A drag from `from` in three steps of `step`, then the release.
+    fn drag(from: Pos2, step: Vec2, modifiers: Modifiers) -> Vec<Vec<Event>> {
+        let mut frames = vec![vec![], vec![Event::PointerMoved(from)], vec![press(from, true, modifiers)]];
+        for k in 1..=3 {
+            frames.push(vec![Event::PointerMoved(from + step * k as f32)]);
+        }
+        frames.push(vec![press(from + step * 3.0, false, modifiers)]);
+        frames
+    }
+
+    /// The parameters of every drag edit with undo key `want`.
+    fn drags(edits: &[EqEdit], want: &str) -> Vec<BTreeMap<String, f32>> {
+        edits.iter().filter_map(|e| match e {
+            EqEdit::Drag { params, key } if key == want => Some(params.clone()),
+            _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn dynamics_graph_draws_every_kind_without_edits() {
+        let extremes: [(&str, &[(&str, f32)]); 4] = [
+            ("compressor", &[("ratio", 20.0), ("knee", 24.0), ("makeup", 24.0)]),
+            ("limiter", &[("gain", 24.0), ("ceiling", -12.0)]),
+            ("noise_gate", &[("threshold", -90.0), ("reduction", -90.0)]),
+            ("de_esser", &[("freq", 12000.0), ("range", 24.0)]),
+        ];
+        let loud = PluginMeter { input_peak: 0.9, output_peak: 0.5, gain_reduction_db: Some(-12.0) };
+        for (kind, extreme) in extremes {
+            let base = instance(kind);
+            let bypassed = PluginInstance { bypass: true, ..base.clone() };
+            for inst in [base.clone(), with(base.clone(), extreme), bypassed] {
+                for meter in [None, Some(loud)] {
+                    let mut g = 0;
+                    let run = run_frames(&inst, meter, &mut g, &[vec![], vec![]], Modifiers::NONE);
+                    assert!(run.edits.is_empty(), "{kind}: {:?}", run.edits);
+                    assert_eq!(g, 0);
+                    assert!(run.plot.width() > 0.0 && run.plot.height() == 240.0 - 2.0 * eq_view::PLOT_INSET, "{kind}: {:?}", run.plot);
+                    assert_eq!(run.band.is_some(), kind == "de_esser", "{kind}");
+                    let want = if meter.is_some() && !inst.bypass { -12.0 } else { 0.0 };
+                    assert_eq!(run.levels.unwrap().reduction_db, want, "{kind} bypass {} meter {meter:?}", inst.bypass);
+                }
+            }
+        }
+        let run = run_frames(&instance("reverb"), None, &mut 0, &[vec![], vec![]], Modifiers::NONE);
+        assert!(run.edits.is_empty());
+        assert_eq!(run.plot, Rect::NOTHING);
+    }
+
+    #[test]
+    fn dragging_the_threshold_point_sends_one_gesture() {
+        let inst = instance("compressor");
+        let mut g = 0;
+        let run = run_frames(&inst, None, &mut g, &drag(handle_pos(&inst), vec2(10.0, 8.0), Modifiers::NONE), Modifiers::NONE);
+        assert!(!run.edits.is_empty());
+        assert_eq!(g, 1);
+        for e in &run.edits {
+            assert!(matches!(e, EqEdit::Drag { key, .. } if key == "pw3:dyn#1"), "{e:?}");
+        }
+        let EqEdit::Drag { params, .. } = run.edits.last().unwrap() else { unreachable!() };
+        assert_eq!(params.keys().collect::<Vec<_>>(), ["ratio", "threshold"]);
+        assert!(params["threshold"] > -18.0 && params["ratio"] > 4.0, "{params:?}");
+    }
+
+    #[test]
+    fn two_drags_are_two_gestures() {
+        let inst = instance("compressor");
+        let p = handle_pos(&inst);
+        let mut frames = drag(p, vec2(10.0, 0.0), Modifiers::NONE);
+        // the instance does not change between frames, so the point is where the second drag starts too
+        frames.extend(drag(p, vec2(0.0, 10.0), Modifiers::NONE));
+        let mut g = 0;
+        let run = run_frames(&inst, None, &mut g, &frames, Modifiers::NONE);
+        assert_eq!(g, 2);
+        assert!(!drags(&run.edits, "pw3:dyn#1").is_empty() && !drags(&run.edits, "pw3:dyn#2").is_empty(), "{:?}", run.edits);
+    }
+
+    #[test]
+    fn shift_drag_moves_ten_times_less() {
+        let inst = instance("compressor");
+        let p = handle_pos(&inst);
+        let moved = |m: Modifiers| -> f32 {
+            let run = run_frames(&inst, None, &mut 0, &drag(p, vec2(10.0, 0.0), m), m);
+            drags(&run.edits, "pw3:dyn#1").last().expect("a drag")["threshold"] + 18.0
+        };
+        let (coarse, fine) = (moved(Modifiers::NONE), moved(Modifiers::SHIFT));
+        assert!(coarse > 1.0, "{coarse}");
+        assert!(near(fine, coarse * 0.1, 1e-3), "{fine} vs {coarse}");
+    }
+
+    #[test]
+    fn wheel_over_the_point_changes_its_wheel_param() {
+        let wheel = Event::MouseWheel { unit: MouseWheelUnit::Line, delta: vec2(0.0, 1.0), modifiers: Modifiers::NONE };
+        for (kind, id, want) in [("compressor", "knee", 7.0), ("noise_gate", "reduction", -59.0)] {
+            let inst = instance(kind);
+            let p = handle_pos(&inst);
+            let mut g = 0;
+            let run = run_frames(&inst, None, &mut g, &[vec![], vec![Event::PointerMoved(p)], vec![wheel.clone()]], Modifiers::NONE);
+            assert_eq!(run.edits.len(), 1, "{kind}: {:?}", run.edits);
+            let EqEdit::Drag { params, key } = &run.edits[0] else { panic!("{:?}", run.edits) };
+            assert_eq!(key, "pw3:dyn:wheel");
+            assert!(near(params[id], want, 1e-4), "{kind}: {params:?}");
+            assert_eq!(g, 0);
+        }
+        let inst = instance("compressor");
+        let plot = run_frames(&inst, None, &mut 0, &[vec![]], Modifiers::NONE).plot;
+        let far = plot.left_top() + vec2(5.0, 5.0);
+        let run = run_frames(&inst, None, &mut 0, &[vec![], vec![Event::PointerMoved(far)], vec![wheel]], Modifiers::NONE);
+        assert!(run.edits.is_empty(), "{:?}", run.edits);
+    }
+
+    #[test]
+    fn double_click_resets_the_point() {
+        let inst = with(instance("compressor"), &[("threshold", -30.0), ("ratio", 8.0), ("knee", 0.0)]);
+        let p = handle_pos(&inst);
+        let n = Modifiers::NONE;
+        let frames = [vec![], vec![Event::PointerMoved(p)], vec![press(p, true, n)], vec![press(p, false, n)], vec![press(p, true, n)], vec![press(p, false, n)]];
+        let run = run_frames(&inst, None, &mut 0, &frames, n);
+        assert!(run.edits.contains(&EqEdit::Set { params: point_reset(&inst) }), "{:?}", run.edits);
+    }
+
+    #[test]
+    fn dragging_the_de_esser_frequency_marker() {
+        let inst = instance("de_esser");
+        let band = run_frames(&inst, None, &mut 0, &[vec![]], Modifiers::NONE).band.expect("the de-esser has a band");
+        let marker = pos2(eq_view::freq_to_x(6000.0, band), band.center().y);
+        let mut g = 0;
+        let run = run_frames(&inst, None, &mut g, &drag(marker, vec2(10.0, 0.0), Modifiers::NONE), Modifiers::NONE);
+        assert_eq!(g, 1);
+        let moves = drags(&run.edits, "pw3:dyn:freq#1");
+        assert!(!moves.is_empty(), "{:?}", run.edits);
+        assert!(moves.last().unwrap()["freq"] > 6000.0, "{moves:?}");
+    }
+
+    #[test]
+    fn the_dynamics_view_reuses_the_common_header() {
+        let src = include_str!("dynamics_view.rs");
+        assert!(!src.contains(concat!("plugin_ai_bar", "(")));
+        assert!(!src.contains(concat!("plugin_header", "(")));
+    }
+
+    #[test]
+    fn the_dynamics_view_uses_theme_tokens() {
+        let src = include_str!("dynamics_view.rs");
+        assert!(!src.contains(concat!("Color32::from_rgb", "(")));
+        assert!(!src.contains(concat!("FontId::new", "(")));
     }
 }
