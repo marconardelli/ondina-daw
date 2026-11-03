@@ -374,7 +374,7 @@ fn band_db_to_y(db: f32, band: Rect) -> f32 {
 }
 
 /// The hold marker line across a meter bar at `y`.
-fn hold_line(p: &egui::Painter, bar: Rect, y: f32, color: egui::Color32) {
+pub(crate) fn hold_line(p: &egui::Painter, bar: Rect, y: f32, color: egui::Color32) {
     p.rect_filled(Rect::from_min_max(egui::pos2(bar.left(), y - 1.0), egui::pos2(bar.right(), y + 1.0)), 0.0, color);
 }
 

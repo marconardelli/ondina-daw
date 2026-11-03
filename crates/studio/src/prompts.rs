@@ -6,6 +6,7 @@ use std::fmt::Write;
 use ondina_core::model::{Id, PluginInstance, PluginSlot, Project, TrackKind};
 use ondina_core::note_value;
 use ondina_core::plugins;
+use ondina_dsp::effects::SaturationCurve;
 
 /// Piano roll: "AI: continue / improve".
 pub const CONTINUE_IMPROVE: &str =
@@ -61,6 +62,23 @@ pub const STEREO_IMAGER_ACTIONS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Overdrive: the requests name Mode, Drive and Output and ask for the level change, as its window draws them.
+const OVERDRIVE_ACTIONS: &[(&str, &str)] = &[
+    ("Warm it up", "Warm up this sound with this Overdrive: Mode Tube (mode 3) or Soft (mode 0), Drive 0.2 to 0.35, Tone 0.35 to 0.5 so the top stays smooth, Mix 1 on a melodic part (0.4 to 0.6 on drums to keep the attack), and lower Output as Drive goes up so the output peak stays near the input peak (the live meters are in the context; with the transport stopped read them with get_plugin while the song plays). Change the parameters with set_plugin_params, then explain in a few lines which parameters you changed, from what value to what value, and the change in output level you expect in dB."),
+    ("Add grit without getting louder", "Add grit to this sound with this Overdrive without making it louder: Mode Hard (mode 1) or Fuzz (mode 2), Drive 0.5 to 0.7, Tone 0.5 to 0.65, then lower Output until the output peak matches the input peak (Drive 0.5 multiplies the input by 16, and a shaped peak reaches at most full scale). Change the parameters with set_plugin_params, then explain in a few lines which parameters you changed, from what value to what value, and the change in output level you expect in dB."),
+    ("Parallel crunch", "Use this Overdrive as parallel crunch: Mode Hard (mode 1), Drive 0.6 to 0.8, Mix 0.25 to 0.4 so the clean sound keeps its dynamics and the distortion fills in under it, Output so the level stays about the same. Change the parameters with set_plugin_params, then explain in a few lines which parameters you changed, from what value to what value, and the change in output level you expect in dB."),
+];
+/// Bitcrusher: Resolution, Downsampling and Mix, with the level change.
+const BITCRUSHER_ACTIONS: &[(&str, &str)] = &[
+    ("Lo-fi but still clear", "Make this sound lo-fi but still clear with this Bitcrusher: Resolution 10 to 12 bits, Downsampling 2 to 3, Mix 0.4 to 0.6 so the dry signal keeps the words and the attacks readable. Change the parameters with set_plugin_params, then explain in a few lines which parameters you changed, from what value to what value, and the change in output level you expect in dB."),
+    ("Retro 8-bit crunch", "Give this sound a retro 8-bit crunch with this Bitcrusher: Resolution 6 to 8 bits, Downsampling 4 to 8, Mix 0.8 to 1; quiet parts fall onto a few steps or to silence, so say if the track has quiet passages that would vanish. Change the parameters with set_plugin_params, then explain in a few lines which parameters you changed, from what value to what value, and the change in output level you expect in dB."),
+];
+/// Exciter: Frequency, Harmonics and Mix, with the level change.
+const EXCITER_ACTIONS: &[(&str, &str)] = &[
+    ("More air", "Add air to this sound with this Exciter: Frequency 8 to 10 kHz, Harmonics 0.3 to 0.5, Mix 0.2 to 0.35, so the top gets brighter without the S sounds turning harsh. When the request is about the mix, measure it first with analyze_mix. Change the parameters with set_plugin_params, then explain in a few lines which parameters you changed, from what value to what value, and the change in output level you expect in dB."),
+    ("Presence without harshness", "Bring this sound forward with this Exciter: Frequency 3 to 5 kHz, Harmonics 0.2 to 0.35, Mix 0.15 to 0.25; if it gets harsh, raise Frequency before lowering Mix. Change the parameters with set_plugin_params, then explain in a few lines which parameters you changed, from what value to what value, and the change in output level you expect in dB."),
+];
+
 /// Plug-in AI bar: "Design a sound" for the plug-in `plugin_id` called `name`.
 pub fn design_sound(plugin_id: Id, name: &str) -> String {
     format!("Adjust the parameters of plug-in {plugin_id} ({name}) to get a great sound for this track's role in the song. Explain briefly.")
@@ -79,6 +97,9 @@ pub fn plugin_quick_actions(kind: &str) -> &'static [(&'static str, &'static str
         "drum_synth" => DRUM_ACTIONS,
         "channel_eq" => EQ_ACTIONS,
         "dynamic_eq" => DYNAMIC_EQ_ACTIONS,
+        "overdrive" => OVERDRIVE_ACTIONS,
+        "bitcrusher" => BITCRUSHER_ACTIONS,
+        "exciter" => EXCITER_ACTIONS,
         "compressor" => COMPRESSOR_ACTIONS,
         "limiter" => LIMITER_ACTIONS,
         "de_esser" => DE_ESSER_ACTIONS,
@@ -313,7 +334,7 @@ pub fn plugin_bar_rules(plugin_id: Id, label: &str) -> String {
 pub fn plugin_bar_context(project: &Project, plugin_id: Id) -> Option<String> {
     let inst = project.find_plugin(plugin_id)?;
     let label = plugins::plugin_label(inst);
-    Some(format!("{}{}{}{}{}\n{}", plugin_bar_rules(plugin_id, &label), eq_bar_note(&inst.kind), synth_bar_note(&inst.kind), dynamics_bar_note(&inst.kind), delay_bar_note(project, inst), plugin_context(project, plugin_id)?))
+    Some(format!("{}{}{}{}{}{}\n{}", plugin_bar_rules(plugin_id, &label), eq_bar_note(&inst.kind), synth_bar_note(&inst.kind), dynamics_bar_note(&inst.kind), delay_bar_note(project, inst), saturation_bar_note(&inst.kind), plugin_context(project, plugin_id)?))
 }
 
 /// Most tempo changes delay_bar_note lists; the rest are counted.
@@ -351,6 +372,9 @@ pub fn plugin_bar_context_live(project: &Project, plugin_id: Id, meter: Option<&
     if let Some(m) = meter {
         text.push('\n');
         text.push_str(&meter_note(m));
+        if let Some(inst) = project.find_plugin(plugin_id) {
+            text.push_str(&saturation_level_note(inst, m));
+        }
     }
     Some(text)
 }
@@ -366,6 +390,24 @@ pub fn meter_note(m: &ondina_engine::PluginMeter) -> String {
     }
     text.push('.');
     text
+}
+
+/// What the saturation curve gives at the insert's live input peak, as one sentence, so the assistant knows how much
+/// louder or quieter the plug-in makes the sound right now. Empty for other kinds, while bypassed and in silence.
+pub fn saturation_level_note(inst: &PluginInstance, m: &ondina_engine::PluginMeter) -> String {
+    let in_db = ondina_dsp::util::gain_to_db(m.input_peak);
+    let Some(curve) = SaturationCurve::of(&inst.kind, |id| inst.param(id)) else {
+        return String::new();
+    };
+    if inst.bypass || in_db <= -90.0 {
+        return String::new();
+    }
+    let round = |x: f32| (x * 10.0).round() / 10.0;
+    let out_db = curve.out_db(in_db);
+    let delta = round(out_db - in_db);
+    let sign = if delta > 0.0 { "+" } else { "" };
+    let which = if inst.kind == "exciter" { "the transfer curve of the band above Frequency" } else { "its transfer curve" };
+    format!(" At the live input peak of {} dBFS {which} gives {} dBFS ({sign}{} dB).", num(round(in_db)), num(round(out_db)), num(delta))
 }
 
 /// What the AI bar of a dynamics plug-in adds to the rules: its window draws the transfer curve and the gain
@@ -395,6 +437,17 @@ pub fn synth_bar_note(kind: &str) -> &'static str {
     match kind {
         "analog_synth" => " This synth's window draws the two oscillator shapes, the filter curve and the amp and filter envelopes: in your answer name each stage you changed (Osc 1 and Osc 2 shapes, Cutoff, Resonance, Filter Env Amount, the Amp and Filter Attack, Decay, Sustain and Release) with its value before and after, and say why.",
         "fm_synth" => " This synth's window draws the amp envelope and the modulation index envelope: in your answer name each stage you changed (Attack, Decay, Sustain, Release, Mod Index, Index Decay, Index Sustain) with its value before and after, and say why.",
+        _ => "",
+    }
+}
+
+/// What a saturation plug-in's AI bar adds to the rules: its window draws the transfer curve and the input and
+/// output meters, so the answer gives the values that move the curve and the level change it expects.
+pub fn saturation_bar_note(kind: &str) -> &'static str {
+    match kind {
+        "overdrive" => " This overdrive's window draws its transfer curve (input against output level) for the current Mode, with the live input level moving on it, and its input and output meters. Drive multiplies the input by 1 + 60 x Drive squared before the shaper (Drive 0.5 = +24 dB, 1 = +36 dB); a shaped peak reaches at most full scale, then 0.5 + 1 / (1 + 2 x Drive) and Output set the level. In your answer give Mode, Drive and Output before and after, and how many dB louder or quieter the output should get.",
+        "bitcrusher" => " This bitcrusher's window draws its stepped transfer curve (input against output level) and its input and output meters. Resolution sets the steps (8 bits = 256 levels: quiet parts fall onto a few steps or to silence), Downsampling holds each value for that many samples, Mix blends in the dry signal. In your answer give Resolution, Downsampling and Mix before and after, and the change in output level you expect in dB.",
+        "exciter" => " This exciter's window draws the transfer curve of the band above Frequency and its input and output meters. Harmonics drives that band into a soft shaper (1 + 10 x Harmonics times), Mix sets how much of the shaped band is added to the untouched dry sound. In your answer give Frequency, Harmonics and Mix before and after, and the change in output level you expect in dB.",
         _ => "",
     }
 }
@@ -837,6 +890,107 @@ mod tests {
         let tools: Vec<String> = ondina_core::command::tool_specs().into_iter().map(|t| t.name).collect();
         for word in note.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
             assert!(!tools.iter().any(|t| t == word), "{word} names a tool");
+        }
+    }
+
+    const SATURATION_KINDS: [&str; 3] = ["overdrive", "bitcrusher", "exciter"];
+
+    #[test]
+    fn saturation_plugins_have_their_own_quick_actions() {
+        let labels: [(&str, &[&str]); 3] = [
+            ("overdrive", &["Warm it up", "Add grit without getting louder", "Parallel crunch"]),
+            ("bitcrusher", &["Lo-fi but still clear", "Retro 8-bit crunch"]),
+            ("exciter", &["More air", "Presence without harshness"]),
+        ];
+        for (kind, want) in labels {
+            for on_master in [true, false] {
+                let actions = plugin_quick_actions_at(kind, on_master);
+                assert_ne!(actions, GENERIC_ACTIONS, "{kind} (master {on_master})");
+                assert!((2..=3).contains(&actions.len()), "{kind}: {} actions", actions.len());
+                assert_eq!(actions.iter().map(|a| a.0).collect::<Vec<_>>(), want, "{kind}");
+                for (label, request) in actions {
+                    assert!(request.contains("set_plugin_params"), "{kind}: {label}");
+                    assert!(request.contains("the change in output level you expect in dB"), "{kind}: {label}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn saturation_bar_note_names_the_curve_parameters_and_the_level_change() {
+        let wanted: [(&str, &[&str]); 3] = [
+            ("overdrive", &["Mode", "Drive", "Output"]),
+            ("bitcrusher", &["Resolution", "Downsampling", "Mix"]),
+            ("exciter", &["Frequency", "Harmonics", "Mix"]),
+        ];
+        let tools: Vec<String> = ondina_core::command::tool_specs().into_iter().map(|t| t.name).collect();
+        for (kind, names) in wanted {
+            let note = saturation_bar_note(kind);
+            for want in ["transfer curve", "before and after", "dB"] {
+                assert!(note.contains(want), "{kind}: missing {want:?} in {note}");
+            }
+            for name in names {
+                assert!(note.contains(name), "{kind}: missing {name:?} in {note}");
+            }
+            for word in note.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                assert!(!tools.iter().any(|t| t == word), "{word} names a tool");
+            }
+        }
+        assert_eq!(saturation_bar_note("compressor"), "");
+        assert_eq!(saturation_bar_note("reverb"), "");
+        let mut s = Session::new(false);
+        let t = id(&run(&mut s, "add_track", json!({"kind": "audio", "name": "Gtr"})), "track_id");
+        let od = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "overdrive"})), "plugin_id");
+        let text = plugin_bar_context(&s.project, od).unwrap();
+        assert!(text.contains(saturation_bar_note("overdrive")), "{text}");
+    }
+
+    #[test]
+    fn saturation_level_note_reads_the_curve_at_the_live_input() {
+        use ondina_dsp::util::gain_to_db;
+        use ondina_engine::PluginMeter;
+        let rounded = |x: f32| num((x * 10.0).round() / 10.0);
+        let mut s = Session::new(false);
+        let t = id(&run(&mut s, "add_track", json!({"kind": "audio", "name": "Gtr"})), "track_id");
+        let od = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "overdrive"})), "plugin_id");
+        let ex = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "exciter"})), "plugin_id");
+        let comp = id(&run(&mut s, "add_effect", json!({"track_id": t, "kind": "compressor"})), "plugin_id");
+        let m = PluginMeter { input_peak: 0.25, output_peak: 0.3, gain_reduction_db: None };
+        let inst = s.project.find_plugin(od).unwrap().clone();
+        let note = saturation_level_note(&inst, &m);
+        let curve = SaturationCurve::of("overdrive", |id| inst.param(id)).unwrap();
+        let out = rounded(curve.out_db(gain_to_db(0.25)));
+        assert!(note.contains("-12") && note.contains(&format!("gives {out} dBFS")) && note.contains("transfer curve"), "{note}");
+        assert!(note.contains("(+"), "the overdrive raises -12 dB: {note}");
+        let live = plugin_bar_context_live(&s.project, od, Some(&m)).unwrap();
+        assert!(live.ends_with(&format!("{}{note}", meter_note(&m))), "{live}");
+        // silence, Bypass and a plug-in without a saturation curve add nothing
+        assert_eq!(saturation_level_note(&inst, &PluginMeter { input_peak: 0.0, ..m }), "");
+        let exciter = saturation_level_note(s.project.find_plugin(ex).unwrap(), &m);
+        assert!(exciter.contains("band above Frequency"), "{exciter}");
+        assert_eq!(saturation_level_note(s.project.find_plugin(comp).unwrap(), &m), "");
+        assert!(plugin_bar_context_live(&s.project, comp, Some(&m)).unwrap().ends_with(&meter_note(&m)));
+        run(&mut s, "set_plugin_bypass", json!({"plugin_id": od, "bypass": true}));
+        assert_eq!(saturation_level_note(s.project.find_plugin(od).unwrap(), &m), "");
+        let tools: Vec<String> = ondina_core::command::tool_specs().into_iter().map(|t| t.name).collect();
+        for word in note.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+            assert!(!tools.iter().any(|t| t == word), "{word} names a tool");
+        }
+    }
+
+    #[test]
+    fn saturation_requests_use_only_local_tools() {
+        let mut texts: Vec<&str> = SATURATION_KINDS.iter().flat_map(|k| plugin_quick_actions(k).iter().map(|a| a.1)).collect();
+        texts.extend(SATURATION_KINDS.iter().map(|k| saturation_bar_note(k)));
+        for text in texts {
+            for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                if crate::mcp::tools().iter().any(|t| t.name == word) {
+                    assert!(crate::local_ai::LOCAL_TOOLS.contains(&word), "{word}, named in {text:?}, is not offered to the local model");
+                }
+            }
+        }
+        for tool in ["set_plugin_params", "get_plugin", "analyze_mix"] {
+            assert!(crate::local_ai::LOCAL_TOOLS.contains(&tool), "{tool}");
         }
     }
 }
