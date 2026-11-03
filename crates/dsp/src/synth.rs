@@ -86,6 +86,36 @@ impl Sustain {
 
 // ============================================================================ Analog Synth
 
+/// Octaves the filter envelope moves the cutoff at full level and Filter Env Amount 1.
+pub const FILTER_ENV_OCTAVES: f32 = 6.0;
+/// Attack of the FM Synth's modulation-index envelope: fixed, the index starts at once.
+pub const FM_INDEX_ATTACK: f32 = 0.001;
+
+/// The Analog Synth's filter as its window draws it, from the parameters as the project holds them
+/// (`filter_type` index, `cutoff` Hz, `resonance` 0..1): a voice on middle C with the envelope and the LFO at rest.
+/// For drawing; not meant for the audio thread.
+pub fn analog_filter_db(filter_type: f32, cutoff: f32, resonance: f32, freq: f32, sr: f32) -> f32 {
+    if sr <= 0.0 || !sr.is_finite() {
+        return 0.0;
+    }
+    let mut svf = Svf::default();
+    svf.set(cutoff, resonance, sr);
+    svf.magnitude_db(FilterMode::from_index(filter_type), freq, sr)
+}
+
+/// The filter's gain at its own cutoff for `resonance`: the same for the three modes (1/damping).
+pub fn analog_resonance_db(resonance: f32) -> f32 {
+    -20.0 * svf_damping(resonance).log10()
+}
+
+/// The resonance whose gain at the cutoff is `db` (inverse of analog_resonance_db), clamped to 0..1.
+pub fn analog_resonance_from_db(db: f32) -> f32 {
+    if db.is_nan() {
+        return 0.0;
+    }
+    svf_resonance_for_damping(10f32.powf(-db / 20.0))
+}
+
 #[derive(Clone)]
 struct AnalogParams {
     w1: Wave,
@@ -320,7 +350,7 @@ impl Instrument for AnalogSynth {
                 let f2 = midi_to_freq(pitch + p.semi2 + p.detune2 / 100.0);
                 let fe = v.fenv.next();
                 if update {
-                    let oct = p.fenv * fe * 6.0 + (pitch - 60.0) / 12.0 * p.keytrack + lfo * p.lfo_cut * 2.0;
+                    let oct = p.fenv * fe * FILTER_ENV_OCTAVES + (pitch - 60.0) / 12.0 * p.keytrack + lfo * p.lfo_cut * 2.0;
                     v.filt.set(p.cutoff * 2f32.powf(oct), p.res, sr);
                 }
                 let o1 = v.osc1.next(p.w1, f1 / sr, p.pw, &mut self.noise);
@@ -385,7 +415,7 @@ impl FmSynth {
     fn update(&mut self) {
         for v in &mut self.voices {
             v.amp.set(self.a, self.d, self.s, self.r, self.sr);
-            v.idx_env.set(0.001, self.idx_decay, self.idx_sus, self.r, self.sr);
+            v.idx_env.set(FM_INDEX_ATTACK, self.idx_decay, self.idx_sus, self.r, self.sr);
         }
     }
     fn release_note(&mut self, pitch: u8) {
@@ -1244,5 +1274,128 @@ mod tests {
             let after = energy_ms(inst.as_mut(), 100);
             assert!(held > 1e-4 && after <= held * 1e-6, "{name}: {after} still sounding (held {held})");
         }
+    }
+
+    /// Amplitude of the `f` Hz component of `y` (sample rate SR), by correlation with a sine and a cosine.
+    fn amplitude_at(y: &[f32], f: f32, start: usize) -> f32 {
+        let (mut si, mut co) = (0.0f64, 0.0f64);
+        for (i, v) in y.iter().enumerate() {
+            let ph = 2.0 * std::f64::consts::PI * f as f64 * (start + i) as f64 / SR as f64;
+            si += *v as f64 * ph.sin();
+            co += *v as f64 * ph.cos();
+        }
+        (2.0 * si.hypot(co) / y.len() as f64) as f32
+    }
+
+    #[test]
+    fn filter_curve_matches_the_measured_filter() {
+        let settle = (0.3 * SR) as usize;
+        let measure = (0.3 * SR) as usize;
+        for ft in 0..3 {
+            for (cutoff, res) in [(1000.0, 0.2), (400.0, 0.7), (3000.0, 0.95)] {
+                for i in 0..16 {
+                    let f = 50.0 * (10000.0f32 / 50.0).powf(i as f32 / 15.0);
+                    let mut svf = Svf::default();
+                    svf.set(cutoff, res, SR);
+                    let mode = FilterMode::from_index(ft as f32);
+                    let mut y = Vec::with_capacity(measure);
+                    for n in 0..settle + measure {
+                        let x = (2.0 * std::f64::consts::PI * f as f64 * n as f64 / SR as f64).sin() as f32;
+                        let out = svf.process(x, mode);
+                        if n >= settle {
+                            y.push(out);
+                        }
+                    }
+                    let measured = 20.0 * amplitude_at(&y, f, settle).log10();
+                    let drawn = analog_filter_db(ft as f32, cutoff, res, f, SR);
+                    assert!((measured - drawn).abs() <= 1.0, "type {ft} {cutoff} Hz res {res} at {f} Hz: {measured} vs {drawn}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn filter_curve_is_finite_and_peaks_at_the_cutoff() {
+        for ft in 0..3 {
+            for sr in [44100.0, 48000.0, 96000.0] {
+                for cutoff in [20.0, 1000.0, 20000.0] {
+                    for res in [0.0, 0.5, 1.0] {
+                        for f in [-5.0, 0.0, 1.0, 20.0, 1000.0, sr / 2.0, sr] {
+                            let db = analog_filter_db(ft as f32, cutoff, res, f, sr);
+                            assert!(db.is_finite() && db >= MIN_RESPONSE_DB, "type {ft} {cutoff} {res} {f} {sr}: {db}");
+                        }
+                        if cutoff == 1000.0 {
+                            let at = analog_filter_db(ft as f32, cutoff, res, cutoff, sr);
+                            assert!((at - analog_resonance_db(res)).abs() <= 0.01, "type {ft} res {res} at {sr}: {at}");
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(Svf::default().magnitude_db(FilterMode::Low, 1000.0, SR), 0.0);
+        assert_eq!(analog_filter_db(0.0, 1000.0, 0.5, 1000.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn resonance_db_round_trips() {
+        assert!((analog_resonance_db(0.0) + 6.02).abs() < 0.01, "{}", analog_resonance_db(0.0));
+        assert!((analog_resonance_db(1.0) - 33.98).abs() < 0.01, "{}", analog_resonance_db(1.0));
+        for r in [0.0, 0.2, 0.5, 0.9, 1.0] {
+            assert!((analog_resonance_from_db(analog_resonance_db(r)) - r).abs() < 1e-4, "{r}");
+            assert!((svf_resonance_for_damping(svf_damping(r)) - r).abs() < 1e-5, "{r}");
+        }
+        assert_eq!(analog_resonance_from_db(-40.0), 0.0);
+        assert_eq!(analog_resonance_from_db(80.0), 1.0);
+    }
+
+    #[test]
+    fn wave_shapes_match_the_oscillator() {
+        let inc = 1.0 / 1000.0;
+        let pw = 0.3;
+        for (wave, tol) in [(Wave::Saw, 0.01), (Wave::Square, 0.01), (Wave::Sine, 0.01), (Wave::Triangle, 0.03)] {
+            let mut osc = Osc::default();
+            let mut noise = Noise::new(1);
+            for _ in 0..299 * 1000 {
+                osc.next(wave, inc, pw, &mut noise);
+            }
+            for _ in 0..1000 {
+                let phase = osc.phase;
+                let v = osc.next(wave, inc, pw, &mut noise);
+                let near = |edge: f32| (phase - edge).abs() < 3.0 * inc;
+                if near(0.0) || near(1.0) || (wave == Wave::Square && near(pw)) {
+                    continue;
+                }
+                let drawn = wave_shape(wave, phase, pw);
+                assert!((v - drawn).abs() <= tol, "{wave:?} at {phase}: {v} vs {drawn}");
+            }
+        }
+        for i in 0..64 {
+            let ph = i as f32 / 64.0 + 0.001;
+            let v = wave_shape(Wave::Noise, ph, pw);
+            assert!((-1.0..=1.0).contains(&v));
+            assert_eq!(v, wave_shape(Wave::Noise, ph, pw));
+        }
+        assert_eq!(wave_shape(Wave::Saw, -0.75, pw), wave_shape(Wave::Saw, 0.25, pw));
+    }
+
+    #[test]
+    fn envelope_level_matches_the_running_envelope() {
+        let sr = 1000.0;
+        for (a, d, s, r, held) in [(0.05, 0.2, 0.4, 0.3, 0.5), (0.001, 0.3, 0.8, 0.25, 0.4), (0.3, 0.1, 0.0, 0.5, 0.2)] {
+            let mut env = Adsr::default();
+            env.set(a, d, s, r, sr);
+            env.trigger();
+            let release_at = (held * sr).round() as usize;
+            for n in 0..2000usize {
+                if n == release_at {
+                    env.release();
+                }
+                let v = env.next();
+                let drawn = adsr_level(a, d, s, r, held, (n + 1) as f32 / sr);
+                assert!((v - drawn).abs() <= 0.02, "{a} {d} {s} {r} {held} at sample {n}: {v} vs {drawn}");
+            }
+        }
+        assert!((adsr_level(0.01, 0.1, 0.6, 0.2, f32::INFINITY, 30.0) - 0.6).abs() < 1e-4);
+        assert_eq!(adsr_level(0.01, 0.1, 0.6, 0.2, f32::INFINITY, -1.0), 0.0);
     }
 }

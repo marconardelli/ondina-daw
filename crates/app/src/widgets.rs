@@ -5,6 +5,7 @@
 //! The math (value and dB mappings, knob angles, hit tests, peak hold, SVG paths) lives in plain functions that the
 //! tests below cover; the widgets only read input and paint.
 
+use std::collections::BTreeMap;
 use std::f32::consts::PI;
 use std::sync::OnceLock;
 
@@ -12,6 +13,10 @@ use eframe::egui::{
     self, epaint::PathShape, pos2, vec2, Align, Align2, Color32, FontSelection, Painter, Pos2, Rect, Response,
     RichText, Rounding, Sense, Shape, Stroke, Ui, Vec2, Widget, WidgetText,
 };
+
+use ondina_core::theory::note_name;
+use ondina_dsp::util::adsr_level;
+use ondina_dsp::MidiKind;
 
 use crate::theme;
 
@@ -1660,6 +1665,507 @@ pub fn effect_slot(ui: &mut Ui, state: SlotState<'_>, width: f32) -> Response {
     resp
 }
 
+// ===================================================================================== envelope editor and keyboard
+
+/// What a graph asks for when one gesture moves several parameters at once (an envelope point moves Decay and
+/// Sustain together), unlike a knob.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParamsEdit {
+    /// Part of a drag or of a wheel turn: merged into one undo step by `key`.
+    Drag { params: BTreeMap<String, f32>, key: String },
+    /// A single change (double-click reset, a click on a choice).
+    Set { params: BTreeMap<String, f32> },
+}
+
+/// One stage of an envelope: the parameter it moves (None: fixed, drawn but never edited), its value, range and
+/// default.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnvParam {
+    pub id: Option<&'static str>,
+    pub value: f32,
+    pub min: f32,
+    pub max: f32,
+    pub default: f32,
+}
+
+/// An ADSR envelope as the editor draws it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnvSpec {
+    pub title: &'static str,
+    pub attack: EnvParam,
+    pub decay: EnvParam,
+    pub sustain: EnvParam,
+    pub release: EnvParam,
+    pub color: Color32,
+}
+
+/// The points of an envelope: Attack moves sideways, Decay sideways and Sustain up and down, Release sideways.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EnvHandle {
+    Attack,
+    Decay,
+    Release,
+}
+
+pub const ENV_POINT_R: f32 = 5.0;
+/// Half the side of the square around a point that takes the mouse.
+pub const ENV_HIT_R: f32 = 10.0;
+/// Shift: drags move ten times less.
+pub const ENV_FINE: f32 = 0.1;
+
+/// The area the curve uses inside an editor of `rect`: a point at either end stays whole inside, drawn and clickable.
+pub fn env_plot(rect: Rect) -> Rect {
+    rect.shrink(ENV_POINT_R + 2.0)
+}
+
+fn env_unit_log(p: &EnvParam) -> f32 {
+    value_to_unit_log(p.value, p.min, p.max)
+}
+
+/// The x of the end of attack, decay, sustain hold and release. Each stage has a quarter of the width on a log scale
+/// of its own range; the sustain hold has a fixed quarter.
+fn env_xs(spec: &EnvSpec, plot: Rect) -> [f32; 4] {
+    let zone = plot.width() / 4.0;
+    let xa = plot.left() + zone * env_unit_log(&spec.attack);
+    let xd = xa + zone * env_unit_log(&spec.decay);
+    let xs = xd + zone;
+    let xr = xs + zone * env_unit_log(&spec.release);
+    [xa, xd, xs, xr]
+}
+
+fn env_level_y(level: f32, plot: Rect) -> f32 {
+    plot.bottom() - plot.height() * level
+}
+
+fn env_sustain_level(spec: &EnvSpec) -> f32 {
+    value_to_unit(spec.sustain.value, spec.sustain.min, spec.sustain.max)
+}
+
+/// Where point `h` is drawn: Attack at the top, Decay at the sustain level, Release at the bottom.
+pub fn env_handle_pos(spec: &EnvSpec, h: EnvHandle, plot: Rect) -> Pos2 {
+    let [xa, xd, _, xr] = env_xs(spec, plot);
+    match h {
+        EnvHandle::Attack => pos2(xa, plot.top()),
+        EnvHandle::Decay => pos2(xd, env_level_y(env_sustain_level(spec), plot)),
+        EnvHandle::Release => pos2(xr, plot.bottom()),
+    }
+}
+
+/// The points that can be dragged: a point whose stages are all fixed has none.
+pub fn env_handles(spec: &EnvSpec) -> Vec<EnvHandle> {
+    let mut out = Vec::new();
+    if spec.attack.id.is_some() {
+        out.push(EnvHandle::Attack);
+    }
+    if spec.decay.id.is_some() || spec.sustain.id.is_some() {
+        out.push(EnvHandle::Decay);
+    }
+    if spec.release.id.is_some() {
+        out.push(EnvHandle::Release);
+    }
+    out
+}
+
+/// The curve, from silence through the linear attack, the decay towards the sustain, a fixed hold and the release,
+/// with `n` samples per curved stage, at the levels of `ondina_dsp::util::adsr_level` (what the synth plays).
+pub fn env_curve(spec: &EnvSpec, plot: Rect, n: usize) -> Vec<Pos2> {
+    let n = n.max(2);
+    let [xa, xd, xs, xr] = env_xs(spec, plot);
+    let (a, d, s, r) = (spec.attack.value, spec.decay.value, env_sustain_level(spec), spec.release.value);
+    let y = |level: f32| env_level_y(level.clamp(0.0, 1.0), plot);
+    let mut pts = vec![pos2(plot.left(), plot.bottom()), pos2(xa, plot.top())];
+    for i in 1..=n {
+        let f = i as f32 / n as f32;
+        pts.push(pos2(xa + (xd - xa) * f, y(adsr_level(a, d, s, r, f32::INFINITY, a + d * f))));
+    }
+    // released long after the decay: the release starts from the sustain level, as the hold shows
+    let held = a + 10.0 * d.max(0.0005);
+    pts.push(pos2(xs, y(adsr_level(a, d, s, r, held, held))));
+    for i in 1..n {
+        let f = i as f32 / n as f32;
+        pts.push(pos2(xs + (xr - xs) * f, y(adsr_level(a, d, s, r, held, held + r * f))));
+    }
+    pts.push(pos2(xr, plot.bottom()));
+    pts
+}
+
+/// The values after point `h`, which was at `start`, has moved `moved` points: each time follows x inside its
+/// quarter on a log scale, the sustain follows y; each clamped to its range. Only the stages with a parameter.
+pub fn env_drag(spec: &EnvSpec, h: EnvHandle, start: Pos2, moved: Vec2, plot: Rect) -> BTreeMap<String, f32> {
+    let mut out = BTreeMap::new();
+    let zone = plot.width() / 4.0;
+    if zone <= 0.0 || plot.height() <= 0.0 {
+        return out;
+    }
+    let (x, y) = (start.x + moved.x, start.y + moved.y);
+    let [xa, _, xs, _] = env_xs(spec, plot);
+    let mut time = |p: &EnvParam, from: f32| {
+        if let Some(id) = p.id {
+            out.insert(id.to_string(), unit_to_value_log((x - from) / zone, p.min, p.max));
+        }
+    };
+    match h {
+        EnvHandle::Attack => time(&spec.attack, plot.left()),
+        EnvHandle::Decay => time(&spec.decay, xa),
+        EnvHandle::Release => time(&spec.release, xs),
+    }
+    if let (EnvHandle::Decay, Some(id)) = (h, spec.sustain.id) {
+        let p = &spec.sustain;
+        out.insert(id.to_string(), unit_to_value((plot.bottom() - y) / plot.height(), p.min, p.max));
+    }
+    out
+}
+
+/// Pointer movement since the drag started, Shift moving ten times less.
+pub fn env_accumulate(moved: Vec2, delta: Vec2, fine: bool) -> Vec2 {
+    moved + if fine { delta * ENV_FINE } else { delta }
+}
+
+fn env_stages(spec: &EnvSpec, h: EnvHandle) -> Vec<(&'static str, EnvParam)> {
+    match h {
+        EnvHandle::Attack => vec![("Attack", spec.attack)],
+        EnvHandle::Decay => vec![("Decay", spec.decay), ("Sustain", spec.sustain)],
+        EnvHandle::Release => vec![("Release", spec.release)],
+    }
+}
+
+/// The stages of point `h` back to their defaults (Decay: decay and sustain), as one change.
+pub fn env_reset(spec: &EnvSpec, h: EnvHandle) -> BTreeMap<String, f32> {
+    env_stages(spec, h).into_iter().filter_map(|(_, p)| p.id.map(|id| (id.to_string(), p.default))).collect()
+}
+
+/// "Attack 5.0 ms", "Decay 200 ms · Sustain 0.80", "Release 1.50 s": the stages of point `h` with their units.
+pub fn env_readout(spec: &EnvSpec, h: EnvHandle) -> String {
+    env_stages(spec, h)
+        .into_iter()
+        .filter(|(_, p)| p.id.is_some())
+        .map(|(name, p)| if name == "Sustain" { format!("{name} {:.2}", p.value) } else { format!("{name} {}", format_param_value(p.value, "s")) })
+        .collect::<Vec<_>>()
+        .join(" \u{00B7} ")
+}
+
+/// The undo key of a drag of point `h` in the editor named `prefix`: one key per gesture.
+pub fn env_drag_key(prefix: &str, h: EnvHandle, gesture: u64) -> String {
+    let c = match h {
+        EnvHandle::Attack => 'A',
+        EnvHandle::Decay => 'D',
+        EnvHandle::Release => 'R',
+    };
+    format!("{prefix}:{c}#{gesture}")
+}
+
+/// Where the readout of a point at `point` goes: centered above it, below when there is no room above, kept
+/// inside `area` by SP_1.
+pub fn graph_readout_rect(point: Pos2, size: Vec2, area: Rect, point_r: f32) -> Rect {
+    let gap = point_r + theme::SP_3;
+    let mut y = point.y - gap - size.y;
+    if y < area.top() {
+        y = point.y + gap;
+    }
+    let inner = area.shrink(theme::SP_1);
+    let x = (point.x - size.x / 2.0).min(inner.right() - size.x).max(inner.left());
+    Rect::from_min_size(pos2(x, y), size)
+}
+
+/// Draws `text` in a raised box placed by [`graph_readout_rect`].
+pub fn paint_graph_readout(painter: &Painter, text: String, point: Pos2, area: Rect, point_r: f32) {
+    let galley = painter.layout_no_wrap(text, theme::number_font(), theme::TEXT);
+    let size = galley.size() + Vec2::splat(2.0 * theme::SP_3);
+    let r = graph_readout_rect(point, size, area, point_r);
+    painter.rect(r, theme::R_LG, theme::RAISED, Stroke::new(1.0_f32, theme::BORDER));
+    painter.galley(r.min + Vec2::splat(theme::SP_3), galley, theme::TEXT);
+}
+
+/// Fills the area between the polyline `pts` (x growing) and the horizontal line at `base`.
+pub fn fill_under(painter: &Painter, pts: &[Pos2], base: f32, color: Color32) {
+    if pts.len() < 2 {
+        return;
+    }
+    let mut mesh = egui::Mesh::default();
+    for p in pts {
+        mesh.colored_vertex(*p, color);
+        mesh.colored_vertex(pos2(p.x, base), color);
+    }
+    for i in 0..pts.len() as u32 - 1 {
+        let k = 2 * i;
+        mesh.add_triangle(k, k + 1, k + 2);
+        mesh.add_triangle(k + 1, k + 3, k + 2);
+    }
+    painter.add(Shape::mesh(mesh));
+}
+
+/// A color with its alpha replaced.
+pub fn with_alpha(c: Color32, alpha: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha)
+}
+
+/// The drag going on in an envelope editor, kept in egui's memory between frames.
+#[derive(Clone, Copy)]
+struct EnvDrag {
+    handle: EnvHandle,
+    start: Pos2,
+    moved: Vec2,
+}
+
+fn env_param(spec: &EnvSpec, id: &str) -> Option<f32> {
+    [spec.attack, spec.decay, spec.sustain, spec.release].into_iter().find(|p| p.id == Some(id)).map(|p| p.value)
+}
+
+/// An envelope editor `size` big: the curve, a point per draggable stage and the readout of the point under the
+/// mouse or being dragged. `key_prefix` names its undo steps ("pw7:amp"); `gesture` is the window's drag counter.
+pub fn envelope(ui: &mut Ui, spec: &EnvSpec, key_prefix: &str, size: Vec2, gesture: &mut u64) -> Vec<ParamsEdit> {
+    // the background first, hover only: the points registered after it take the clicks
+    let (rect, _bg) = ui.allocate_exact_size(size, Sense::hover());
+    let plot = env_plot(rect);
+    let drag_id = egui::Id::new(("env-drag", key_prefix));
+    let mut drag: Option<EnvDrag> = ui.data(|d| d.get_temp(drag_id));
+    let fine = ui.input(|i| i.modifiers.shift);
+    let mut edits = Vec::new();
+    let mut hot: Option<EnvHandle> = None;
+    for h in env_handles(spec) {
+        let pos = env_handle_pos(spec, h, plot);
+        let r = ui.interact(Rect::from_center_size(pos, Vec2::splat(2.0 * ENV_HIT_R)), ui.id().with(("env", key_prefix, h)), Sense::click_and_drag());
+        if r.drag_started_by(egui::PointerButton::Primary) {
+            *gesture += 1;
+            drag = Some(EnvDrag { handle: h, start: pos, moved: Vec2::ZERO });
+        }
+        if r.dragged_by(egui::PointerButton::Primary) {
+            if let Some(d) = drag.as_mut().filter(|d| d.handle == h) {
+                d.moved = env_accumulate(d.moved, r.drag_delta(), fine);
+                let params = env_drag(spec, h, d.start, d.moved, plot);
+                if params.iter().any(|(k, v)| env_param(spec, k) != Some(*v)) {
+                    edits.push(ParamsEdit::Drag { params, key: env_drag_key(key_prefix, h, *gesture) });
+                }
+                hot = Some(h);
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            }
+        }
+        if r.drag_stopped() {
+            drag = None;
+        }
+        if r.double_clicked() {
+            edits.push(ParamsEdit::Set { params: env_reset(spec, h) });
+        }
+        if r.hovered() {
+            if hot.is_none() {
+                hot = Some(h);
+            }
+            if !r.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            }
+        }
+    }
+    ui.data_mut(|m| match drag {
+        Some(d) => m.insert_temp(drag_id, d),
+        None => m.remove::<EnvDrag>(drag_id),
+    });
+
+    if !ui.is_rect_visible(rect) {
+        return edits;
+    }
+    let painter = ui.painter_at(rect);
+    painter.rect(rect, theme::R_LG, theme::INSET, Stroke::new(1.0_f32, theme::BORDER));
+    let zone = plot.width() / 4.0;
+    for k in 1..4 {
+        painter.vline(plot.left() + zone * k as f32, plot.y_range(), Stroke::new(1.0_f32, theme::GRID_BEAT_LINE));
+    }
+    let pts = env_curve(spec, plot, 48);
+    fill_under(&painter, &pts, plot.bottom(), with_alpha(spec.color, 40));
+    painter.add(Shape::line(pts, Stroke::new(2.0_f32, spec.color)));
+    for h in env_handles(spec) {
+        let pos = env_handle_pos(spec, h, plot);
+        painter.circle_filled(pos, ENV_POINT_R, spec.color);
+        if hot == Some(h) {
+            painter.circle_stroke(pos, ENV_POINT_R + 2.0, Stroke::new(1.5_f32, theme::TEXT));
+        }
+    }
+    painter.text(rect.left_top() + vec2(theme::SP_4, theme::SP_3), Align2::LEFT_TOP, spec.title, theme::label_font(), theme::TEXT_3);
+    if let Some(h) = hot {
+        paint_graph_readout(&painter, env_readout(spec, h), env_handle_pos(spec, h, plot), rect, ENV_POINT_R);
+    }
+    edits
+}
+
+/// Height of the keys.
+pub const KEYBOARD_H: f32 = 60.0;
+/// Height of the row above the keys (octave buttons and the held note).
+pub const KEYBOARD_ROW_H: f32 = 20.0;
+/// What a window reserves at its bottom for the keyboard: the row, the keys and the spacing.
+pub const KEYBOARD_BLOCK_H: f32 = 88.0;
+/// Highest octave the keyboard starts at: C7 = 96, top key 120.
+pub const KEYBOARD_MAX_OCTAVE: u8 = 7;
+const KEYBOARD_WHITES: usize = 15;
+const WHITE_OFFSETS: [u8; 7] = [0, 2, 4, 5, 7, 9, 11];
+/// Black keys: the semitone and the white key (index in the octave) they sit after.
+const BLACK_KEYS: [(u8, usize); 5] = [(1, 0), (3, 1), (6, 3), (8, 4), (10, 5)];
+
+/// One key of the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KeyRect {
+    pub pitch: u8,
+    pub rect: Rect,
+    pub black: bool,
+}
+
+/// The keyboard's octave and the key held down (pitch, velocity).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyboardState {
+    pub octave: u8,
+    pub held: Option<(u8, u8)>,
+}
+
+impl Default for KeyboardState {
+    /// C3 to C5.
+    fn default() -> Self {
+        KeyboardState { octave: 3, held: None }
+    }
+}
+
+/// The lowest pitch of a keyboard starting at `octave` (C3 = 48).
+pub fn keyboard_base(octave: u8) -> u8 {
+    12 * (octave.min(KEYBOARD_MAX_OCTAVE) + 1)
+}
+
+/// White keys first (15, left to right), then the black ones (10) drawn over them.
+pub fn key_rects(rect: Rect, base: u8) -> Vec<KeyRect> {
+    let w = rect.width() / KEYBOARD_WHITES as f32;
+    let mut keys = Vec::with_capacity(25);
+    for i in 0..KEYBOARD_WHITES {
+        let pitch = base.saturating_add(12 * (i / 7) as u8 + WHITE_OFFSETS[i % 7]);
+        let r = Rect::from_min_size(pos2(rect.left() + w * i as f32, rect.top()), vec2(w, rect.height()));
+        keys.push(KeyRect { pitch, rect: r, black: false });
+    }
+    for octave in 0..2 {
+        for (semi, white) in BLACK_KEYS {
+            let center = rect.left() + w * (octave * 7 + white + 1) as f32;
+            let r = Rect::from_center_size(pos2(center, rect.top() + rect.height() * 0.31), vec2(w * 0.6, rect.height() * 0.62));
+            keys.push(KeyRect { pitch: base.saturating_add(12 * octave as u8 + semi), rect: r, black: true });
+        }
+    }
+    keys
+}
+
+/// The velocity of a press at `frac` (0 top, 1 bottom) of a key's height: 32 at the top, 127 at the bottom edge.
+pub fn key_velocity(frac: f32) -> u8 {
+    (32.0 + 95.0 * frac.clamp(0.0, 1.0)).round().clamp(1.0, 127.0) as u8
+}
+
+/// The key under `pos` (black keys first) and the velocity of a press there: 32 at the top of the key, 127 at its
+/// bottom edge. None outside the keyboard.
+pub fn key_at(pos: Pos2, rect: Rect, base: u8) -> Option<(u8, u8)> {
+    if !rect.contains(pos) {
+        return None;
+    }
+    let keys = key_rects(rect, base);
+    let hit = keys.iter().rev().find(|k| k.rect.contains(pos))?;
+    Some((hit.pitch, key_velocity((pos.y - hit.rect.top()) / hit.rect.height())))
+}
+
+/// Where the keys of a keyboard widget drawn at `top_left` with `width` sit: under the row of the octave buttons.
+pub fn keyboard_keys_rect(top_left: Pos2, width: f32) -> Rect {
+    Rect::from_min_size(top_left + vec2(0.0, KEYBOARD_ROW_H + theme::SP_2), vec2(width, KEYBOARD_H))
+}
+
+impl KeyboardState {
+    /// One frame of the pointer: `under` is the key under it (with its velocity), `down` whether the button that went
+    /// down on the keyboard is still held. NoteOn on a new key, NoteOff when the button is released, when the pointer
+    /// leaves the keyboard, and before the NoteOn of the next key when it slides.
+    pub fn update(&mut self, under: Option<(u8, u8)>, down: bool) -> Vec<MidiKind> {
+        let target = if down { under } else { None };
+        match (self.held, target) {
+            (Some((held, _)), Some((pitch, _))) if held == pitch => Vec::new(),
+            (held, Some((pitch, velocity))) => {
+                let mut out: Vec<MidiKind> = held.map(|(p, _)| MidiKind::NoteOff { pitch: p }).into_iter().collect();
+                out.push(MidiKind::NoteOn { pitch, velocity });
+                self.held = Some((pitch, velocity));
+                out
+            }
+            (_, None) => self.release_all(),
+        }
+    }
+
+    /// NoteOff for the held key, if any (window closed, focus lost).
+    pub fn release_all(&mut self) -> Vec<MidiKind> {
+        self.held.take().map(|(pitch, _)| MidiKind::NoteOff { pitch }).into_iter().collect()
+    }
+
+    /// Moves the keyboard by `delta` octaves (0..=KEYBOARD_MAX_OCTAVE); a held key is released first.
+    pub fn shift_octave(&mut self, delta: i8) -> Vec<MidiKind> {
+        let out = self.release_all();
+        self.octave = (self.octave as i16 + delta as i16).clamp(0, KEYBOARD_MAX_OCTAVE as i16) as u8;
+        out
+    }
+}
+
+/// The keyboard across the available width: a row with the octave buttons and the held note, then the keys.
+/// `own_keys`: the window has its own keyboard focus (a separate window), so the Left and Right arrows move the
+/// octave while the pointer is over the keys. `active`: the window has the focus; without it the keys play nothing and
+/// a held key is released.
+pub fn keyboard(ui: &mut Ui, state: &mut KeyboardState, own_keys: bool, active: bool) -> Vec<MidiKind> {
+    let width = ui.available_width();
+    let (block, _) = ui.allocate_exact_size(vec2(width, KEYBOARD_ROW_H + theme::SP_2 + KEYBOARD_H), Sense::hover());
+    let mut out = Vec::new();
+    let side = 18.0;
+    let row_y = block.top() + (KEYBOARD_ROW_H - side) / 2.0;
+    let left = Rect::from_min_size(pos2(block.left(), row_y), Vec2::splat(side));
+    let right = Rect::from_min_size(pos2(left.right() + theme::SP_2, row_y), Vec2::splat(side));
+    if ui.put(left, |ui: &mut Ui| icon_only_button(ui, Icon::ChevronLeft, side, theme::ICON)).on_hover_text("Octave down").clicked() {
+        out.extend(state.shift_octave(-1));
+    }
+    if ui.put(right, |ui: &mut Ui| icon_only_button(ui, Icon::ChevronRight, side, theme::ICON)).on_hover_text("Octave up").clicked() {
+        out.extend(state.shift_octave(1));
+    }
+    let keys_rect = keyboard_keys_rect(block.min, width);
+    let resp = ui.interact(keys_rect, ui.id().with("keyboard-keys"), Sense::click_and_drag());
+    if own_keys && resp.hovered() && !ui.ctx().wants_keyboard_input() {
+        let (down, up) = ui.input_mut(|i| (i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft), i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)));
+        if down {
+            out.extend(state.shift_octave(-1));
+        }
+        if up {
+            out.extend(state.shift_octave(1));
+        }
+    }
+    let base = keyboard_base(state.octave);
+    let down = resp.is_pointer_button_down_on();
+    let under = ui.input(|i| i.pointer.interact_pos()).and_then(|p| key_at(p, keys_rect, base));
+    out.extend(state.update(under, down && active));
+
+    if !ui.is_rect_visible(block) {
+        return out;
+    }
+    let painter = ui.painter_at(block.expand(1.0));
+    let range = format!("{} \u{2013} {}", note_name(base), note_name(base.saturating_add(24)));
+    let text_x = right.right() + theme::SP_4;
+    let mid_y = block.top() + KEYBOARD_ROW_H / 2.0;
+    let galley = painter.layout_no_wrap(range, theme::label_font(), theme::TEXT_2);
+    let range_w = galley.size().x;
+    painter.galley(pos2(text_x, mid_y - galley.size().y / 2.0), galley, theme::TEXT_2);
+    if let Some((pitch, velocity)) = state.held {
+        let held = format!("{} \u{00B7} vel {velocity}", note_name(pitch));
+        painter.text(pos2(text_x + range_w + theme::SP_5, mid_y), Align2::LEFT_CENTER, held, theme::number_font(), theme::TEXT_2);
+    }
+    let hover = resp.hover_pos().and_then(|p| key_at(p, keys_rect, base)).map(|k| k.0);
+    let held = state.held.map(|h| h.0);
+    for k in key_rects(keys_rect, base) {
+        let fill = if held == Some(k.pitch) {
+            theme::ACCENT
+        } else if hover == Some(k.pitch) {
+            if k.black { theme::HOVER } else { theme::ICON }
+        } else if k.black {
+            theme::GROUND
+        } else {
+            theme::TEXT_2
+        };
+        let rounding = Rounding { nw: 0.0, ne: 0.0, sw: theme::R_SM, se: theme::R_SM };
+        painter.rect(k.rect, rounding, fill, Stroke::new(1.0_f32, theme::BORDER));
+        if !k.black && k.pitch % 12 == 0 {
+            painter.text(pos2(k.rect.center().x, k.rect.bottom() - theme::SP_2), Align2::CENTER_BOTTOM, note_name(k.pitch), theme::label_font(), theme::GROUND);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2238,5 +2744,270 @@ mod tests {
             "Cutoff: 2.4 kHz\nDrag up or down \u{00B7} Shift: fine \u{00B7} Double-click: default"
         );
         assert!(knob_tooltip(None, "0.53", None, true).starts_with("0.53\n"));
+    }
+
+    // ---------------------------------------------------------------- envelope editor and keyboard
+
+    fn env_spec(a: f32, d: f32, s: f32, r: f32) -> EnvSpec {
+        EnvSpec {
+            title: "AMP",
+            attack: EnvParam { id: Some("attack"), value: a, min: 0.001, max: 5.0, default: 0.005 },
+            decay: EnvParam { id: Some("decay"), value: d, min: 0.001, max: 5.0, default: 0.2 },
+            sustain: EnvParam { id: Some("sustain"), value: s, min: 0.0, max: 1.0, default: 0.8 },
+            release: EnvParam { id: Some("release"), value: r, min: 0.001, max: 8.0, default: 0.25 },
+            color: theme::ACCENT,
+        }
+    }
+
+    fn env_rect() -> Rect {
+        Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 100.0))
+    }
+
+    #[test]
+    fn envelope_handles_follow_the_parameters() {
+        let plot = env_rect();
+        let zone = plot.width() / 4.0;
+        let at = |spec: &EnvSpec, h| env_handle_pos(spec, h, plot);
+        assert_eq!(at(&env_spec(0.001, 0.2, 0.8, 0.25), EnvHandle::Attack), pos2(plot.left(), plot.top()));
+        assert!(close(at(&env_spec(5.0, 0.2, 0.8, 0.25), EnvHandle::Attack).x, plot.left() + zone, 1e-3));
+        let d1 = at(&env_spec(0.01, 0.2, 0.5, 0.25), EnvHandle::Decay);
+        let d2 = at(&env_spec(0.5, 0.2, 0.5, 0.25), EnvHandle::Decay);
+        assert!(d2.x > d1.x, "{d1:?} {d2:?}");
+        assert!(close(d1.y, plot.center().y, 1e-3));
+        let spec = env_spec(0.01, 0.2, 0.5, 0.25);
+        let xs = at(&spec, EnvHandle::Decay).x + zone;
+        let u = value_to_unit_log(0.25, 0.001, 8.0);
+        let rel = at(&spec, EnvHandle::Release);
+        assert!(close(rel.x, xs + zone * u, 1e-3) && rel.y == plot.bottom(), "{rel:?}");
+        assert_eq!(env_handles(&spec), [EnvHandle::Attack, EnvHandle::Decay, EnvHandle::Release]);
+        let mut fixed = spec;
+        fixed.attack.id = None;
+        fixed.release.id = None;
+        assert_eq!(env_handles(&fixed), [EnvHandle::Decay]);
+        let r = Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 50.0));
+        assert_eq!(env_plot(r), r.shrink(ENV_POINT_R + 2.0));
+    }
+
+    #[test]
+    fn envelope_drag_clamps_to_each_range() {
+        let plot = env_rect();
+        let spec = env_spec(0.01, 0.2, 0.5, 0.25);
+        let drag = |h, m: Vec2| env_drag(&spec, h, env_handle_pos(&spec, h, plot), m, plot);
+        assert_eq!(drag(EnvHandle::Attack, vec2(1e5, 0.0))["attack"], 5.0);
+        assert_eq!(drag(EnvHandle::Attack, vec2(-1e5, 0.0))["attack"], 0.001);
+        assert_eq!(drag(EnvHandle::Release, vec2(1e5, 0.0))["release"], 8.0);
+        assert_eq!(drag(EnvHandle::Release, vec2(-1e5, 0.0))["release"], 0.001);
+        let up = drag(EnvHandle::Decay, vec2(1e5, -1e5));
+        assert_eq!(up.keys().collect::<Vec<_>>(), ["decay", "sustain"]);
+        assert_eq!((up["decay"], up["sustain"]), (5.0, 1.0));
+        let down = drag(EnvHandle::Decay, vec2(-1e5, 1e5));
+        assert_eq!((down["decay"], down["sustain"]), (0.001, 0.0));
+        assert_eq!(drag(EnvHandle::Attack, Vec2::ZERO).keys().collect::<Vec<_>>(), ["attack"]);
+        for (h, id, v) in [(EnvHandle::Attack, "attack", 0.01), (EnvHandle::Decay, "decay", 0.2), (EnvHandle::Decay, "sustain", 0.5), (EnvHandle::Release, "release", 0.25)] {
+            let still = drag(h, Vec2::ZERO);
+            assert!(close(still[id], v, 1e-3), "{id}: {still:?}");
+        }
+        let mut fixed = spec;
+        fixed.decay.id = None;
+        let only_sustain = env_drag(&fixed, EnvHandle::Decay, env_handle_pos(&fixed, EnvHandle::Decay, plot), vec2(50.0, -10.0), plot);
+        assert_eq!(only_sustain.keys().collect::<Vec<_>>(), ["sustain"]);
+        fixed.attack.id = None;
+        assert!(env_drag(&fixed, EnvHandle::Attack, plot.left_top(), vec2(50.0, 0.0), plot).is_empty());
+        assert_eq!(env_accumulate(Vec2::ZERO, vec2(100.0, -40.0), true), vec2(10.0, -4.0));
+        assert_eq!(env_accumulate(vec2(1.0, 1.0), vec2(100.0, -40.0), false), vec2(101.0, -39.0));
+    }
+
+    #[test]
+    fn envelope_reset_uses_defaults() {
+        let spec = env_spec(1.0, 2.0, 0.1, 3.0);
+        let m = |kv: &[(&str, f32)]| kv.iter().map(|(k, v)| (k.to_string(), *v)).collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(env_reset(&spec, EnvHandle::Attack), m(&[("attack", 0.005)]));
+        assert_eq!(env_reset(&spec, EnvHandle::Decay), m(&[("decay", 0.2), ("sustain", 0.8)]));
+        assert_eq!(env_reset(&spec, EnvHandle::Release), m(&[("release", 0.25)]));
+        let mut fixed = spec;
+        fixed.release.id = None;
+        assert!(env_reset(&fixed, EnvHandle::Release).is_empty());
+    }
+
+    #[test]
+    fn envelope_readout_shows_value_and_unit() {
+        let spec = env_spec(0.005, 0.2, 0.8, 1.5);
+        assert_eq!(env_readout(&spec, EnvHandle::Attack), "Attack 5.0 ms");
+        assert_eq!(env_readout(&spec, EnvHandle::Decay), "Decay 200 ms \u{00B7} Sustain 0.80");
+        assert_eq!(env_readout(&spec, EnvHandle::Release), "Release 1.50 s");
+        let mut fixed = spec;
+        fixed.decay.id = None;
+        assert_eq!(env_readout(&fixed, EnvHandle::Decay), "Sustain 0.80");
+    }
+
+    #[test]
+    fn envelope_curve_matches_the_dsp_levels() {
+        let plot = env_rect();
+        let y = |level: f32| plot.bottom() - plot.height() * level;
+        let spec = env_spec(0.05, 0.3, 0.4, 0.5);
+        let pts = env_curve(&spec, plot, 32);
+        let a = env_handle_pos(&spec, EnvHandle::Attack, plot);
+        let d = env_handle_pos(&spec, EnvHandle::Decay, plot);
+        assert_eq!(pts[0], pos2(plot.left(), plot.bottom()));
+        assert!(pts.iter().any(|p| close(p.x, a.x, 1e-3) && close(p.y, plot.top(), 1e-3)));
+        let at_d = pts.iter().filter(|p| close(p.x, d.x, 1e-3)).map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
+        assert!(close(at_d, y(0.4), 1.5), "{at_d} vs {}", y(0.4));
+        let mid = pts.iter().find(|p| p.x > a.x + 1.0 && p.x < d.x - 1.0).copied().unwrap();
+        let t = (mid.x - a.x) / (d.x - a.x) * 0.3;
+        let level = ondina_dsp::util::adsr_level(0.05, 0.3, 0.4, 0.5, f32::INFINITY, 0.05 + t);
+        assert!(close(mid.y, y(level), 1e-2), "{mid:?} {level}");
+        let last = *pts.last().unwrap();
+        assert_eq!(last, env_handle_pos(&spec, EnvHandle::Release, plot));
+        assert_eq!(last.y, plot.bottom());
+        for spec in [env_spec(0.001, 0.001, 0.0, 0.001), env_spec(0.001, 0.001, 1.0, 0.001), env_spec(5.0, 5.0, 1.0, 8.0)] {
+            for p in env_curve(&spec, plot, 16) {
+                assert!(p.x.is_finite() && p.y.is_finite() && plot.expand(0.01).contains(p), "{p:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn env_drag_key_names_the_gesture() {
+        assert_eq!(env_drag_key("pw7:amp", EnvHandle::Decay, 3), "pw7:amp:D#3");
+        assert_eq!(env_drag_key("pw7:amp", EnvHandle::Attack, 1), "pw7:amp:A#1");
+        assert_eq!(env_drag_key("pw7:fenv", EnvHandle::Release, 2), "pw7:fenv:R#2");
+    }
+
+    #[test]
+    fn keyboard_keys_cover_two_octaves() {
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(300.0, 60.0));
+        let keys = key_rects(rect, 48);
+        assert_eq!(keys.len(), 25);
+        assert_eq!(keys.iter().filter(|k| !k.black).count(), 15);
+        assert_eq!(keys.iter().filter(|k| k.black).count(), 10);
+        assert!(keys[..15].iter().all(|k| !k.black), "whites first");
+        let mut pitches: Vec<u8> = keys.iter().map(|k| k.pitch).collect();
+        pitches.sort();
+        assert_eq!(pitches, (48..=72).collect::<Vec<u8>>());
+        let white_w = 300.0 / 15.0;
+        let cs = keys.iter().find(|k| k.pitch == 49).unwrap();
+        assert!(cs.black && cs.rect.height() < 60.0 && close(cs.rect.center().x, white_w, 1e-3), "{cs:?}");
+        let fs = keys.iter().find(|k| k.pitch == 54).unwrap();
+        assert!(close(fs.rect.center().x, 4.0 * white_w, 1e-3), "{fs:?}");
+        assert_eq!(key_at(pos2(cs.rect.center().x, 5.0), rect, 48).map(|k| k.0), Some(49));
+        assert_eq!(key_at(pos2(cs.rect.center().x, 55.0), rect, 48).map(|k| k.0), Some(50));
+        assert_eq!(key_at(pos2(white_w * 0.3, 55.0), rect, 48).map(|k| k.0), Some(48));
+        let top = key_at(pos2(white_w * 0.3, 1.0), rect, 48).unwrap().1;
+        let bottom = key_at(pos2(white_w * 0.3, 59.0), rect, 48).unwrap().1;
+        assert!(bottom > top && (1..=127).contains(&top) && (1..=127).contains(&bottom), "{top} {bottom}");
+        assert_eq!(key_at(pos2(299.0, 30.0), rect, 48).map(|k| k.0), Some(72));
+        assert_eq!(key_at(pos2(-1.0, 30.0), rect, 48), None);
+        assert_eq!(key_at(pos2(100.0, 61.0), rect, 48), None);
+        assert_eq!(keyboard_base(3), 48);
+        assert_eq!(keyboard_base(9), keyboard_base(7));
+        assert_eq!(key_velocity(0.0), 32);
+        assert_eq!(key_velocity(1.0), 127);
+    }
+
+    #[test]
+    fn keyboard_state_sends_on_and_off() {
+        use ondina_dsp::MidiKind::{NoteOff, NoteOn};
+        let mut k = KeyboardState::default();
+        assert_eq!(k.octave, 3);
+        assert_eq!(k.update(Some((60, 90)), true), [NoteOn { pitch: 60, velocity: 90 }]);
+        assert_eq!(k.update(Some((60, 100)), true), []);
+        assert_eq!(k.update(Some((62, 80)), true), [NoteOff { pitch: 60 }, NoteOn { pitch: 62, velocity: 80 }]);
+        assert_eq!(k.update(None, true), [NoteOff { pitch: 62 }]);
+        assert_eq!(k.update(None, true), []);
+        assert_eq!(k.update(Some((64, 70)), true), [NoteOn { pitch: 64, velocity: 70 }]);
+        assert_eq!(k.update(Some((64, 70)), false), [NoteOff { pitch: 64 }]);
+        assert_eq!(k.update(Some((64, 70)), false), []);
+        assert_eq!(k.release_all(), []);
+        k.update(Some((50, 70)), true);
+        assert_eq!(k.release_all(), [NoteOff { pitch: 50 }]);
+        assert_eq!(k.held, None);
+        k.update(Some((50, 70)), true);
+        assert_eq!(k.shift_octave(1), [NoteOff { pitch: 50 }]);
+        assert_eq!(k.octave, 4);
+        assert_eq!(k.shift_octave(-9), []);
+        assert_eq!(k.octave, 0);
+        k.shift_octave(20);
+        assert_eq!(k.octave, KEYBOARD_MAX_OCTAVE);
+    }
+
+    fn rig_press(pos: Pos2, button: PointerButton, pressed: bool) -> Event {
+        Event::PointerButton { pos, button, pressed, modifiers: Modifiers::NONE }
+    }
+
+    /// Frames of `draw` in a headless 800x600 context, one per entry of `frames`; returns where the widget started
+    /// and the width it had.
+    fn rig_frames(frames: &[Vec<Event>], mut draw: impl FnMut(&mut Ui)) -> (Pos2, f32) {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut start = (Pos2::ZERO, 0.0);
+        for (k, events) in frames.iter().enumerate() {
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+                time: Some(k as f64 / 60.0),
+                events: events.clone(),
+                ..Default::default()
+            };
+            let _ = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    start = (ui.available_rect_before_wrap().min, ui.available_width());
+                    draw(ui);
+                });
+            });
+        }
+        start
+    }
+
+    #[test]
+    fn envelope_drag_sends_one_gesture() {
+        let spec = env_spec(0.01, 0.2, 0.5, 0.25);
+        let size = vec2(400.0, 110.0);
+        let (start, _) = rig_frames(&[vec![]], |ui| {
+            envelope(ui, &spec, "pw3:amp", size, &mut 0);
+        });
+        let plot = env_plot(Rect::from_min_size(start, size));
+        let p = env_handle_pos(&spec, EnvHandle::Decay, plot);
+        let mut frames = vec![vec![], vec![Event::PointerMoved(p)], vec![rig_press(p, PointerButton::Primary, true)]];
+        for k in 1..=3 {
+            frames.push(vec![Event::PointerMoved(p + vec2(8.0, -6.0) * k as f32)]);
+        }
+        frames.push(vec![rig_press(p + vec2(24.0, -18.0), PointerButton::Primary, false)]);
+        let mut g = 0;
+        let mut edits = Vec::new();
+        rig_frames(&frames, |ui| edits.extend(envelope(ui, &spec, "pw3:amp", size, &mut g)));
+        assert!(!edits.is_empty());
+        assert_eq!(g, 1);
+        for e in &edits {
+            assert!(matches!(e, ParamsEdit::Drag { key, .. } if key == "pw3:amp:D#1"), "{e:?}");
+        }
+        let ParamsEdit::Drag { params, .. } = edits.last().unwrap() else { unreachable!() };
+        assert!(params["decay"] > 0.2 && params["sustain"] > 0.5, "{params:?}");
+
+        let click = |pressed| vec![rig_press(p, PointerButton::Primary, pressed)];
+        let frames = [vec![], vec![Event::PointerMoved(p)], click(true), click(false), click(true), click(false)];
+        let mut g = 0;
+        let mut edits = Vec::new();
+        rig_frames(&frames, |ui| edits.extend(envelope(ui, &spec, "pw3:amp", size, &mut g)));
+        let reset: std::collections::BTreeMap<String, f32> = [("decay".to_string(), 0.2), ("sustain".to_string(), 0.8)].into();
+        assert_eq!(edits, [ParamsEdit::Set { params: reset }]);
+        assert_eq!(g, 0);
+    }
+
+    #[test]
+    fn keyboard_press_and_leave_in_a_frame_harness() {
+        use ondina_dsp::MidiKind::{NoteOff, NoteOn};
+        let mut state = KeyboardState::default();
+        let (start, width) = rig_frames(&[vec![]], |ui| {
+            keyboard(ui, &mut KeyboardState::default(), false, true);
+        });
+        let keys = keyboard_keys_rect(start, width);
+        let white = pos2(keys.left() + keys.width() / 30.0, keys.bottom() - 5.0);
+        let outside = pos2(white.x, keys.bottom() + 80.0);
+        let frames = [vec![], vec![Event::PointerMoved(white)], vec![rig_press(white, PointerButton::Primary, true)], vec![Event::PointerMoved(outside)], vec![rig_press(outside, PointerButton::Primary, false)], vec![]];
+        let mut events = Vec::new();
+        rig_frames(&frames, |ui| events.extend(keyboard(ui, &mut state, false, true)));
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert!(matches!(events[0], NoteOn { pitch: 48, velocity } if velocity > 100), "{events:?}");
+        assert_eq!(events[1], NoteOff { pitch: 48 });
+        assert_eq!(state.held, None);
     }
 }

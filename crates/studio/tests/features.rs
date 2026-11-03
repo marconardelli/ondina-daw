@@ -3708,3 +3708,173 @@ fn limiter_saved_without_true_peak_reads_off_and_sounds_the_same() {
     assert_eq!(la, lb, "left channel changed");
     assert_eq!(ra, rb, "right channel changed");
 }
+
+/// An instrument track called `name` playing `instrument`, and the instrument's plug-in id.
+fn synth_track(s: &mut Session, name: &str, instrument: &str) -> (u64, u64) {
+    let t = ok(s, "add_track", json!({"kind": "instrument", "name": name, "instrument": instrument}))["track_id"].as_u64().unwrap();
+    let fx = s.project.track(t).unwrap().instrument.as_ref().unwrap().id;
+    (t, fx)
+}
+
+/// The Analog Synth's filter curve the plug-in window draws for `fx`, at `f` Hz, from the project's values.
+fn synth_curve(s: &Session, fx: u64, f: f32) -> f32 {
+    let inst = s.project.find_plugin(fx).unwrap();
+    ondina_dsp::synth::analog_filter_db(inst.param("filter_type"), inst.param("cutoff"), inst.param("resonance"), f, 48000.0)
+}
+
+/// The level of the amp envelope the window draws for `fx`, `t` seconds into a held note.
+fn amp_level(s: &Session, fx: u64, t: f32) -> f32 {
+    let inst = s.project.find_plugin(fx).unwrap();
+    ondina_dsp::util::adsr_level(inst.param("attack"), inst.param("decay"), inst.param("sustain"), inst.param("release"), f32::INFINITY, t)
+}
+
+#[test]
+fn synth_view_follows_the_assistant_and_undo() {
+    let mut s = Session::new(false);
+    let (_, fx) = synth_track(&mut s, "Lead", "analog_synth");
+    let before = plugin_values(&mut s, fx);
+    let (curve_at_5k, level_at_06) = (synth_curve(&s, fx, 5000.0), amp_level(&s, fx, 0.6));
+    s.begin_undo_group("assistant: A warm pad that opens slowly");
+    run(&mut s, "set_plugin_params", json!({"plugin_id": fx, "params": {"attack": 1.2, "f_attack": 2.0, "cutoff": 600, "resonance": 0.6, "filter_env": 0.5}}), Source::Ai);
+    s.end_undo_group();
+    // the window reads the project the session publishes every frame: this is what it draws at once
+    let half = amp_level(&s, fx, 0.6);
+    assert!((half - 0.5).abs() <= 1e-3, "the linear attack is half way: {half}");
+    let peak = synth_curve(&s, fx, 600.0);
+    assert!((peak - ondina_dsp::synth::analog_resonance_db(0.6)).abs() <= 0.05, "{peak}");
+    let far = synth_curve(&s, fx, 5000.0);
+    assert!(far < curve_at_5k - 12.0, "{far} vs {curve_at_5k}");
+    assert_eq!(s.can_undo(), Some("assistant: A warm pad that opens slowly"));
+    assert!(s.last_undo_is_ai());
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(plugin_values(&mut s, fx), before, "one undo restores every parameter");
+    assert_eq!(synth_curve(&s, fx, 5000.0), curve_at_5k);
+    assert_eq!(amp_level(&s, fx, 0.6), level_at_06);
+    s.execute(Command::Redo {}, Source::Gui).unwrap();
+    assert!((amp_level(&s, fx, 0.6) - half).abs() <= 1e-6);
+    assert!((synth_curve(&s, fx, 600.0) - peak).abs() <= 1e-6);
+}
+
+#[test]
+fn synth_envelope_drag_is_one_undo_step() {
+    let mut s = Session::new(false);
+    let (_, fx) = synth_track(&mut s, "Lead", "analog_synth");
+    // the merge keys have the format of the envelope editor's env_drag_key ("pw{plugin}:amp:D#{gesture}") and the
+    // filter wheel's key ("pw{plugin}:filter:res")
+    let drag = |s: &mut Session, decay: f32, sustain: f32, key: &str| {
+        let params = [("decay".to_string(), decay), ("sustain".to_string(), sustain)].into_iter().collect();
+        s.execute_coalesced(Command::SetPluginParams { plugin_id: fx, params }, key).unwrap();
+    };
+    let first = format!("pw{fx}:amp:D#1");
+    let second = format!("pw{fx}:amp:D#2");
+    for (d, v) in [(0.3, 0.7), (0.4, 0.6), (0.5, 0.5)] {
+        drag(&mut s, d, v, &first);
+    }
+    for (d, v) in [(1.0, 0.3), (1.5, 0.2)] {
+        drag(&mut s, d, v, &second);
+    }
+    let amp = |s: &mut Session| (plugin_value(s, fx, "decay"), plugin_value(s, fx, "sustain"));
+    let close = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6;
+    assert!(close(amp(&mut s), (1.5, 0.2)));
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert!(close(amp(&mut s), (0.5, 0.5)), "the second drag is its own step: {:?}", amp(&mut s));
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert!(close(amp(&mut s), (0.2, 0.8)), "the first drag is one step: {:?}", amp(&mut s));
+    let wheel = format!("pw{fx}:filter:res");
+    for r in [0.3, 0.4, 0.5] {
+        let params = [("resonance".to_string(), r)].into_iter().collect();
+        s.execute_coalesced(Command::SetPluginParams { plugin_id: fx, params }, &wheel).unwrap();
+    }
+    assert!((plugin_value(&mut s, fx, "resonance") - 0.5).abs() < 1e-6);
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert!((plugin_value(&mut s, fx, "resonance") - 0.2).abs() < 1e-6, "close wheel turns are one step");
+}
+
+#[test]
+fn synth_quick_actions_are_covered_by_the_local_tools() {
+    use ondina_studio::local_ai::LOCAL_TOOLS;
+    use ondina_studio::prompts::plugin_quick_actions;
+    let all: Vec<String> = tool_specs().into_iter().map(|t| t.name).collect();
+    for kind in ["analog_synth", "fm_synth"] {
+        for (label, text) in plugin_quick_actions(kind).iter().filter(|a| !a.1.is_empty()) {
+            for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')) {
+                if all.iter().any(|t| t == word) {
+                    assert!(LOCAL_TOOLS.contains(&word), "{word}, named by {kind} {label:?}, is not offered to the local model");
+                }
+            }
+            assert!(text.contains("set_plugin_params"), "{kind} {label:?} changes the parameters with set_plugin_params");
+            if label.contains("bass for this song") {
+                assert!(text.contains("get_project"), "{kind} {label:?} reads the song with get_project");
+            }
+            for tool in ["get_project", "set_plugin_params"] {
+                assert!(LOCAL_TOOLS.contains(&tool), "{tool} is needed by {kind} {label:?}");
+            }
+            assert!(text.contains("explain in a few lines which parameters you changed and why"), "{kind} {label:?} must ask for an explanation");
+        }
+    }
+}
+
+#[test]
+fn synth_panel_gets_its_quick_actions_and_full_context() {
+    use ondina_studio::prompts;
+    let mut s = Session::new(false);
+    let (t, fx) = synth_track(&mut s, "Lead", "analog_synth");
+    let ctx = prompts::plugin_context(&s.project, fx).expect("the synth has a context");
+    assert!(ctx.contains("(kind analog_synth)") && ctx.contains("\"Lead\"") && ctx.contains("the instrument"), "{ctx}");
+    let info = ondina_core::plugins::find("analog_synth").unwrap();
+    assert_eq!(info.params.len(), 28);
+    for p in info.params {
+        assert!(ctx.contains(&format!("- {} ", p.id)), "{} missing from the context", p.id);
+    }
+    for want in ["- cutoff \"Cutoff\" = 2500 [20..20000 Hz]", "- attack \"Amp Attack\" = 0.005 [0.001..5 s]", "1 Square"] {
+        assert!(ctx.contains(want), "missing {want:?} in {ctx}");
+    }
+    let bar = prompts::plugin_bar_context(&s.project, fx).expect("the synth has a bar context");
+    assert!(bar.contains("set_plugin_params") && bar.contains(&ctx), "{bar}");
+    assert!(ctx.contains(&format!("track {t}")), "{ctx}");
+
+    let (_, fm) = synth_track(&mut s, "Keys", "fm_synth");
+    let ctx = prompts::plugin_context(&s.project, fm).unwrap();
+    let info = ondina_core::plugins::find("fm_synth").unwrap();
+    assert_eq!(info.params.len(), 13);
+    for p in info.params {
+        assert!(ctx.contains(&format!("- {} ", p.id)), "{} missing from the context", p.id);
+    }
+    let bar = prompts::plugin_bar_context(&s.project, fm).unwrap();
+    assert!(bar.contains("set_plugin_params") && bar.contains(&ctx));
+    assert_eq!(prompts::plugin_quick_actions("analog_synth").len(), 3);
+    assert_eq!(prompts::plugin_quick_actions("fm_synth").len(), 3);
+}
+
+#[test]
+fn get_plugin_explains_every_synth_parameter() {
+    let mut s = Session::new(false);
+    let (_, analog) = synth_track(&mut s, "Lead", "analog_synth");
+    let (_, fm) = synth_track(&mut s, "Keys", "fm_synth");
+    let times = ["attack", "decay", "release", "f_attack", "f_decay", "f_release", "index_decay"];
+    for (fx, kind) in [(analog, "analog_synth"), (fm, "fm_synth")] {
+        let info = ok(&mut s, "get_plugin", json!({"plugin_id": fx}));
+        let params = info["params"].as_array().unwrap();
+        assert_eq!(params.len(), ondina_core::plugins::find(kind).unwrap().params.len(), "{kind}");
+        for p in params {
+            let id = p["id"].as_str().unwrap();
+            let name = p["name"].as_str().unwrap();
+            let unit = p["unit"].as_str().unwrap_or_default();
+            assert!(!name.is_empty(), "{kind}: {id} has no name");
+            assert!(p["min"].as_f64().unwrap() < p["max"].as_f64().unwrap(), "{kind}: {id} has no range");
+            if times.contains(&id) {
+                assert_eq!(unit, "s", "{kind}: {id}");
+            }
+            if id == "cutoff" {
+                assert_eq!(unit, "Hz");
+            }
+            if ["osc1_wave", "osc2_wave", "filter_type"].contains(&id) {
+                assert!(p["choices"].as_array().is_some_and(|c| !c.is_empty()), "{kind}: {id} has no choices");
+            }
+        }
+    }
+    ok(&mut s, "set_plugin_param", json!({"plugin_id": analog, "param": "cutoff", "value": 800}));
+    assert_eq!(plugin_value(&mut s, analog, "cutoff"), 800.0);
+    s.execute(Command::Undo {}, Source::Gui).unwrap();
+    assert_eq!(plugin_value(&mut s, analog, "cutoff"), 2500.0);
+}
