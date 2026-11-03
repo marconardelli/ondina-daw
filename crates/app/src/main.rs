@@ -44,6 +44,7 @@ mod session_players;
 mod settings_ui;
 mod status_bar;
 mod step_paint;
+mod synth_view;
 mod transport_keys;
 
 // The look (tokens, fonts, hand-drawn controls) lives in the crate's library so later views can share it.
