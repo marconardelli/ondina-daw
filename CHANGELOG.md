@@ -7,6 +7,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-11-03
+
+### Added
+
+- Plug-in windows: a click on an insert, instrument or MIDI FX slot, in the mixer or the inspector, opens that
+  plug-in in a window of its own. The window is separate and resizable, can go to a second monitor and comes back
+  where you left it, also after a restart. A second click brings it to the front, up to eight stay open together,
+  and Esc or the X closes it.
+- A common header in every plug-in window: the plug-in and its track, Bypass, the factory presets, **Default**
+  (every parameter back to its default in one undo step) and the AI bar with its ready-made requests.
+- Knobs instead of slider lists: every parameter is a knob, with a log scale for frequencies and long times, the
+  value with its unit, Shift for fine steps, double-click for the default and right-click to type a value.
+- VST3 plug-ins open their own editor with a compact Ondina window beside it (same header and AI bar, plus
+  **Generic controls**). A VST3 without an editor opens Ondina's generic window with a knob per parameter,
+  labelled with the unit the plug-in reports, and a filter by name.
+- Settings → Display: *Open plug-ins in separate windows* (off keeps them inside the main window) and *Show the AI
+  bar beside a plug-in's own window*.
+
+### Changed
+
+- The inspector shows the selected plug-in as one row (name, track, Bypass, Open) instead of its list of
+  parameters.
+
+### Fixed
+
+- Ctrl+Shift+Z redoes in the main window too, and Space, Ctrl+Z and Ctrl+Shift+Z work inside plug-in windows.
+
 ## [0.22.0] - 2026-11-02
 
 ### Added
@@ -741,7 +768,8 @@ First public release.
   double-click / right-click delete and resizing from the right edge work again.
 - Piano roll: selected notes are clearly highlighted, also during playback.
 
-[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/marconardelli/ondina-daw/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/marconardelli/ondina-daw/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/marconardelli/ondina-daw/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/marconardelli/ondina-daw/compare/v0.20.1...v0.21.0
 [0.20.1]: https://github.com/marconardelli/ondina-daw/compare/v0.20.0...v0.20.1
