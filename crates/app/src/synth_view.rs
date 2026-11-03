@@ -478,12 +478,14 @@ impl OndinaApp {
             return;
         };
         let own_keys = ui.ctx().viewport_id() != egui::ViewportId::ROOT;
+        // the Sampler's keyboard marks the key that plays the sample at its own speed
+        let mark = p.find_plugin(pid).filter(|i| crate::sampler_view::has_sampler_view(&i.kind)).map(|i| i.param("root_note").round().clamp(0.0, 127.0) as u8);
         let entry = self.plugin_windows.keyboards.entry(pid).or_insert(InstrumentKeys { track, keys: KeyboardState::default() });
         // a NoteOff always goes where its NoteOn went
         if entry.keys.held.is_none() {
             entry.track = track;
         }
-        let events = instrument_keys_frame(ui, &mut entry.keys, own_keys);
+        let events = instrument_keys_frame(ui, &mut entry.keys, own_keys, mark);
         let to = entry.track;
         for kind in events {
             self.live_note(to, kind);
@@ -493,10 +495,10 @@ impl OndinaApp {
 
 /// One frame of an instrument keyboard: always drawn and registered, so the first click after the window gets its
 /// focus back already lands on the keys; a window without focus releases the held key and plays nothing, even if the
-/// button it lost the focus with never comes back up.
-fn instrument_keys_frame(ui: &mut egui::Ui, keys: &mut KeyboardState, own_keys: bool) -> Vec<MidiKind> {
+/// button it lost the focus with never comes back up. `mark` is a key drawn in its own color.
+fn instrument_keys_frame(ui: &mut egui::Ui, keys: &mut KeyboardState, own_keys: bool, mark: Option<u8>) -> Vec<MidiKind> {
     let focused = ui.ctx().input(|i| i.viewport().focused) != Some(false);
-    crate::widgets::keyboard(ui, keys, own_keys, focused)
+    crate::widgets::keyboard_marked(ui, keys, own_keys, focused, mark)
 }
 
 #[cfg(test)]
@@ -811,7 +813,7 @@ mod tests {
             let _ = ctx.run(raw, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     start = ui.available_rect_before_wrap().min;
-                    all.extend(instrument_keys_frame(ui, keys, true));
+                    all.extend(instrument_keys_frame(ui, keys, true, None));
                     after = ui.min_rect().bottom();
                 });
             });

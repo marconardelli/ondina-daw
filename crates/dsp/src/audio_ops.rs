@@ -182,6 +182,28 @@ pub fn yin(frame: &[f32], sr: u32, fmin: f32, fmax: f32) -> Option<(f32, f32)> {
     Some((sr as f32 / (t + shift), (1.0 - cmnd[tau]).clamp(0.0, 1.0)))
 }
 
+/// Frames `sample_pitch` reads.
+pub const PITCH_FRAME: usize = 4096;
+
+/// The pitch (Hz) a sample plays at its own speed: YIN on PITCH_FRAME frames of its mono mix, starting 20 ms after
+/// its loudest sample so the attack is left out (or ending at its end when it is shorter). None for a sample shorter
+/// than PITCH_FRAME frames, a quiet frame (RMS under 0.005), or no clear note (YIN confidence under 0.6: a drum hit,
+/// a noise, a chord). The result is between 30 Hz and 2 kHz.
+pub fn sample_pitch(d: &AudioData) -> Option<f32> {
+    let m = mono(d);
+    if m.len() < PITCH_FRAME {
+        return None;
+    }
+    let peak = m.iter().enumerate().fold((0, 0.0f32), |a, (i, v)| if v.abs() > a.1 { (i, v.abs()) } else { a }).0;
+    let start = (peak + d.sample_rate as usize / 50).min(m.len() - PITCH_FRAME);
+    let frame = &m[start..start + PITCH_FRAME];
+    let rms = (frame.iter().map(|v| v * v).sum::<f32>() / PITCH_FRAME as f32).sqrt();
+    if rms < 0.005 || !rms.is_finite() {
+        return None;
+    }
+    yin(frame, d.sample_rate, 30.0, 2000.0).filter(|(f, c)| *c >= 0.6 && f.is_finite() && (30.0..=2000.0).contains(f)).map(|(f, _)| f)
+}
+
 /// Pitch track: (time_sec, midi pitch or None, rms) per hop.
 pub fn pitch_track(x: &[f32], sr: u32) -> Vec<(f64, Option<f32>, f32)> {
     let frame = 2048usize;
@@ -544,5 +566,42 @@ mod tests {
         // reconstruction: stems sum close to input energy
         let total: f32 = st.iter().map(e).sum();
         assert!(total > 0.0);
+    }
+
+    #[test]
+    fn sample_pitch_finds_the_note_of_a_sample() {
+        let sr = 44100;
+        let d = AudioData { sample_rate: sr, channels: vec![sine(220.0, 1.0, sr)] };
+        let f = sample_pitch(&d).unwrap();
+        assert!((f - 220.0).abs() < 1.0, "got {f}");
+        let attack = (0.010 * sr as f32) as usize;
+        let rich: Vec<f32> = (0..sr as usize)
+            .map(|i| {
+                let t = i as f32 / sr as f32;
+                let env = (i as f32 / attack as f32).min(1.0);
+                env * (0.5 * (2.0 * PI * 110.0 * t).sin() + 0.25 * (2.0 * PI * 220.0 * t).sin() + 0.15 * (2.0 * PI * 330.0 * t).sin())
+            })
+            .collect();
+        let f = sample_pitch(&AudioData { sample_rate: sr, channels: vec![rich] }).unwrap();
+        assert!((f - 110.0).abs() < 1.0, "got {f}");
+        let a = sine(440.0, 1.0, 48000);
+        let f = sample_pitch(&AudioData { sample_rate: 48000, channels: vec![a.clone(), a] }).unwrap();
+        assert!((f - 440.0).abs() < 1.5, "got {f}");
+    }
+
+    #[test]
+    fn sample_pitch_is_none_without_a_clear_note() {
+        let sr = 44100;
+        assert_eq!(sample_pitch(&AudioData { sample_rate: sr, channels: vec![vec![0.0; sr as usize]] }), None);
+        let mut seed = 12345u32;
+        let noise: Vec<f32> = (0..sr as usize)
+            .map(|_| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                ((seed >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0) * 0.5
+            })
+            .collect();
+        assert_eq!(sample_pitch(&AudioData { sample_rate: sr, channels: vec![noise] }), None);
+        let short = sine(220.0, 1.0, sr)[..1000].to_vec();
+        assert_eq!(sample_pitch(&AudioData { sample_rate: sr, channels: vec![short] }), None);
     }
 }

@@ -2097,11 +2097,31 @@ impl KeyboardState {
     }
 }
 
+/// The fill of a key: held, then under the pointer, then marked (the Sampler's root note), then its plain color.
+pub fn key_fill(black: bool, held: bool, hovered: bool, marked: bool) -> Color32 {
+    if held {
+        theme::ACCENT
+    } else if hovered {
+        if black { theme::HOVER } else { theme::ICON }
+    } else if marked {
+        if black { mix(theme::GROUND, theme::SOLO, 0.6) } else { theme::SOLO }
+    } else if black {
+        theme::GROUND
+    } else {
+        theme::TEXT_2
+    }
+}
+
 /// The keyboard across the available width: a row with the octave buttons and the held note, then the keys.
 /// `own_keys`: the window has its own keyboard focus (a separate window), so the Left and Right arrows move the
 /// octave while the pointer is over the keys. `active`: the window has the focus; without it the keys play nothing and
 /// a held key is released.
 pub fn keyboard(ui: &mut Ui, state: &mut KeyboardState, own_keys: bool, active: bool) -> Vec<MidiKind> {
+    keyboard_marked(ui, state, own_keys, active, None)
+}
+
+/// `keyboard` with `mark`, a key drawn in its own color (the Sampler's root note).
+pub fn keyboard_marked(ui: &mut Ui, state: &mut KeyboardState, own_keys: bool, active: bool, mark: Option<u8>) -> Vec<MidiKind> {
     let width = ui.available_width();
     let (block, _) = ui.allocate_exact_size(vec2(width, KEYBOARD_ROW_H + theme::SP_2 + KEYBOARD_H), Sense::hover());
     let mut out = Vec::new();
@@ -2148,15 +2168,7 @@ pub fn keyboard(ui: &mut Ui, state: &mut KeyboardState, own_keys: bool, active: 
     let hover = resp.hover_pos().and_then(|p| key_at(p, keys_rect, base)).map(|k| k.0);
     let held = state.held.map(|h| h.0);
     for k in key_rects(keys_rect, base) {
-        let fill = if held == Some(k.pitch) {
-            theme::ACCENT
-        } else if hover == Some(k.pitch) {
-            if k.black { theme::HOVER } else { theme::ICON }
-        } else if k.black {
-            theme::GROUND
-        } else {
-            theme::TEXT_2
-        };
+        let fill = key_fill(k.black, held == Some(k.pitch), hover == Some(k.pitch), mark == Some(k.pitch));
         let rounding = Rounding { nw: 0.0, ne: 0.0, sw: theme::R_SM, se: theme::R_SM };
         painter.rect(k.rect, rounding, fill, Stroke::new(1.0_f32, theme::BORDER));
         if !k.black && k.pitch % 12 == 0 {
@@ -3009,5 +3021,17 @@ mod tests {
         assert!(matches!(events[0], NoteOn { pitch: 48, velocity } if velocity > 100), "{events:?}");
         assert_eq!(events[1], NoteOff { pitch: 48 });
         assert_eq!(state.held, None);
+    }
+
+    #[test]
+    fn key_fill_marks_the_root_key() {
+        assert_eq!(key_fill(false, false, false, true), theme::SOLO);
+        assert_eq!(key_fill(true, false, false, true), mix(theme::GROUND, theme::SOLO, 0.6));
+        assert_eq!(key_fill(false, true, false, true), theme::ACCENT);
+        assert_eq!(key_fill(true, true, true, true), theme::ACCENT);
+        assert_eq!(key_fill(false, false, true, true), theme::ICON);
+        assert_eq!(key_fill(true, false, true, true), theme::HOVER);
+        assert_eq!(key_fill(false, false, false, false), theme::TEXT_2);
+        assert_eq!(key_fill(true, false, false, false), theme::GROUND);
     }
 }
