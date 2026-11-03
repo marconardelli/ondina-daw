@@ -9,7 +9,7 @@ use std::sync::Arc;
 use ondina_core::command::Command;
 use ondina_core::model::{Id, Note, Project, TrackKind, MASTER_ID};
 use ondina_core::ops::{self, Outcome};
-use ondina_engine::{AudioPool, PluginMeters, Renderer};
+use ondina_engine::{AudioPool, MeterCells, PluginMeters, Renderer};
 
 struct CountingAlloc;
 
@@ -89,12 +89,12 @@ fn meter_writes_and_reads_never_allocate() {
 fn meters_add_no_allocations_to_the_render() {
     let p = project();
     let meters = Arc::new(PluginMeters::default());
-    meters.assign_project(&p);
+    let cells = meters.assign_project(&p);
     let inserts: Vec<Id> = p.tracks.iter().flat_map(|t| t.channel.inserts.iter()).chain(p.master.inserts.iter()).map(|i| i.id).collect();
     assert_eq!(inserts.len(), 7);
     let p = Arc::new(p);
     let mut with = Renderer::new(48000.0, p.clone(), Arc::new(AudioPool::new()));
-    with.set_plugin_meters(Some(meters.clone()));
+    with.set_plugin_meters(Some(meters.clone()), cells);
     let mut without = Renderer::new(48000.0, p, Arc::new(AudioPool::new()));
     with.play();
     without.play();
@@ -117,4 +117,17 @@ fn meters_add_no_allocations_to_the_render() {
     assert_eq!(with_meters, without_meters, "the meters added allocations to the render");
     let measured = inserts.iter().filter(|id| meters.read(**id).is_some()).count();
     assert_eq!(measured, inserts.len(), "every insert is measured");
+}
+
+#[test]
+fn meter_cell_lookups_never_allocate() {
+    let cells = MeterCells::new((1..=16).map(|id: Id| (id * 3, (16 - id) as usize)));
+    let n = allocations(|| {
+        for i in 0..10_000u64 {
+            let id = i % 50;
+            let cell = cells.cell(id);
+            assert_eq!(cell.is_some(), id % 3 == 0 && (3..=48).contains(&id));
+        }
+    });
+    assert_eq!(n, 0, "the cell lookups allocated {n} times");
 }

@@ -5,9 +5,13 @@
 //! belong to, behind a sequence counter. A reader ([`PluginMeters::read`]) never waits: it retries a few times if a
 //! write is in progress and only returns values stamped with the id it asked for, so a cell that changed hands
 //! never shows one plug-in's meters as another's.
+//!
+//! [`PluginMeters::assign_project`] also returns a [`MeterCells`] map, which travels to the renderer with the project
+//! snapshot: the audio thread finds an insert's cell there and never scans the table.
 
 use std::collections::HashSet;
 use std::sync::atomic::{fence, AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
 
 use ondina_core::model::{Id, Project};
 
@@ -26,6 +30,37 @@ pub struct PluginMeter {
     pub output_peak: f32,
     /// Deepest gain reduction in dB (<= 0); None for plug-ins that do not reduce, and while bypassed.
     pub gain_reduction_db: Option<f32>,
+}
+
+/// Which meter cell each insert writes to, built by the control thread when it assigns the cells and handed to the
+/// renderer with the project, so the audio thread looks a cell up without scanning the table.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct MeterCells {
+    /// Sorted by id, one entry per id.
+    by_id: Box<[(Id, u32)]>,
+}
+
+impl MeterCells {
+    /// The map of `pairs` (plug-in id, cell): sorted, without id 0 and keeping the first cell of a repeated id.
+    pub fn new(pairs: impl IntoIterator<Item = (Id, usize)>) -> MeterCells {
+        let mut v: Vec<(Id, u32)> = pairs.into_iter().filter(|(id, _)| *id != 0).map(|(id, c)| (id, c as u32)).collect();
+        v.sort_by_key(|(id, _)| *id);
+        v.dedup_by_key(|(id, _)| *id);
+        MeterCells { by_id: v.into_boxed_slice() }
+    }
+
+    /// The cell of plug-in `id`: a binary search, with no allocation and no atomic load (audio thread safe).
+    pub fn cell(&self, id: Id) -> Option<usize> {
+        self.by_id.binary_search_by_key(&id, |(i, _)| *i).ok().map(|k| self.by_id[k].1 as usize)
+    }
+
+    pub fn len(&self) -> usize {
+        self.by_id.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_id.is_empty()
+    }
 }
 
 struct MeterCell {
@@ -100,10 +135,13 @@ impl PluginMeters {
         }
     }
 
-    /// [`assign`](Self::assign) the inserts of every track and of the master. Control thread only.
-    pub fn assign_project(&self, p: &Project) {
+    /// [`assign`](Self::assign) the inserts of every track and of the master, and return the map of their cells for
+    /// the renderer. Control thread only (or before the stream starts).
+    pub fn assign_project(&self, p: &Project) -> Arc<MeterCells> {
         let ids: HashSet<Id> = p.tracks.iter().flat_map(|t| t.channel.inserts.iter()).chain(p.master.inserts.iter()).map(|i| i.id).collect();
         self.assign(&ids);
+        let owned = self.cells.iter().enumerate().map(|(k, c)| (c.owner.load(Ordering::Acquire), k)).filter(|(owner, _)| *owner != 0);
+        Arc::new(MeterCells::new(owned))
     }
 
     /// The cell given to plug-in `id`, if any (a linear scan: not for the audio block).
@@ -242,6 +280,69 @@ mod tests {
         let last = m.read(1).unwrap();
         assert!(last.input_peak < 1e-4 && last.output_peak < 1e-4, "{last:?}");
         assert!(last.gain_reduction_db.unwrap() > -0.01, "{last:?}");
+    }
+
+    /// A project with a compressor and a Channel EQ on a track and a limiter on the master.
+    fn three_inserts() -> (Project, [Id; 3]) {
+        use ondina_core::command::Command;
+        use ondina_core::model::{TrackKind, MASTER_ID};
+        use ondina_core::ops::{self, Outcome};
+        let mut p = Project::new("t");
+        let run = |p: &mut Project, c: Command| match ops::apply(p, &c).unwrap() {
+            Outcome::Done(v) => v,
+            _ => panic!(),
+        };
+        let t = run(&mut p, Command::AddTrack { kind: TrackKind::Audio, name: None, patch: None, instrument: None, preset: None, index: None })["track_id"].as_u64().unwrap();
+        let fx = |p: &mut Project, track_id: Id, kind: &str| run(p, Command::AddEffect { track_id, kind: kind.into(), preset: None, index: None })["plugin_id"].as_u64().unwrap();
+        let comp = fx(&mut p, t, "compressor");
+        let eq = fx(&mut p, t, "channel_eq");
+        let lim = fx(&mut p, MASTER_ID, "limiter");
+        (p, [comp, eq, lim])
+    }
+
+    #[test]
+    fn meter_cells_map_every_assigned_insert() {
+        let m = PluginMeters::new(8);
+        let (p, inserts) = three_inserts();
+        let cells = m.assign_project(&p);
+        assert_eq!(cells.len(), 3);
+        assert!(!cells.is_empty());
+        for id in inserts {
+            assert!(cells.cell(id).is_some(), "no cell for {id}");
+            assert_eq!(cells.cell(id), m.cell_of(id));
+        }
+        assert_eq!(cells.cell(0), None);
+        assert_eq!(cells.cell(9999), None);
+    }
+
+    #[test]
+    fn meter_cells_new_sorts_and_skips_zero() {
+        let cells = MeterCells::new([(9, 1), (0, 4), (3, 0)]);
+        assert_eq!(cells.cell(3), Some(0));
+        assert_eq!(cells.cell(9), Some(1));
+        assert_eq!(cells.cell(0), None);
+        assert_eq!(cells.len(), 2);
+        assert!(MeterCells::default().is_empty());
+        assert_eq!(MeterCells::new([(4, 2), (4, 3)]).len(), 1, "an id has one cell");
+    }
+
+    #[test]
+    fn more_inserts_than_cells_map_only_those_with_a_cell() {
+        let m = PluginMeters::new(4);
+        m.assign(&(1..=10).collect());
+        let cells = m.assign_project(&Project::new("empty"));
+        assert!(cells.is_empty(), "an empty project frees every cell");
+        let (mut p, _) = three_inserts();
+        for _ in 0..7 {
+            let mut extra = p.master.inserts[0].clone();
+            extra.id = p.alloc_id();
+            p.master.inserts.push(extra);
+        }
+        let cells = m.assign_project(&p);
+        assert_eq!(cells.len(), 4);
+        for i in p.tracks.iter().flat_map(|t| t.channel.inserts.iter()).chain(p.master.inserts.iter()) {
+            assert_eq!(cells.cell(i.id), m.cell_of(i.id));
+        }
     }
 
     #[test]

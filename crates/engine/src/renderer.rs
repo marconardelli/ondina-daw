@@ -80,7 +80,7 @@ pub struct SurroundOut {
 }
 
 use crate::analysis::Analyzer;
-use crate::plugin_meters::PluginMeters;
+use crate::plugin_meters::{MeterCells, PluginMeters};
 use crate::pool::AudioPool;
 
 pub const MAX_BLOCK: usize = 64;
@@ -203,6 +203,8 @@ pub struct Renderer {
     pub object_out: Option<HashMap<Id, Vec<f32>>>,
     /// Live meters of the inserts. Only the real-time engine attaches the table: offline renders measure nothing.
     plugin_meters: Option<Arc<PluginMeters>>,
+    /// Cell of every insert in that table, mapped by the control thread.
+    meter_cells: Arc<MeterCells>,
 }
 
 impl Renderer {
@@ -234,6 +236,7 @@ impl Renderer {
             surround_out: None,
             object_out: None,
             plugin_meters: None,
+            meter_cells: Arc::default(),
         };
         r.set_project(project);
         r
@@ -256,15 +259,22 @@ impl Renderer {
         self.set_project(p);
     }
 
-    /// Attach (or detach) the live meter table and find the cell of every insert.
-    pub fn set_plugin_meters(&mut self, meters: Option<Arc<PluginMeters>>) {
+    /// Attach (or detach) the live meter table with the cell of every insert, as the control thread mapped them.
+    pub fn set_plugin_meters(&mut self, meters: Option<Arc<PluginMeters>>, cells: Arc<MeterCells>) {
         for f in self.tracks.values_mut().flat_map(|st| st.fx.iter_mut()).chain(self.master_fx.iter_mut()) {
-            f.meter = meters.as_deref().and_then(|m| m.cell_of(f.id));
+            f.meter = if meters.is_some() { cells.cell(f.id) } else { None };
         }
         self.plugin_meters = meters;
+        self.meter_cells = cells;
     }
 
-    fn sync_fx(old: &mut Vec<FxSlot>, desired: &[PluginInstance], sr: f32, meters: Option<&PluginMeters>) {
+    /// Install a project snapshot with the meter cells the control thread assigned for it.
+    pub fn set_project_with_meters(&mut self, project: Arc<Project>, cells: Arc<MeterCells>) {
+        self.meter_cells = cells;
+        self.set_project(project);
+    }
+
+    fn sync_fx(old: &mut Vec<FxSlot>, desired: &[PluginInstance], sr: f32, cells: Option<&MeterCells>) {
         let mut pool: HashMap<Id, FxSlot> = old.drain(..).map(|s| (s.id, s)).collect();
         for p in desired {
             let slot = match pool.remove(&p.id) {
@@ -281,7 +291,7 @@ impl Renderer {
                 configure_any(&p.kind, &p.params, |k, v| s.fx.set_param(k, v));
                 s.bypass = p.bypass;
                 // Always: an id removed and added again can have another cell.
-                s.meter = meters.and_then(|m| m.cell_of(p.id));
+                s.meter = cells.and_then(|c| c.cell(p.id));
                 old.push(s);
             }
         }
@@ -290,7 +300,8 @@ impl Renderer {
     /// Install a new project snapshot, reusing DSP instances where possible.
     pub fn set_project(&mut self, project: Arc<Project>) {
         let sr = self.sr;
-        let meters = self.plugin_meters.clone();
+        // cloning the Arc does not allocate
+        let cells = self.plugin_meters.as_ref().map(|_| self.meter_cells.clone());
         let mut keep: HashSet<Id> = HashSet::new();
         for t in &project.tracks {
             keep.insert(t.id);
@@ -336,10 +347,10 @@ impl Renderer {
                     st.midi_fx.push(s);
                 }
             }
-            Self::sync_fx(&mut st.fx, &t.channel.inserts, sr, meters.as_deref());
+            Self::sync_fx(&mut st.fx, &t.channel.inserts, sr, cells.as_deref());
         }
         self.tracks.retain(|id, _| keep.contains(id));
-        Self::sync_fx(&mut self.master_fx, &project.master.inserts, sr, meters.as_deref());
+        Self::sync_fx(&mut self.master_fx, &project.master.inserts, sr, cells.as_deref());
         // refresh Clip Grid overrides from the new cell contents
         let ids: Vec<Id> = self.live_playing.keys().copied().collect();
         for tid in ids {
@@ -1247,9 +1258,9 @@ mod tests {
     fn inserts_report_their_meters_to_the_table() {
         let m = metered_project();
         let meters = Arc::new(crate::PluginMeters::default());
-        meters.assign_project(&m.project);
+        let cells = meters.assign_project(&m.project);
         let mut r = Renderer::new(48000.0, Arc::new(m.project), Arc::new(AudioPool::new()));
-        r.set_plugin_meters(Some(meters.clone()));
+        r.set_plugin_meters(Some(meters.clone()), cells);
         r.play();
         render_for(&mut r, 0.5);
         let comp = meters.read(m.comp).expect("the compressor is measured");
@@ -1268,10 +1279,10 @@ mod tests {
     fn meters_do_not_change_the_audio() {
         let m = metered_project();
         let meters = Arc::new(crate::PluginMeters::default());
-        meters.assign_project(&m.project);
+        let cells = meters.assign_project(&m.project);
         let project = Arc::new(m.project);
         let mut with = Renderer::new(48000.0, project.clone(), Arc::new(AudioPool::new()));
-        with.set_plugin_meters(Some(meters));
+        with.set_plugin_meters(Some(meters), cells);
         let mut without = Renderer::new(48000.0, project, Arc::new(AudioPool::new()));
         with.play();
         without.play();
@@ -1288,13 +1299,69 @@ mod tests {
     fn a_renderer_without_the_table_writes_nothing() {
         let m = metered_project();
         let meters = Arc::new(crate::PluginMeters::default());
-        meters.assign_project(&m.project);
+        let cells = meters.assign_project(&m.project);
         let mut r = Renderer::new(48000.0, Arc::new(m.project), Arc::new(AudioPool::new()));
         r.play();
         render_for(&mut r, 0.5);
         for id in [m.comp, m.eq, m.bypassed, m.limiter] {
-            assert!(meters.cell_of(id).is_some());
+            assert!(cells.cell(id).is_some());
             assert_eq!(meters.read(id), None, "plug-in {id} was measured without the table");
         }
+    }
+
+    #[test]
+    fn meter_cells_come_from_the_map_not_from_a_search() {
+        let m = metered_project();
+        let project = Arc::new(m.project);
+        let meters_a = Arc::new(crate::PluginMeters::default());
+        let cells = meters_a.assign_project(&project);
+        let meters_b = Arc::new(crate::PluginMeters::default());
+        let real = meters_b.assign_project(&project);
+        assert_eq!(real, cells);
+        // a map that sends the compressor to a free cell, not the one the table gave it
+        let spare = crate::PLUGIN_METER_CAPACITY - 1;
+        assert_ne!(real.cell(m.comp), Some(spare));
+        let ids = [m.comp, m.eq, m.bypassed, m.limiter];
+        let wrong = crate::MeterCells::new(ids.iter().map(|&id| (id, if id == m.comp { spare } else { real.cell(id).unwrap() })));
+        let mut a = Renderer::new(48000.0, project.clone(), Arc::new(AudioPool::new()));
+        a.set_plugin_meters(Some(meters_a.clone()), cells);
+        let mut b = Renderer::new(48000.0, project, Arc::new(AudioPool::new()));
+        b.set_plugin_meters(Some(meters_b.clone()), Arc::new(wrong));
+        a.play();
+        b.play();
+        render_for(&mut a, 0.5);
+        render_for(&mut b, 0.5);
+        assert!(meters_a.read(m.comp).is_some());
+        assert_eq!(meters_b.read(m.comp), None, "the renderer searched the table instead of using the map");
+        for id in [m.eq, m.bypassed, m.limiter] {
+            assert!(meters_b.read(id).is_some(), "plug-in {id}");
+        }
+    }
+
+    #[test]
+    fn a_new_snapshot_keeps_the_cells_without_searching() {
+        let m = metered_project();
+        let meters = Arc::new(crate::PluginMeters::default());
+        let cells = meters.assign_project(&m.project);
+        let track = m.project.tracks[0].id;
+        let mut p2 = m.project.clone();
+        let mut r = Renderer::new(48000.0, Arc::new(m.project), Arc::new(AudioPool::new()));
+        r.set_plugin_meters(Some(meters.clone()), cells.clone());
+        let before: Vec<(Id, Option<usize>)> = r.tracks[&track].fx.iter().map(|f| (f.id, f.meter)).collect();
+        let added = run(&mut p2, Command::AddEffect { track_id: track, kind: "gain".into(), preset: None, index: None })["plugin_id"].as_u64().unwrap();
+        let cells2 = meters.assign_project(&p2);
+        r.set_project_with_meters(Arc::new(p2), cells2.clone());
+        let fx = &r.tracks[&track].fx;
+        let slot = fx.iter().find(|f| f.id == added).unwrap();
+        assert!(slot.meter.is_some());
+        assert_eq!(slot.meter, cells2.cell(added));
+        for (id, cell) in before {
+            assert_eq!(fx.iter().find(|f| f.id == id).unwrap().meter, cell, "plug-in {id} moved");
+            assert_eq!(cell, cells.cell(id));
+        }
+        // a plain snapshot keeps the map the renderer already has
+        let p3 = (**r.project()).clone();
+        r.set_project(Arc::new(p3));
+        assert_eq!(r.tracks[&track].fx.iter().find(|f| f.id == added).unwrap().meter, cells2.cell(added));
     }
 }
