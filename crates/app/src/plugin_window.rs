@@ -10,6 +10,7 @@ use eframe::egui::{self, Pos2, RichText, Vec2};
 use ondina_core::command::Command;
 use ondina_core::model::*;
 use ondina_core::plugins::{self, PluginCategory, PluginInfo};
+use ondina_dsp::MidiKind;
 use ondina_studio::{Source, WindowRect};
 
 use crate::app::OndinaApp;
@@ -68,6 +69,10 @@ pub struct PluginWindows {
     pub typed_last_frame: bool,
     /// The VST3 parameter filter of each window.
     pub filters: HashMap<Id, String>,
+    /// The keyboard of each instrument window.
+    pub keyboards: HashMap<Id, crate::synth_view::InstrumentKeys>,
+    /// Keys still held when their window closed: the app sends their NoteOff at the end of the frame.
+    note_offs: Vec<(Id, u8)>,
 }
 
 impl PluginWindows {
@@ -106,6 +111,7 @@ impl PluginWindows {
         let closed = if self.open.len() >= MAX_PLUGIN_WINDOWS {
             let old = self.open.remove(0).id;
             self.filters.remove(&old);
+            self.release_keys(old);
             Some(old)
         } else {
             None
@@ -130,6 +136,23 @@ impl PluginWindows {
     pub fn close(&mut self, id: Id) {
         self.open.retain(|w| w.id != id);
         self.filters.remove(&id);
+        self.release_keys(id);
+    }
+
+    /// Forgets the keyboard of window `id`; a key still held gets its NoteOff (see `take_note_offs`).
+    fn release_keys(&mut self, id: Id) {
+        if let Some(mut k) = self.keyboards.remove(&id) {
+            for kind in k.keys.release_all() {
+                if let MidiKind::NoteOff { pitch } = kind {
+                    self.note_offs.push((k.track, pitch));
+                }
+            }
+        }
+    }
+
+    /// The (track, pitch) of the keys released by closing windows, for the app to send their NoteOff.
+    pub fn take_note_offs(&mut self) -> Vec<(Id, u8)> {
+        std::mem::take(&mut self.note_offs)
     }
 
     pub fn is_open(&self, id: Id) -> bool {
@@ -171,6 +194,9 @@ impl PluginWindows {
     pub fn follow_document(&mut self, document: u64) {
         if document != self.document {
             self.document = document;
+            for id in self.keyboards.keys().copied().collect::<Vec<_>>() {
+                self.release_keys(id);
+            }
             self.open.clear();
             self.rects.clear();
             self.filters.clear();
@@ -460,12 +486,26 @@ pub fn show_window(ctx: &egui::Context, separate: bool, id: Id, spec: WindowSpec
     })
 }
 
-/// The view a plug-in window shows under the header: the EQ graph above the knobs for the equalizers. The next slices add dynamics and synth.
+/// The view a plug-in window shows under the header: the EQ graph above the knobs for the equalizers, the synth
+/// drawings for the Analog and FM Synth. The next slices add dynamics.
 enum PluginView {
     Generic(&'static PluginInfo),
     Eq(&'static PluginInfo),
+    Synth(&'static PluginInfo),
     Vst3,
     Unknown,
+}
+
+/// The view a plug-in window shows for `kind`: the EQ graph or the synth drawings above the knobs when the plug-in
+/// has them, the knobs alone for the other built-ins, Ondina's generic window for a VST3.
+fn plugin_view(kind: &str) -> PluginView {
+    match plugins::find(kind) {
+        Some(info) if crate::eq_view::has_eq_view(info.kind) => PluginView::Eq(info),
+        Some(info) if crate::synth_view::has_synth_view(info.kind) => PluginView::Synth(info),
+        Some(info) => PluginView::Generic(info),
+        None if kind == "vst3" => PluginView::Vst3,
+        None => PluginView::Unknown,
+    }
 }
 
 impl OndinaApp {
@@ -590,6 +630,9 @@ impl OndinaApp {
                 }
             }
         }
+        for (track, pitch) in self.plugin_windows.take_note_offs() {
+            self.live_note(track, MidiKind::NoteOff { pitch });
+        }
         for id in self.plugin_windows.take_focus() {
             if separate {
                 ctx.send_viewport_cmd_to(viewport_id(id), egui::ViewportCommand::Minimized(false));
@@ -630,12 +673,7 @@ impl OndinaApp {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
             ui.painter().hline(rect.x_range(), rect.center().y, egui::Stroke::new(1.0_f32, theme::CONTROL));
             ui.add_space(theme::SP_3);
-            let view = match plugins::find(&inst.kind) {
-                Some(info) if crate::eq_view::has_eq_view(info.kind) => PluginView::Eq(info),
-                Some(info) => PluginView::Generic(info),
-                None if inst.kind == "vst3" => PluginView::Vst3,
-                None => PluginView::Unknown,
-            };
+            let view = plugin_view(&inst.kind);
             if let PluginView::Eq(_) = view {
                 // the graph stays above the scrolling knobs, so the wheel over a point never scrolls them
                 let sr = crate::eq_view::curve_sample_rate(self.view.sample_rate);
@@ -644,10 +682,20 @@ impl OndinaApp {
                 self.apply_eq_edits(id, out.edits);
                 ui.add_space(theme::SP_3);
             }
+            if let PluginView::Synth(_) = view {
+                // the drawings stay above the scrolling knobs, so the wheel over them never scrolls the knobs
+                let sr = crate::synth_view::curve_sample_rate(self.view.sample_rate);
+                let out = crate::synth_view::synth_graph(ui, &inst, sr, &mut self.plugin_windows.gesture);
+                self.apply_params_edits(id, out.edits);
+                ui.add_space(theme::SP_3);
+            }
+            let instrument = plugins::find(&inst.kind).is_some_and(|i| i.category == PluginCategory::Instrument);
+            let reserve = if instrument { crate::widgets::KEYBOARD_BLOCK_H + theme::SP_3 } else { 0.0 };
             let edits = egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
+                .max_height((ui.available_height() - reserve).max(60.0))
                 .show(ui, |ui| match view {
-                    PluginView::Generic(info) | PluginView::Eq(info) => builtin_controls(ui, id, info, &inst, &mut self.plugin_windows.gesture),
+                    PluginView::Generic(info) | PluginView::Eq(info) | PluginView::Synth(info) => builtin_controls(ui, id, info, &inst, &mut self.plugin_windows.gesture),
                     PluginView::Vst3 => {
                         let mut filter = self.plugin_windows.filters.get(&id).cloned().unwrap_or_default();
                         let edits = vst3_controls(ui, id, &inst, &mut filter, &mut self.plugin_windows.gesture);
@@ -662,6 +710,10 @@ impl OndinaApp {
                 })
                 .inner;
             self.apply_param_edits(id, edits);
+            if instrument {
+                ui.add_space(theme::SP_3);
+                self.instrument_keyboard(ui, p, id);
+            }
         });
     }
 
@@ -1148,5 +1200,142 @@ mod tests {
         assert_eq!(got, None);
         let seven: Id = 7;
         assert_eq!(embedded_layer(seven), egui::Id::new(("plugin-window", seven)));
+    }
+
+    fn hold(w: &mut PluginWindows, id: Id, track: Id, pitch: u8) {
+        let keys = crate::widgets::KeyboardState { octave: 3, held: Some((pitch, 100)) };
+        w.keyboards.insert(id, crate::synth_view::InstrumentKeys { track, keys });
+    }
+
+    #[test]
+    fn closing_a_window_releases_its_held_key() {
+        let mut w = PluginWindows::new(1);
+        w.open(7, None);
+        hold(&mut w, 7, 3, 60);
+        w.close(7);
+        assert_eq!(w.take_note_offs(), [(3, 60)]);
+        assert!(w.take_note_offs().is_empty());
+        assert!(!w.keyboards.contains_key(&7));
+
+        w.open(8, None);
+        hold(&mut w, 8, 4, 62);
+        w.follow_document(1);
+        assert!(w.take_note_offs().is_empty(), "the same document keeps its windows");
+        w.follow_document(2);
+        assert_eq!(w.take_note_offs(), [(4, 62)]);
+        assert!(w.keyboards.is_empty());
+
+        let mut w = PluginWindows::new(1);
+        for id in 1..=MAX_PLUGIN_WINDOWS as Id {
+            w.open(id, None);
+        }
+        hold(&mut w, 1, 5, 64);
+        hold(&mut w, 2, 5, 65);
+        assert_eq!(w.open(100, None), Opened::New { closed: Some(1) });
+        assert_eq!(w.take_note_offs(), [(5, 64)]);
+        assert!(w.keyboards.contains_key(&2));
+
+        // a keyboard with nothing held sends nothing
+        w.keyboards.insert(3, crate::synth_view::InstrumentKeys { track: 5, keys: Default::default() });
+        w.close(3);
+        assert!(w.take_note_offs().is_empty());
+        assert!(!w.keyboards.contains_key(&3));
+    }
+
+    #[test]
+    fn synth_kinds_get_the_synth_view() {
+        use crate::synth_view::has_synth_view;
+        assert!(has_synth_view("analog_synth") && has_synth_view("fm_synth"));
+        for kind in ["organ", "drum_synth", "channel_eq", "vst3", "sampler"] {
+            assert!(!has_synth_view(kind), "{kind}");
+        }
+        for kind in ["analog_synth", "fm_synth", "organ", "drum_synth", "pluck_synth", "sampler"] {
+            let info = plugins::find(kind).unwrap_or_else(|| panic!("{kind}"));
+            assert_eq!(info.category, PluginCategory::Instrument, "{kind}");
+        }
+    }
+
+    #[test]
+    fn every_builtin_kind_gets_its_view() {
+        let eq = |k: &str| matches!(plugin_view(k), PluginView::Eq(i) if i.kind == k);
+        let synth = |k: &str| matches!(plugin_view(k), PluginView::Synth(i) if i.kind == k);
+        let generic = |k: &str| matches!(plugin_view(k), PluginView::Generic(i) if i.kind == k);
+        assert!(eq("channel_eq") && eq("dynamic_eq"));
+        assert!(synth("analog_synth") && synth("fm_synth"));
+        assert!(generic("compressor") && generic("organ") && generic("arpeggiator"));
+        assert!(matches!(plugin_view("vst3"), PluginView::Vst3));
+        assert!(matches!(plugin_view("from_the_future"), PluginView::Unknown));
+        // every built-in opens a window of its own: none falls to the VST3 or unknown view
+        for info in plugins::registry() {
+            assert!(eq(info.kind) || synth(info.kind) || generic(info.kind), "{}", info.kind);
+        }
+    }
+
+    /// What a plug-in window draws under its header for `inst`, in a headless 900x700 context, two frames without
+    /// input, with the functions plugin_window_body uses: every edit asked for, every note sent and the height of the
+    /// drawing above the knobs.
+    fn draw_window_view(inst: &PluginInstance, gesture: &mut u64) -> (usize, Vec<MidiKind>, f32) {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let (mut edits, mut notes, mut graph_h) = (0, Vec::new(), 0.0);
+        for k in 0..2 {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(900.0, 700.0))),
+                time: Some(k as f64 / 60.0),
+                ..Default::default()
+            };
+            let _ = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let view = plugin_view(&inst.kind);
+                    let top = ui.cursor().top();
+                    match view {
+                        PluginView::Eq(_) => {
+                            let h = crate::eq_view::graph_height(ui.available_height());
+                            edits += crate::eq_view::eq_graph(ui, inst, crate::eq_view::curve_sample_rate(48000), h, gesture).edits.len();
+                        }
+                        PluginView::Synth(_) => {
+                            edits += crate::synth_view::synth_graph(ui, inst, crate::synth_view::curve_sample_rate(48000), gesture).edits.len();
+                        }
+                        _ => {}
+                    }
+                    graph_h = ui.cursor().top() - top;
+                    if let PluginView::Generic(info) | PluginView::Eq(info) | PluginView::Synth(info) = view {
+                        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| edits += builtin_controls(ui, inst.id, info, inst, gesture).len());
+                        if info.category == PluginCategory::Instrument {
+                            notes.extend(crate::widgets::keyboard(ui, &mut crate::widgets::KeyboardState::default(), false, true));
+                        }
+                    }
+                });
+            });
+        }
+        (edits, notes, graph_h)
+    }
+
+    #[test]
+    fn every_builtin_plugin_window_draws_its_view_without_edits() {
+        for info in plugins::registry() {
+            let inst = instance(info.kind, None);
+            let mut g = 0;
+            let (edits, notes, graph_h) = draw_window_view(&inst, &mut g);
+            assert_eq!(edits, 0, "{}", info.kind);
+            assert!(notes.is_empty(), "{}: {notes:?}", info.kind);
+            assert_eq!(g, 0, "{}", info.kind);
+            match plugin_view(info.kind) {
+                PluginView::Eq(_) | PluginView::Synth(_) => assert!(graph_h > 100.0, "{}: drawing {graph_h}", info.kind),
+                _ => assert_eq!(graph_h, 0.0, "{}", info.kind),
+            }
+        }
+    }
+
+    #[test]
+    fn every_view_sits_under_the_header_with_the_ai_bar() {
+        let src = include_str!("plugin_window.rs");
+        let body = &src[src.find(concat!("fn plugin_window_", "body(")).unwrap()..];
+        let header = body.find(concat!("self.plugin_", "header(ui, p, &inst)")).unwrap();
+        let companion = body.find(concat!("WindowMode::", "Companion)")).unwrap();
+        let view = body.find(concat!("plugin_", "view(&inst.kind)")).unwrap();
+        assert!(header < companion && companion < view, "the header with the AI bar comes first, for every window");
+        let in_header = &src[src.find(concat!("fn plugin_", "header(")).unwrap()..];
+        assert!(in_header.contains(concat!("self.plugin_ai_", "bar(ui, p, pid)")));
     }
 }

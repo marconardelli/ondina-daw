@@ -701,6 +701,34 @@ Ogni plug-in (strumenti, effetti ed effetti MIDI di Ondina, plug-in VST3) si reg
   guadagno e Q della banda al default, il clic destro accende o spegne la banda se ha un interruttore. Passando
   sopra un punto ne leggi nome e valori con le unità; sullo sfondo, in alto a destra, la frequenza sotto il
   mouse. Con il plug-in in Bypass la curva diventa grigia.
+- **Synth: oscillatori e filtro**: la finestra dell'Analog Synth mostra sopra le manopole due riquadri con la forma
+  d'onda di Osc 1 e Osc 2: un clic passa alla forma successiva, il clic destro alla precedente, la rotella le scorre
+  (una rotazione è un passo di annulla); sul quadrato la forma segue la pulse width, scritta anche come *PW*.
+  Accanto c'è la curva del filtro, da 20 Hz a 20 kHz e da -36 a +36 dB: è quella di una nota Do4 con l'inviluppo e
+  l'LFO a riposo, calcolata con le stesse formule del filtro che suona. Il punto sta sulla cresta della curva:
+  trascinalo a destra e a sinistra per la frequenza di taglio, in su e in giù per la risonanza (con Shift dieci
+  volte più fine); la rotella in qualsiasi punto del riquadro cambia la risonanza, il doppio clic sul punto riporta
+  frequenza e risonanza al default. Se *Filter Env Amount* non è zero, una seconda curva più tenue mostra dove
+  arriva il filtro con l'inviluppo al massimo. Il tipo di filtro (Lowpass, Highpass, Bandpass) si sceglie tra le
+  manopole e la curva cambia subito.
+- **Synth: inviluppi**: sotto, l'inviluppo d'ampiezza (*AMP*) e quello del filtro (*FILTER ENV*, con l'ammontare
+  scritto a destra) hanno tre punti: Attack si sposta in orizzontale; Decay in orizzontale e Sustain in verticale
+  sono lo stesso punto; Release si sposta in orizzontale. Shift dà la regolazione fine, il doppio clic riporta il
+  default, e mentre trascini (o passi sopra un punto) un riquadro mostra valore e unità, per esempio *Decay 300 ms ·
+  Sustain 0.40*. Ogni trascinamento è un passo di annulla. Nell'FM Synth ci sono l'inviluppo d'ampiezza e quello
+  dell'indice di modulazione (*INDEX ENV*): il suo attacco è fisso e il suo release è quello dell'ampiezza, quindi
+  ha solo il punto Decay/Sustain. Le modifiche dell'assistente o di un agente MCP si vedono subito sui disegni.
+- **Tastiera**: in fondo alla finestra di ogni strumento di Ondina c'è una tastiera di due ottave per provare il
+  suono. Premi un tasto e la nota suona finché tieni premuto; la velocity è più forte verso il bordo basso del tasto
+  e la riga sopra la tastiera scrive nota e velocity. Scivolando su un altro tasto la nota cambia, uscendo dalla
+  tastiera con il pulsante premuto si ferma. L'ottava si sposta con ‹ e › (o, nella finestra separata, con le frecce
+  sinistra e destra mentre il mouse è sui tasti); chiudere la finestra o passare a un'altra applicazione ferma la
+  nota. Funziona anche durante la riproduzione e, se stai registrando, la nota entra nella registrazione come quelle
+  della tastiera MIDI.
+- **Richieste pronte dei synth**: la barra AI dell'Analog Synth offre *Design a sound*, *Give me a bass for this
+  song* e *A warm pad that opens slowly*; quella dell'FM Synth *Design a sound*, *Give me a bass for this song* e *A
+  short pluck*. Nella risposta l'assistente nomina le fasi dell'inviluppo e il filtro che ha cambiato, con i valori
+  prima e dopo, e dice perché.
 - I parametri a scelta (forme d'onda, modi, on/off) sono pulsanti affiancati o un menu. I parametri con lo stesso
   inizio di nome stanno insieme sotto un titolo (per esempio *Band 1*, *Filter*, *Low Shelf*). Allargando la
   finestra le manopole si ridistribuiscono; se non ci stanno, la vista scorre.

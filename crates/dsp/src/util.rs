@@ -157,6 +157,33 @@ impl Osc {
     }
 }
 
+/// One cycle of `wave` as the window draws it: the naive shape the PolyBLEP oscillator converges to, at `phase`
+/// 0..1 with pulse width `pw` for the square. Saw rises from -1 to 1, Square is 1 before `pw`, Triangle is -1 at
+/// phase 0 and 1 at 0.5 (where the leaky integrator of `Osc` settles), Noise is a fixed pseudo-random value per
+/// 1/64 of the cycle (the real noise has no period). For drawing; not meant for the audio thread.
+pub fn wave_shape(wave: Wave, phase: f32, pw: f32) -> f32 {
+    let t = phase.rem_euclid(1.0);
+    match wave {
+        Wave::Saw => 2.0 * t - 1.0,
+        Wave::Square => {
+            if t < pw {
+                1.0
+            } else {
+                -1.0
+            }
+        }
+        Wave::Triangle => {
+            if t < 0.5 {
+                4.0 * t - 1.0
+            } else {
+                3.0 - 4.0 * t
+            }
+        }
+        Wave::Sine => (t * 2.0 * PI).sin(),
+        Wave::Noise => Noise::new(1 + (t * 64.0) as u32).next(),
+    }
+}
+
 /// ADSR envelope with linear attack and exponential decay/release.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EnvStage {
@@ -241,6 +268,23 @@ impl Adsr {
     }
 }
 
+/// Level of an `Adsr` set to `a`, `d`, `s`, `r` at `t` seconds after the note starts from silence, released at
+/// `held` seconds (f32::INFINITY: never): linear attack, then decay towards `s`, then release from wherever the
+/// level was, with the same 99%-in-the-time curves as `next`. For drawing; not meant for the audio thread.
+pub fn adsr_level(a: f32, d: f32, s: f32, r: f32, held: f32, t: f32) -> f32 {
+    if t < 0.0 || t.is_nan() {
+        return 0.0;
+    }
+    let (a, d, r) = (a.max(0.0005), d.max(0.0005), r.max(0.0005));
+    let s = s.clamp(0.0, 1.0);
+    let pre = |t: f32| if t < a { t / a } else { s + (1.0 - s) * (-4.6 * (t - a) / d).exp() };
+    if t < held {
+        pre(t)
+    } else {
+        pre(held.max(0.0)) * (-4.6 * (t - held.max(0.0)) / r).exp()
+    }
+}
+
 /// Topology-preserving-transform state variable filter (Cytomic).
 #[derive(Clone, Default)]
 pub struct Svf {
@@ -269,12 +313,23 @@ impl FilterMode {
     }
 }
 
+/// The damping `Svf::set` uses for resonance `res` (0..1): 2 at 0, 0.02 at 1.
+#[inline]
+pub fn svf_damping(res: f32) -> f32 {
+    2.0 - 1.98 * res.clamp(0.0, 1.0)
+}
+
+/// The resonance whose damping is `k` (inverse of `svf_damping`), clamped to 0..1.
+pub fn svf_resonance_for_damping(k: f32) -> f32 {
+    ((2.0 - k) / 1.98).clamp(0.0, 1.0)
+}
+
 impl Svf {
     /// `res` 0..1 (1 = near self-oscillation)
     pub fn set(&mut self, cutoff: f32, res: f32, sr: f32) {
         let fc = cutoff.clamp(10.0, sr * 0.49);
         let g = (PI * fc / sr).tan();
-        self.k = 2.0 - 1.98 * res.clamp(0.0, 1.0);
+        self.k = svf_damping(res);
         self.a1 = 1.0 / (1.0 + g * (g + self.k));
         self.a2 = g * self.a1;
         self.a3 = g * self.a2;
@@ -295,6 +350,30 @@ impl Svf {
     pub fn reset(&mut self) {
         self.ic1 = 0.0;
         self.ic2 = 0.0;
+    }
+
+    /// Gain in dB of the filter as set, in `mode`, at `freq` Hz for sample rate `sr`; never below MIN_RESPONSE_DB.
+    /// 0 before the first `set`. For drawing a response; not meant for the audio thread.
+    pub fn magnitude_db(&self, mode: FilterMode, freq: f32, sr: f32) -> f32 {
+        if self.a1 <= 0.0 || sr <= 0.0 || !sr.is_finite() {
+            return 0.0;
+        }
+        // The bilinear transform of the analog prototype 1/(s^2 + ks + 1) (s/.. band, s^2/.. high), prewarped
+        // the same way `set` does: `g` is tan(pi fc / sr) and `a2 = g * a1`.
+        let sr = sr as f64;
+        let g = self.a2 as f64 / self.a1 as f64;
+        let k = self.k as f64;
+        let f = (freq as f64).clamp(0.0, sr * 0.4999);
+        let w = (std::f64::consts::PI * f / sr).tan() / g;
+        let w2 = w * w;
+        let den = ((1.0 - w2) * (1.0 - w2) + (k * w) * (k * w)).max(1e-300);
+        let num = match mode {
+            FilterMode::Low => 1.0,
+            FilterMode::Band => w2,
+            FilterMode::High => w2 * w2,
+        };
+        let db = 10.0 * (num / den).max(1e-30).log10();
+        (db as f32).max(MIN_RESPONSE_DB)
     }
 }
 
