@@ -18,6 +18,7 @@ mod cc_lane;
 mod control_bar;
 mod doc_guard;
 mod drag_cancel;
+mod dynamics_view;
 mod editor_header;
 mod editors;
 mod eq_view;

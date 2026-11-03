@@ -487,21 +487,24 @@ pub fn show_window(ctx: &egui::Context, separate: bool, id: Id, spec: WindowSpec
 }
 
 /// The view a plug-in window shows under the header: the EQ graph above the knobs for the equalizers, the synth
-/// drawings for the Analog and FM Synth. The next slices add dynamics.
+/// drawings for the Analog and FM Synth, the dynamics graph and meters for Compressor, Limiter, Noise Gate and
+/// De-Esser.
 enum PluginView {
     Generic(&'static PluginInfo),
     Eq(&'static PluginInfo),
     Synth(&'static PluginInfo),
+    Dynamics(&'static PluginInfo),
     Vst3,
     Unknown,
 }
 
-/// The view a plug-in window shows for `kind`: the EQ graph or the synth drawings above the knobs when the plug-in
-/// has them, the knobs alone for the other built-ins, Ondina's generic window for a VST3.
+/// The view a plug-in window shows for `kind`: the EQ graph, the synth drawings or the dynamics graph above the
+/// knobs when the plug-in has them, the knobs alone for the other built-ins, Ondina's generic window for a VST3.
 fn plugin_view(kind: &str) -> PluginView {
     match plugins::find(kind) {
         Some(info) if crate::eq_view::has_eq_view(info.kind) => PluginView::Eq(info),
         Some(info) if crate::synth_view::has_synth_view(info.kind) => PluginView::Synth(info),
+        Some(info) if crate::dynamics_view::has_dynamics_view(info.kind) => PluginView::Dynamics(info),
         Some(info) => PluginView::Generic(info),
         None if kind == "vst3" => PluginView::Vst3,
         None => PluginView::Unknown,
@@ -689,13 +692,26 @@ impl OndinaApp {
                 self.apply_params_edits(id, out.edits);
                 ui.add_space(theme::SP_3);
             }
+            if let PluginView::Dynamics(_) = view {
+                // an atomic read of the meter table, without the session lock; the graph stays above the scrolling knobs
+                let meter = self.shared.plugin_meter(id);
+                let sr = crate::eq_view::curve_sample_rate(self.view.sample_rate);
+                let height = crate::eq_view::graph_height(ui.available_height());
+                let out = crate::dynamics_view::dynamics_graph(ui, &inst, meter, sr, height, &mut self.plugin_windows.gesture);
+                self.apply_eq_edits(id, out.edits);
+                let visible = ui.ctx().input(|i| i.viewport().minimized) != Some(true);
+                if let Some(after) = crate::dynamics_view::meter_repaint(visible, self.playing(), out.levels) {
+                    ui.ctx().request_repaint_after(after);
+                }
+                ui.add_space(theme::SP_3);
+            }
             let instrument = plugins::find(&inst.kind).is_some_and(|i| i.category == PluginCategory::Instrument);
             let reserve = if instrument { crate::widgets::KEYBOARD_BLOCK_H + theme::SP_3 } else { 0.0 };
             let edits = egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .max_height((ui.available_height() - reserve).max(60.0))
                 .show(ui, |ui| match view {
-                    PluginView::Generic(info) | PluginView::Eq(info) | PluginView::Synth(info) => builtin_controls(ui, id, info, &inst, &mut self.plugin_windows.gesture),
+                    PluginView::Generic(info) | PluginView::Eq(info) | PluginView::Synth(info) | PluginView::Dynamics(info) => builtin_controls(ui, id, info, &inst, &mut self.plugin_windows.gesture),
                     PluginView::Vst3 => {
                         let mut filter = self.plugin_windows.filters.get(&id).cloned().unwrap_or_default();
                         let edits = vst3_controls(ui, id, &inst, &mut filter, &mut self.plugin_windows.gesture);
@@ -1259,15 +1275,17 @@ mod tests {
     fn every_builtin_kind_gets_its_view() {
         let eq = |k: &str| matches!(plugin_view(k), PluginView::Eq(i) if i.kind == k);
         let synth = |k: &str| matches!(plugin_view(k), PluginView::Synth(i) if i.kind == k);
+        let dynamics = |k: &str| matches!(plugin_view(k), PluginView::Dynamics(i) if i.kind == k);
         let generic = |k: &str| matches!(plugin_view(k), PluginView::Generic(i) if i.kind == k);
         assert!(eq("channel_eq") && eq("dynamic_eq"));
         assert!(synth("analog_synth") && synth("fm_synth"));
-        assert!(generic("compressor") && generic("organ") && generic("arpeggiator"));
+        assert!(dynamics("compressor") && dynamics("limiter") && dynamics("noise_gate") && dynamics("de_esser"));
+        assert!(generic("reverb") && generic("organ") && generic("arpeggiator"));
         assert!(matches!(plugin_view("vst3"), PluginView::Vst3));
         assert!(matches!(plugin_view("from_the_future"), PluginView::Unknown));
         // every built-in opens a window of its own: none falls to the VST3 or unknown view
         for info in plugins::registry() {
-            assert!(eq(info.kind) || synth(info.kind) || generic(info.kind), "{}", info.kind);
+            assert!(eq(info.kind) || synth(info.kind) || dynamics(info.kind) || generic(info.kind), "{}", info.kind);
         }
     }
 
@@ -1296,10 +1314,14 @@ mod tests {
                         PluginView::Synth(_) => {
                             edits += crate::synth_view::synth_graph(ui, inst, crate::synth_view::curve_sample_rate(48000), gesture).edits.len();
                         }
+                        PluginView::Dynamics(_) => {
+                            let h = crate::eq_view::graph_height(ui.available_height());
+                            edits += crate::dynamics_view::dynamics_graph(ui, inst, None, crate::eq_view::curve_sample_rate(48000), h, gesture).edits.len();
+                        }
                         _ => {}
                     }
                     graph_h = ui.cursor().top() - top;
-                    if let PluginView::Generic(info) | PluginView::Eq(info) | PluginView::Synth(info) = view {
+                    if let PluginView::Generic(info) | PluginView::Eq(info) | PluginView::Synth(info) | PluginView::Dynamics(info) = view {
                         egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| edits += builtin_controls(ui, inst.id, info, inst, gesture).len());
                         if info.category == PluginCategory::Instrument {
                             notes.extend(crate::widgets::keyboard(ui, &mut crate::widgets::KeyboardState::default(), false, true));
@@ -1321,7 +1343,7 @@ mod tests {
             assert!(notes.is_empty(), "{}: {notes:?}", info.kind);
             assert_eq!(g, 0, "{}", info.kind);
             match plugin_view(info.kind) {
-                PluginView::Eq(_) | PluginView::Synth(_) => assert!(graph_h > 100.0, "{}: drawing {graph_h}", info.kind),
+                PluginView::Eq(_) | PluginView::Synth(_) | PluginView::Dynamics(_) => assert!(graph_h > 100.0, "{}: drawing {graph_h}", info.kind),
                 _ => assert_eq!(graph_h, 0.0, "{}", info.kind),
             }
         }

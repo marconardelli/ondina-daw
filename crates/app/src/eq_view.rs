@@ -112,7 +112,7 @@ pub fn band_color(index: usize) -> Color32 {
 }
 
 /// The registry range of parameter `id` of `kind` ((0, 1) if unknown).
-fn range_of(kind: &str, id: &str) -> (f32, f32) {
+pub(crate) fn range_of(kind: &str, id: &str) -> (f32, f32) {
     plugins::find(kind).and_then(|i| i.params.iter().find(|p| p.id == id)).map_or((0.0, 1.0), |p| (p.min, p.max))
 }
 
@@ -360,7 +360,7 @@ fn changes(inst: &PluginInstance, params: &BTreeMap<String, f32>) -> bool {
 
 /// Fills the area between two curves sampled at the same `xs` (screen coordinates): two triangles per pair of
 /// neighbouring samples, so the curve need not be convex.
-fn fill_between(painter: &egui::Painter, xs: &[f32], top: &[f32], bottom: &[f32], color: Color32) {
+pub(crate) fn fill_between(painter: &egui::Painter, xs: &[f32], top: &[f32], bottom: &[f32], color: Color32) {
     let n = xs.len().min(top.len()).min(bottom.len());
     if n < 2 {
         return;
@@ -378,7 +378,7 @@ fn fill_between(painter: &egui::Painter, xs: &[f32], top: &[f32], bottom: &[f32]
     painter.add(egui::Shape::mesh(mesh));
 }
 
-fn faded(c: Color32, alpha: u8) -> Color32 {
+pub(crate) fn faded(c: Color32, alpha: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha)
 }
 
