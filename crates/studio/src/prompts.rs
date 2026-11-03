@@ -662,4 +662,31 @@ mod tests {
             assert!(!tools.iter().any(|t| t == word), "{word} names a tool");
         }
     }
+
+    #[test]
+    fn synth_bar_context_live_carries_the_whole_plugin() {
+        use ondina_engine::PluginMeter;
+        let mut s = Session::new(false);
+        for (kind, label) in [("analog_synth", "Analog Synth"), ("fm_synth", "FM Synth")] {
+            let t = id(&run(&mut s, "add_track", json!({"kind": "instrument", "name": "Lead", "instrument": kind})), "track_id");
+            let p = s.project.track(t).unwrap().instrument.as_ref().unwrap().id;
+            // instruments have no live meter in the engine: the bar sends the context without one
+            let text = plugin_bar_context_live(&s.project, p, None).unwrap();
+            assert_eq!(Some(&text), plugin_bar_context(&s.project, p).as_ref());
+            let head = [format!("AI bar of plug-in {p} ({label})"), format!("(kind {kind})"), "the instrument".into(), format!("track {t} \"Lead\" (instrument track)"), "which parameters you changed".into(), "say why".into()];
+            for want in head {
+                assert!(text.contains(&want), "{kind}: missing {want:?}");
+            }
+            assert!(text.contains(synth_bar_note(kind)), "{kind}");
+            for pi in plugins::find(kind).unwrap().params {
+                assert!(text.contains(&format!("
+- {} \"{}\" = ", pi.id, pi.name)), "{kind}: {} missing", pi.id);
+            }
+            assert!(text.contains("[20..20000 Hz]") || kind == "fm_synth", "{kind}: ranges with units");
+            // were the engine to meter it, the meters would follow the synth note
+            let m = PluginMeter { input_peak: 0.5, output_peak: 0.5, gain_reduction_db: None };
+            let live = plugin_bar_context_live(&s.project, p, Some(&m)).unwrap();
+            assert!(live.starts_with(&text) && live.ends_with(&meter_note(&m)), "{live}");
+        }
+    }
 }
